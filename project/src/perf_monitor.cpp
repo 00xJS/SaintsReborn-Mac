@@ -336,7 +336,8 @@ namespace sr {
 std::atomic<int> g_fps_cap{60};
 
 namespace {
-constexpr int kFpsCaps[] = {30, 60, 90, 120};
+// 0 = no cap.
+constexpr int kFpsCaps[] = {30, 60, 90, 120, 0};
 
 std::filesystem::path FpsCapFile() {
   return rex::filesystem::GetExecutableFolder() / "fps_cap.txt";
@@ -348,7 +349,9 @@ std::filesystem::path FpsCapFile() {
 void ApplyFpsCap(int cap) {
   g_fps_cap.store(cap, std::memory_order_relaxed);
   REXCVAR_SET(vsync, true);
-  REXCVAR_SET(guest_vblank_rate, cap > 60 ? double(cap) : 0.0);
+  // No cap: vertical blanks every millisecond (the vblank thread's tick), so
+  // the game never waits for one; the frame limiter is off.
+  REXCVAR_SET(guest_vblank_rate, cap == 0 ? 1000.0 : cap > 60 ? double(cap) : 0.0);
 }
 }  // namespace
 
@@ -375,7 +378,7 @@ int CycleFpsCap() {
     std::fprintf(f, "%d\n", next);
     std::fclose(f);
   }
-  REXLOG_INFO("FPS cap: {}", next);
+  REXLOG_INFO("FPS cap: {}", next ? std::to_string(next) : std::string("off"));
   return next;
 }
 

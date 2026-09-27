@@ -69,6 +69,7 @@ set(SAINTSROW_SOURCES
     src/kbm.cpp
     src/glyphs.cpp
     src/profiler.cpp
+    src/render_fixes.cpp
     src/wml/mod_list.cpp
     src/wml/mod_loader.cpp
     src/wml/lua_mods.cpp
@@ -105,13 +106,26 @@ target_link_libraries(saintsrow PRIVATE winmm rex::runtime rex::gpu-xenos wml_lu
 
 target_compile_options(saintsrow PRIVATE
     -fno-strict-aliasing
-    -ffp-model=strict
+    # precise, not strict: strict turned every float operation of the recompiled
+    # code into a constrained operation (no single-precision math, no
+    # vectorizing, ~35-40% more float instructions). The results are the same
+    # (IEEE, no reassociation; contract=off keeps separate multiply + add).
+    -ffp-model=precise
+    -ffp-contract=off
     -fno-char8_t
     $<$<CONFIG:Release>:-O3>
     $<$<CONFIG:Release>:-DNDEBUG>
 )
 if(NOT MSVC)
-    target_compile_options(saintsrow PRIVATE -msse4.1)
+    # SR_CPU_LEVEL=v3 builds the recompiled code for x86-64-v3 (Haswell / Zen
+    # and newer: AVX2, BMI2, LZCNT, MOVBE; MOVBE makes the big-endian guest
+    # loads/stores one instruction). The default runs on any SSE4.1 CPU.
+    set(SR_CPU_LEVEL "sse41" CACHE STRING "Recompiled code CPU level: sse41 or v3")
+    if(SR_CPU_LEVEL STREQUAL "v3")
+        target_compile_options(saintsrow PRIVATE -march=x86-64-v3)
+    else()
+        target_compile_options(saintsrow PRIVATE -msse4.1)
+    endif()
     # saintsrow.map lets the built-in profiler name functions.
     target_link_options(saintsrow PRIVATE "LINKER:/MAP:saintsrow.map")
 endif()

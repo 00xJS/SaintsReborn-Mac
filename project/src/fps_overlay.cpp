@@ -96,7 +96,8 @@ class NoticeDialog : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override {
     if (std::chrono::steady_clock::now() >= until_) return;
     char text[32];
-    std::snprintf(text, sizeof(text), "FPS cap: %d", cap_);
+    if (cap_) std::snprintf(text, sizeof(text), "FPS cap: %d", cap_);
+    else std::snprintf(text, sizeof(text), "FPS cap: off");
     float scale = std::max(0.75f, io.DisplaySize.y / 1080.0f);
     float size = 28.0f * scale;
     ImVec2 pos(16.0f * scale, 48.0f * scale);

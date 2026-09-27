@@ -21,14 +21,14 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Saints Reborn Setup")]
 [assembly: AssemblyProduct("Saints Reborn")]
 [assembly: AssemblyCompany("whompay")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace SaintsRebornSetup
 {
     static class Config
     {
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
         public const string RepoUrl = "https://github.com/whompay/SaintsReborn.git";
         public const string RepoPage = "https://github.com/whompay/SaintsReborn";
         public const string Branch = "main";

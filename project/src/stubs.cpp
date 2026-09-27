@@ -123,10 +123,13 @@ PPC_FUNC(sub_825E54A8) {
             background = now_background;
         }
         int cap = sr::g_fps_cap.load(std::memory_order_relaxed);
-        // Only when another copy runs on this PC: in a real co-op session the
-        // host tabbing out slowed its whole world (frame times past the
-        // game's own step limit), and the other player's copies of its people
-        // and cars tried to keep walking and jittered.
+        // Cutscenes: above 60 fps the player model falls behind (the camera,
+        // dialogue and other actors run on real time, the player on frame
+        // steps that stop adding up past 60). Hold cutscenes at 60 at most.
+        if ((PPC_LOAD_U8(0x8370D991u) || PPC_LOAD_U8(0x8370D990u)) && (cap == 0 || cap > 60)) cap = 60;
+        // Only when another copy of the game runs on this PC: otherwise a
+        // window in the background keeps its normal frame rate (limiting it
+        // made frame times go past the game's own step limit).
         static bool other_copy = false;
         if ((focus_check & 511) == 1) {
             int copies = 0;
@@ -140,7 +143,7 @@ PPC_FUNC(sub_825E54A8) {
             }
             other_copy = copies >= 2;
         }
-        if (background && other_copy && cap > 30) cap = 30;
+        if (background && other_copy && (cap > 30 || cap == 0)) cap = 30;
         sr::LimitFrameRate(double(cap));
     }
     sr::g_game_frames.fetch_add(1, std::memory_order_relaxed);

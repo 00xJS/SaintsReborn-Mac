@@ -74,7 +74,19 @@ own pictures (`tools/glyphgen/art.png`).
 
 Performance: the guest C library's `memset` and `memcpy` run natively; a
 background copy of the game (for example a second window) is limited to 30 FPS;
-the frame rate cap uses a waitable timer.
+the frame rate cap uses a waitable timer. Write-watch faults check the one page
+that faulted (`modding/include/wml_pagequery.h`) instead of `VirtualQuery`,
+which walked the whole memory region every time. Cutscenes are held at 60 FPS
+when the cap is higher, because the player model falls behind above that.
+
+`project/src/render_fixes.cpp` makes every render configuration single-pass
+(1x, one full-screen tile). The shop menus used a 4x MSAA mode split into four
+screen strips (needed for the Xbox 360's 10 MB of EDRAM), which drew the whole
+scene four times.
+
+The mod loader switches all hooks installed at startup on in one step (each
+separate enable paused every thread of the process), and only runs mods' patch
+scripts again when a mod, its settings or the game's packfiles changed.
 
 `project/src/main.cpp` sets up guest memory (including the low "null page" the
 game expects to be readable), creates the window, loads the GPU backend and
@@ -118,3 +130,27 @@ starts the game.
   are served from a RAM cache (budget set with `ram_cache_mb.txt`).
 - **Frame pacing.** Guest vertical blanks can follow the frame rate cap, so
   frame caps above 60 work with the 60 FPS mod.
+- **Queued command streams.** The game hands over a command stream and carries
+  on while the command processor executes it (up to 32 queued, at most 12 ms
+  behind). Each queued stream carries copies of the indirect buffers it uses,
+  command memory comes from a reused pool, and predicated-tiling streams still
+  run in step with the game, since the game rewrites those buffers right away.
+- **Replay thread.** Recorded Direct3D 12 commands are translated and submitted
+  on a separate thread, which also presents the frame, so the command processor
+  goes on with the next commands.
+- **Uploads.** Shared-memory uploads between two GPU writes are gathered into
+  one copy batch instead of a barrier pair each. Pages are hashed when uploaded;
+  a page whose contents did not change is not uploaded again, and the periodic
+  re-check of CPU-written pages is hashed on a background thread.
+- **Resolves.** A resolve of a whole colour render target writes straight into
+  the texture that later reads it. When that texture is the only reader, the
+  copy to memory is skipped. Transfers between a colour and a depth render
+  target that share EDRAM (the shadow map and the main colour buffer) are
+  skipped, since the game overwrites that data anyway. Command-processor writes
+  such as screen extents no longer invalidate GPU copies of memory the GPU never
+  reads.
+- **Per-draw work.** Texture lookups are cached per frame, and the render
+  target setup is skipped when a draw uses the same render targets as the one
+  before.
+- **Timer thread.** The 1 ms timer thread sleeps on a high-resolution waitable
+  timer instead of spinning, which took most of a CPU core.

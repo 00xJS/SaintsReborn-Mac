@@ -35,7 +35,7 @@ index 96f86fe..9377c14 100644
  
    bool ResolveSymbolicLink(const std::string_view path, std::string& result);
 diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
-index da8e432..2562d4b 100644
+index da8e432..4893577 100644
 --- a/include/rex/graphics/command_processor.h
 +++ b/include/rex/graphics/command_processor.h
 @@ -94,6 +94,12 @@ class CommandProcessor {
@@ -51,8 +51,13 @@ index da8e432..2562d4b 100644
  
    virtual void ClearCaches();
    virtual void InvalidateGpuMemory();
-@@ -173,6 +179,13 @@ class CommandProcessor {
+@@ -171,8 +177,18 @@ class CommandProcessor {
+ 
+   uint32_t ExecutePrimaryBuffer(uint32_t start_index, uint32_t end_index);
    virtual void OnPrimaryBufferEnd() {}
++  // The command processor wrote guest memory itself (fences, register
++  // readbacks, query results) - not seen by the CPU write tracking.
++  virtual void OnHostWroteGuestMemory(uint32_t physical_address, uint32_t length) {}
    void ExecuteIndirectBuffer(uint32_t ptr, uint32_t length);
    bool ExecutePacket(memory::RingBuffer* reader);
 +  // Executes all packets in `reader`, skipping a dword and continuing when a
@@ -65,7 +70,7 @@ index da8e432..2562d4b 100644
    bool ExecutePacketType0(memory::RingBuffer* reader, uint32_t packet);
    bool ExecutePacketType1(memory::RingBuffer* reader, uint32_t packet);
    bool ExecutePacketType2(memory::RingBuffer* reader, uint32_t packet);
-@@ -239,6 +252,13 @@ class CommandProcessor {
+@@ -239,6 +255,13 @@ class CommandProcessor {
    system::object_ref<system::XHostThread> worker_thread_;
  
    std::queue<std::function<void()>> pending_fns_;
@@ -80,10 +85,25 @@ index da8e432..2562d4b 100644
    // MicroEngine binary from PM4_ME_INIT
    std::vector<uint32_t> me_bin_;
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
-index 96d362b..88f0246 100644
+index 96d362b..1ec8b97 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
 +++ b/include/rex/graphics/d3d12/command_processor.h
-@@ -46,6 +46,30 @@ namespace rex::graphics::d3d12 {
+@@ -14,10 +14,14 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <condition_variable>
+ #include <deque>
++#include <functional>
+ #include <memory>
++#include <mutex>
+ #include <optional>
+ #include <string>
++#include <thread>
+ #include <unordered_map>
+ #include <utility>
+ #include <vector>
+@@ -46,6 +50,30 @@ namespace rex::graphics::d3d12 {
  
  class D3D12CommandProcessor : public CommandProcessor {
   public:
@@ -114,7 +134,15 @@ index 96d362b..88f0246 100644
    explicit D3D12CommandProcessor(D3D12GraphicsSystem* graphics_system,
                                   system::KernelState* kernel_state);
    ~D3D12CommandProcessor();
-@@ -405,8 +429,9 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -218,6 +246,7 @@ class D3D12CommandProcessor : public CommandProcessor {
+   bool IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
+                  IndexBufferInfo* index_buffer_info, bool major_mode_explicit) override;
+   bool IssueCopy() override;
++  void OnHostWroteGuestMemory(uint32_t physical_address, uint32_t length) override;
+ 
+  private:
+   static constexpr uint32_t kQueueFrames = 3;
+@@ -405,8 +434,9 @@ class D3D12CommandProcessor : public CommandProcessor {
    bool InitializeOcclusionQueryResources();
    void ShutdownOcclusionQueryResources();
    bool BeginGuestOcclusionQuery(uint32_t sample_count_address);
@@ -126,7 +154,45 @@ index 96d362b..88f0246 100644
    bool AcquireOcclusionQueryIndex(uint32_t& host_index_out);
    void DisableHostOcclusionQueries();
    uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
-@@ -649,6 +674,33 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -459,6 +489,37 @@ class D3D12CommandProcessor : public CommandProcessor {
+   ID3D12GraphicsCommandList1* command_list_1_ = nullptr;
+   DeferredCommandList deferred_command_list_;
+ 
++  // Replay thread: recorded deferred command lists are translated into the
++  // D3D12 command list and submitted on their own thread, so the command
++  // processor thread can go on with the next commands meanwhile. Submissions
++  // are also ended mid-frame (every kReplayChunkDraws draws at a primary
++  // buffer end) so that work overlaps within a frame. Off with a file named
++  // "replay_thread.off" next to the game.
++  struct ReplayJob {
++    std::unique_ptr<DeferredCommandList> list;
++    ID3D12CommandAllocator* command_allocator = nullptr;
++    uint64_t fence_value = 0;
++    // Set instead of `list`: run on the replay thread in queue order (the
++    // presenter's end of a guest output refresh, see IssueSwap).
++    std::function<void()> closure;
++  };
++  static constexpr uint32_t kReplayChunkDraws = 400;
++  bool replay_thread_enabled_ = false;
++  std::thread replay_thread_;
++  std::mutex replay_mutex_;
++  std::condition_variable replay_cv_;
++  std::condition_variable replay_done_cv_;
++  std::deque<ReplayJob> replay_queue_;
++  std::vector<std::unique_ptr<DeferredCommandList>> replay_free_lists_;
++  bool replay_thread_exit_ = false;
++  uint64_t replay_enqueued_ = 0;
++  uint64_t replay_done_ = 0;
++  uint32_t draws_in_submission_ = 0;
++  void ReplayThreadMain();
++  void DrainReplay();
++  void StartReplayThread();
++  void StopReplayThread();
++
+   bool debug_markers_enabled_ = false;
+ 
+   // Viewport info caching - avoids redundant GetHostViewportInfo recalculation
+@@ -649,6 +710,33 @@ class D3D12CommandProcessor : public CommandProcessor {
    std::unordered_map<uint64_t, ReadbackBuffer> memexport_readback_buffers_;
  
    static constexpr uint32_t kMaxOcclusionQueries = 8192;
@@ -160,7 +226,7 @@ index 96d362b..88f0246 100644
    Microsoft::WRL::ComPtr<ID3D12QueryHeap> occlusion_query_heap_;
    Microsoft::WRL::ComPtr<ID3D12Resource> occlusion_query_readback_;
    uint64_t* occlusion_query_readback_mapping_ = nullptr;
-@@ -659,6 +711,14 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -659,6 +747,14 @@ class D3D12CommandProcessor : public CommandProcessor {
      uint32_t host_index = UINT32_MAX;
      bool valid = false;
    } active_occlusion_query_;
@@ -175,6 +241,272 @@ index 96d362b..88f0246 100644
    struct VertexBufferState {
      uint32_t address = UINT32_MAX;
      uint32_t size = UINT32_MAX;
+diff --git a/include/rex/graphics/d3d12/deferred_command_list.h b/include/rex/graphics/d3d12/deferred_command_list.h
+index 7f1eb7f..fe69ee4 100644
+--- a/include/rex/graphics/d3d12/deferred_command_list.h
++++ b/include/rex/graphics/d3d12/deferred_command_list.h
+@@ -14,6 +14,7 @@
+ #include <algorithm>
+ #include <cstdint>
+ #include <cstring>
++#include <utility>
+ #include <vector>
+ 
+ #include <rex/assert.h>
+@@ -33,6 +34,42 @@ class DeferredCommandList {
+                       size_t initial_size_bytes = 1_MiB);
+ 
+   void Reset();
++  // Exchanges the recorded contents with another list (O(1)), for handing a
++  // finished list to the replay thread.
++  void SwapContents(DeferredCommandList& other) {
++    command_stream_.swap(other.command_stream_);
++    upload_batches_.swap(other.upload_batches_);
++    std::swap(upload_batch_count_, other.upload_batch_count_);
++  }
++  size_t GetCommandStreamSize() const { return command_stream_.size(); }
++
++  // Shared memory uploads gathered in one place in the list: one transition to
++  // COPY_DEST and back around all of them instead of around each one.
++  uint32_t BeginUploadBatch(ID3D12Resource* dst, D3D12_RESOURCE_STATES state_before) {
++    uint32_t index = uint32_t(upload_batch_count_++);
++    if (index >= upload_batches_.size()) {
++      upload_batches_.emplace_back();
++    }
++    UploadBatch& batch = upload_batches_[index];
++    batch.dst = dst;
++    batch.state_before = state_before;
++    batch.copies.clear();
++    *reinterpret_cast<uint32_t*>(WriteCommand(Command::kUploadBatch, sizeof(uint32_t))) = index;
++    return index;
++  }
++  void AddUploadCopy(uint32_t batch_index, ID3D12Resource* src, UINT64 src_offset,
++                     UINT64 dst_offset, UINT64 num_bytes) {
++    std::vector<UploadCopy>& copies = upload_batches_[batch_index].copies;
++    if (!copies.empty()) {
++      UploadCopy& last = copies.back();
++      if (last.src == src && last.src_offset + last.num_bytes == src_offset &&
++          last.dst_offset + last.num_bytes == dst_offset) {
++        last.num_bytes += num_bytes;
++        return;
++      }
++    }
++    copies.push_back({src, src_offset, dst_offset, num_bytes});
++  }
+   void Execute(ID3D12GraphicsCommandList* command_list, ID3D12GraphicsCommandList1* command_list_1);
+ 
+   D3D12_RECT* ClearDepthStencilViewAllocatedRects(D3D12_CPU_DESCRIPTOR_HANDLE depth_stencil_view,
+@@ -494,7 +531,22 @@ class DeferredCommandList {
+     kBeginDebugMarker,
+     kEndDebugMarker,
+     kInsertDebugMarker,
++    kUploadBatch,
++  };
++
++  struct UploadCopy {
++    ID3D12Resource* src;
++    UINT64 src_offset;
++    UINT64 dst_offset;
++    UINT64 num_bytes;
++  };
++  struct UploadBatch {
++    ID3D12Resource* dst = nullptr;
++    D3D12_RESOURCE_STATES state_before = D3D12_RESOURCE_STATE_COMMON;
++    std::vector<UploadCopy> copies;
+   };
++  std::vector<UploadBatch> upload_batches_;
++  size_t upload_batch_count_ = 0;
+ 
+   struct CommandHeader {
+     Command command;
+diff --git a/include/rex/graphics/d3d12/render_target_cache.h b/include/rex/graphics/d3d12/render_target_cache.h
+index cd7693a..ddb21ad 100644
+--- a/include/rex/graphics/d3d12/render_target_cache.h
++++ b/include/rex/graphics/d3d12/render_target_cache.h
+@@ -645,6 +645,16 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
+ 
+   ID3D12PipelineState* GetOrCreateDumpPipeline(DumpPipelineKey key);
+   ID3D12PipelineState* GetOrCreateDirectResolvePipeline(DirectResolvePipelineKey key);
++  // Direct resolve snapshot (see D3D12TextureCache::BeginDirectResolve).
++  // Returns true if a snapshot or a direct write into the consumer texture was
++  // recorded.
++  bool SnapshotDirectResolve(const draw_util::ResolveInfo& resolve_info,
++                             D3D12TextureCache& texture_cache);
++  // Compute copy for snapshots that need red/blue swapped or an exponent bias.
++  bool EnsureDirectResolveCopyPipeline();
++  bool direct_resolve_copy_init_tried_ = false;
++  Microsoft::WRL::ComPtr<ID3D12RootSignature> direct_resolve_copy_root_signature_;
++  Microsoft::WRL::ComPtr<ID3D12PipelineState> direct_resolve_copy_pipeline_;
+   bool TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,
+                               draw_util::ResolveCopyShaderIndex copy_shader,
+                               bool draw_resolution_scaled);
+diff --git a/include/rex/graphics/d3d12/shared_memory.h b/include/rex/graphics/d3d12/shared_memory.h
+index 5100818..27e74c8 100644
+--- a/include/rex/graphics/d3d12/shared_memory.h
++++ b/include/rex/graphics/d3d12/shared_memory.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <memory>
+ #include <utility>
+ #include <vector>
+@@ -64,6 +65,8 @@ class D3D12SharedMemory : public SharedMemory {
+     if (buffer_state_ == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+       buffer_uav_writes_commit_needed_ = true;
+     }
++    // The GPU wrote the buffer: later uploads can't be moved before this point.
++    CloseUploadSegment();
+   }
+ 
+   void WriteRawSRVDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle);
+@@ -80,6 +83,7 @@ class D3D12SharedMemory : public SharedMemory {
+                                         uint32_t length_allocations) override;
+ 
+   bool UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) override;
++  void OnRangesUsed(const std::pair<uint32_t, uint32_t>* ranges, size_t count) override;
+ 
+  private:
+   D3D12CommandProcessor& command_processor_;
+@@ -92,6 +96,27 @@ class D3D12SharedMemory : public SharedMemory {
+   bool buffer_uav_writes_commit_needed_ = false;
+   void CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATES new_state);
+ 
++  // Upload batching: the uploads of a "segment" of the command list (between
++  // GPU writes to the buffer) are copied at one point at the segment's start,
++  // inside a single COPY_DEST transition, instead of a transition to COPY_DEST
++  // and back around every upload (about 1000 pipeline drains per frame). A
++  // page already read or uploaded in the segment starts a new segment, so
++  // every draw still sees exactly the data it would have seen.
++  bool upload_batching_ = true;
++  uint64_t stat_uploads_ = 0, stat_batches_ = 0, stat_barrier_batches_last_ = 0;
++  std::chrono::steady_clock::time_point stat_since_;
++  bool upload_batch_open_ = false;
++  uint32_t upload_batch_index_ = 0;
++  uint64_t upload_batch_submission_ = UINT64_MAX;
++  std::vector<uint64_t> segment_used_pages_;
++  std::vector<uint64_t> segment_uploaded_pages_;
++  std::vector<uint8_t> segment_block_touched_;
++  std::vector<uint32_t> segment_touched_blocks_;
++  void CloseUploadSegment();
++  void MarkSegmentPages(std::vector<uint64_t>& bits, uint32_t page_first, uint32_t page_count);
++  bool SegmentPagesSet(const std::vector<uint64_t>& bits, uint32_t page_first,
++                       uint32_t page_count) const;
++
+   // Non-shader-visible buffer descriptor heap for faster binding (via copying
+   // rather than creation).
+   enum class BufferDescriptorIndex : uint32_t {
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index 4d845c7..accc0e1 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -14,6 +14,8 @@
+ #include <array>
+ #include <functional>
+ #include <memory>
++#include <mutex>
++#include <string>
+ #include <unordered_map>
+ #include <utility>
+ #include <vector>
+@@ -153,6 +155,43 @@ class D3D12TextureCache final : public TextureCache {
+     GetCurrentScaledResolveBuffer().SetUAVBarrierPending();
+   }
+ 
++  // DIRECT RESOLVE. A resolve that copies
++  // a whole plain colour render target into a texture also snapshots the
++  // host render target into a host texture ("snapshot"). When that texture is
++  // loaded next, it is copied from the snapshot instead of being untiled from
++  // the scaled resolve buffer (the untile costs ~3 ms per frame at 2x). The
++  // file "direct_resolve_off" next to the exe turns this off.
++  bool IsDirectResolveEnabled();
++  // Returns the snapshot texture for the destination, in COPY_DEST state
++  // (barrier pushed), registered as the newest contents of the range, or
++  // nullptr.
++  ID3D12Resource* BeginDirectResolve(uint32_t base, uint32_t extent_start, uint32_t extent_length,
++                                     uint32_t width, uint32_t height, uint32_t pitch_div_32,
++                                     xenos::TextureFormat format, xenos::Endian endian,
++                                     D3D12_RESOURCE_STATES state);
++  // memory_written: the resolve wrote the (scaled) memory normally, so it is
++  // no longer stale for any overlapping destination.
++  void InvalidateDirectResolves(uint32_t start, uint32_t length, bool memory_written = true);
++  // Skipping the resolve's write to (scaled) memory: allowed for a destination
++  // once its only reader has taken it straight from direct writes a few times
++  // in a row, and never again after anything read the memory the old way.
++  // On by default; a file "direct_resolve_skip_memory.off" next to the exe
++  // turns it off.
++  bool IsDirectResolveMemorySkipEnabled();
++  bool CanSkipResolveMemory(uint32_t base);
++  // After BeginDirectResolve returned a consumer texture: whether the memory
++  // write was skipped for this resolve.
++  void SetDirectResolveMemorySkipped(uint32_t base, bool skipped);
++  bool LastDirectResolveWroteConsumer() const { return direct_resolve_last_wrote_consumer_; }
++  // Called when a texture is destroyed (it may be a direct resolve target).
++  void ForgetDirectResolveTexture(const void* texture);
++  void CountDirectResolveSkip(uint32_t base, const char* reason);
++  // Per-destination statistics (logged every 10 s with the direct resolve
++  // line): every scaled resolve with a copy.
++  void CountResolveForStats(uint32_t base, uint32_t width, uint32_t height, bool memory_skipped);
++  // Why CanSkipResolveMemory said no (for the statistics).
++  const char* WhyNotSkipResolveMemory(uint32_t base);
++
+   // Returns the ID3D12Resource of the front buffer texture (in
+   // NON_PIXEL_SHADER_RESOURCE state), or nullptr in case of failure, and writes
+   // the description of its SRV. May call LoadTextureData, so the same
+@@ -178,7 +217,52 @@ class D3D12TextureCache final : public TextureCache {
+ 
+   void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) override;
+ 
++  void OnScaledResolveRangeWrittenByCpu(uint32_t address_first, uint32_t address_last) override;
++
+  private:
++  struct DirectResolveSnapshot {
++    uint32_t base = 0, extent_start = 0, extent_end = 0;
++    uint32_t width = 0, height = 0, pitch_div_32 = 0;
++    xenos::TextureFormat format = xenos::TextureFormat::k_8_8_8_8;
++    xenos::Endian endian = xenos::Endian::kNone;
++    DXGI_FORMAT dxgi_format = DXGI_FORMAT_UNKNOWN;
++    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
++    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
++    bool valid = false;
++    uint64_t last_used_frame = 0;
++    // The texture that loaded this snapshot last. Later resolves write
++    // straight into its resource and its load becomes a no-op.
++    Texture* consumer = nullptr;
++    bool written_to_consumer = false;
++    // No-op loads in a row by the consumer; memory skipping needs a few.
++    uint32_t consumer_streak = 0;
++    bool memory_stale = false;   // the last resolve skipped the memory write
++    bool never_skip = false;     // something read this memory the old way
++  };
++  bool direct_resolve_last_wrote_consumer_ = false;
++  const char* direct_resolve_last_miss_reason_ = "";
++  struct DirectResolveDestStats {
++    uint32_t width = 0, height = 0;
++    uint64_t resolves = 0, direct_writes = 0, memory_skipped = 0, not_direct = 0, old_way_loads = 0;
++    std::string not_direct_reason, old_way_reason, no_skip_reason, never_skip_reason;
++  };
++  std::unordered_map<uint32_t, DirectResolveDestStats> direct_resolve_dest_stats_;
++  uint64_t direct_resolve_stat_memory_skips_ = 0, direct_resolve_stat_stale_reads_ = 0;
++  bool TryLoadFromDirectResolve(Texture& texture, bool load_base, bool load_mips);
++  bool TryLoadFromDirectResolveInner(Texture& texture, bool load_base, bool load_mips);
++  void LogDirectResolveStats();
++  std::mutex direct_resolve_mutex_;
++  std::vector<DirectResolveSnapshot> direct_resolves_;
++  std::vector<std::pair<uint64_t, Microsoft::WRL::ComPtr<ID3D12Resource>>> direct_resolve_graveyard_;
++  uint64_t direct_resolve_frame_ = 0;
++  uint64_t direct_resolve_stat_snapshots_ = 0, direct_resolve_stat_loads_ = 0,
++           direct_resolve_stat_scaled_loads_normal_ = 0, direct_resolve_stat_invalidated_ = 0,
++           direct_resolve_stat_cpu_invalidated_ = 0, direct_resolve_stat_direct_writes_ = 0,
++           direct_resolve_stat_noop_loads_ = 0;
++  std::unordered_map<std::string, uint64_t> direct_resolve_stat_skips_;
++  std::unordered_map<std::string, uint64_t> direct_resolve_stat_load_misses_;
++  uint64_t direct_resolve_stat_tick_ = 0;
++
+   static constexpr uint32_t kLoadGuestXThreadsPerGroupLog2 = 2;
+   static constexpr uint32_t kLoadGuestYBlocksPerGroupLog2 = 5;
+ 
 diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
 index 2cf24c4..1e43481 100644
 --- a/include/rex/graphics/flags.h
@@ -199,6 +531,166 @@ index ac6b056..2d1e2eb 100644
  
    // May be called from any thread any number of times, even during recovery
    // from a device loss.
+diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
+index 3bbd52e..8e95a32 100644
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -660,6 +660,26 @@ class RenderTargetCache {
+   // since standard containers use dynamic allocation for elements, though
+   // changes to this throughout a frame are pretty rare.
+   std::map<uint32_t, OwnershipRange> ownership_ranges_;
++  // Update fast path: consecutive draws with the same render target setup and
++  // estimated height, with no ownership change in between (ownership_epoch_ is
++  // bumped by everything that modifies ownership_ranges_ or deletes render
++  // targets), would repeat identical lookups and no-op ownership changes.
++  // File "rt_fast.off" next to the exe disables (checked at BeginFrame).
++  struct UpdateFastKey {
++    uint32_t used_bits;
++    uint32_t pitch_tiles_at_32bpp;
++    uint32_t msaa_samples;
++    uint32_t rts_are_64bpp;
++    uint32_t height_used;
++    uint32_t edram_bases[1 + xenos::kMaxColorRenderTargets];
++    uint32_t resource_formats[1 + xenos::kMaxColorRenderTargets];
++  };
++  uint64_t ownership_epoch_ = 0;
++  uint64_t update_fast_epoch_ = UINT64_MAX;
++  bool update_fast_valid_ = false;
++  bool update_fast_enabled_ = true;
++  uint32_t update_fast_check_ = 0;
++  UpdateFastKey update_fast_key_ = {};
+ 
+   // Render targets actually used by the draw call with the last successful
+   // update. 0 is depth, color starting from 1, nullptr if not bound.
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index d26cd4f..8e4bc0b 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -515,6 +515,20 @@ class TextureCache {
+   // create the texture - if it's nullptr, occasionally a recreation attempt
+   // should be made.
+   Texture* FindOrCreateTexture(TextureKey key);
++  Texture* FindOrCreateTextureUncached(TextureKey key);
++  // Direct-mapped cache of FindOrCreateTexture results by the requested key,
++  // valid for one epoch. The epoch advances whenever a result could change:
++  // bindings reset (every frame, texture destruction, outdated textures) and
++  // resolution-scaled resolve ranges marked or unmarked.
++  struct LookupCacheEntry {
++    TextureKey key;
++    Texture* texture = nullptr;
++    uint64_t epoch = 0;
++  };
++  static constexpr size_t kLookupCacheSize = 4096;
++  std::vector<LookupCacheEntry> lookup_cache_;
++  std::atomic<uint64_t> lookup_cache_epoch_{1};
++  void InvalidateLookupCache() { lookup_cache_epoch_.fetch_add(1, std::memory_order_acq_rel); }
+ 
+   static const LoadShaderInfo& GetLoadShaderInfo(LoadShaderIndex load_shader_index) {
+     assert_true(load_shader_index < kLoadShaderCount);
+@@ -576,6 +590,10 @@ class TextureCache {
+   static void ScaledResolveGlobalWatchCallbackThunk(
+       const std::unique_lock<std::recursive_mutex>& global_lock, void* context,
+       uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu);
++  // Called when the CPU writes to memory (not GPU resolves), before scaled
++  // resolve pages are marked unscaled. Direct resolve snapshots use it.
++  virtual void OnScaledResolveRangeWrittenByCpu(uint32_t /*address_first*/,
++                                                uint32_t /*address_last*/) {}
+   void ScaledResolveGlobalWatchCallback(const std::unique_lock<std::recursive_mutex>& global_lock,
+                                         uint32_t address_first, uint32_t address_last,
+                                         bool invalidated_by_gpu);
+diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
+index 4d85a2b..79d5541 100644
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -10,9 +10,15 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
++#include <atomic>
++#include <condition_variable>
++#include <thread>
+ #include <cstdint>
+ #include <mutex>
+ #include <utility>
++#include <string>
++#include <unordered_map>
+ #include <vector>
+ 
+ #include <rex/memory.h>
+@@ -83,6 +89,19 @@ class SharedMemory {
+   // (to up to the first GPU-written page, as an access violation exception
+   // count optimization) as modified by the CPU, also invalidating GPU-written
+   // pages directly in the range.
++  // True when no page of the range holds valid GPU-side data (nothing to
++  // invalidate and no watch on it). Lock-free: only for the thread that marks
++  // pages valid (the command processor).
++  bool RangeHasNoValidPages(uint32_t start, uint32_t length) const {
++    if (!length || start >= kBufferSize || system_page_flags_valid_.empty()) return false;
++    const uint32_t last = start + std::min(length, kBufferSize - start) - 1;
++    for (uint32_t page = start >> page_size_log2_; page <= (last >> page_size_log2_); ++page) {
++      const uint64_t bit = uint64_t(1) << (page & 63);
++      if ((system_page_flags_valid_[page >> 6] | system_page_flags_valid_and_gpu_written_[page >> 6]) & bit)
++        return false;
++    }
++    return true;
++  }
+   std::pair<uint32_t, uint32_t> MemoryInvalidationCallback(uint32_t physical_address_start,
+                                                            uint32_t length, bool exact_range);
+ 
+@@ -140,6 +159,52 @@ class SharedMemory {
+   virtual bool UploadRanges(
+       const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) = 0;
+ 
++  // Called after RequestRanges succeeded, with the ranges the caller will read.
++  virtual void OnRangesUsed(const std::pair<uint32_t, uint32_t>* ranges, size_t count) {}
++
++ public:
++  // Content check: before uploading a page again, compare a hash of its
++  // current contents with the hash of what was last uploaded to it (only kept
++  // while no CPU write fault and no GPU write happened since); identical pages
++  // are marked valid without an upload. Off with a file named
++  // "upload_check.off" next to the game.
++  bool content_check_ = true;
++  uint64_t content_check_pages_ = 0, content_check_skipped_ = 0, content_check_changed_known_ = 0;
++
++ private:
++  // 64 KB regions where contents changed without a write fault (learned by
++  // the content check); re-verified every frame. Other CPU-written pages are
++  // re-verified every 4th frame (staggered), relying on write faults between.
++  std::vector<uint64_t> volatile_regions_;
++  uint32_t verify_phase_ = 0;
++  bool verify_every_frame_ = false;
++  std::vector<uint64_t> page_hashes_;
++  // Pages whose page_hashes_ entry describes the data in the GPU buffer.
++  // Cleared (under the global critical region) on CPU write faults and GPU
++  // writes.
++  std::vector<uint64_t> page_hash_known_;
++  std::vector<std::pair<uint32_t, uint32_t>> content_check_ranges_;
++  std::vector<uint32_t> content_check_new_pages_;
++  std::vector<uint64_t> content_check_new_hashes_;
++  void FilterUnchangedUploadPages();
++  void CommitUploadedPageHashes();
++
++  // Background re-verification: the pages due for their periodic content check
++  // (see SetSystemPageBlocksValidWithGpuDataWritten) are hashed on a separate
++  // thread instead of being invalidated and re-hashed by the command processor
++  // on their next use; only pages that really changed are invalidated.
++  void VerifierThreadMain();
++  bool background_verify_ = false;
++  std::thread verifier_thread_;
++  std::mutex verifier_mutex_;
++  std::condition_variable verifier_cv_;
++  std::vector<uint32_t> verifier_pages_;
++  bool verifier_busy_ = false;
++  bool verifier_exit_ = false;
++  std::atomic<uint64_t> verifier_checked_{0};
++  std::atomic<uint64_t> verifier_changed_{0};
++  std::atomic<uint64_t> verifier_skipped_frames_{0};
++
+  private:
+   memory::Memory& memory_;
+ 
 diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
 index c8751b7..bda99c1 100644
 --- a/include/rex/input/mnk/mnk_input_driver.h
@@ -225,6 +717,39 @@ index d54df86..09a0939 100644
  };
  
  }  // namespace rex::system
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+index afb4a30..12749a3 100644
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -368,6 +368,15 @@ class Presenter {
+   // For simplicity, may be called repeatedly even if no changes have been made.
+   void SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConfig& new_config);
+ 
++  // Optional executor for the end of RefreshGuestOutput: making the new image
++  // the one to present, and painting it when painting in the guest output
++  // thread. A GPU backend that submits its recorded work from another thread
++  // sets it, so the image is published only once its commands are on the queue,
++  // and the refreshing thread does not have to wait for that. Closures must run
++  // in order; the next RefreshGuestOutput waits until the previous one has
++  // finished. nullptr = finish immediately (default).
++  void SetGuestOutputFinishExecutor(std::function<void(std::function<void()>)> executor);
++
+   void AddUIDrawerFromUIThread(UIDrawer* drawer, size_t z_order);
+   void RemoveUIDrawerFromUIThread(UIDrawer* drawer);
+ 
+@@ -976,6 +985,12 @@ class Presenter {
+   // Accessible only by refreshing, whether the last refresh contained an image
+   // rather than being blank.
+   bool guest_output_active_last_refresh_ = false;
++  // See SetGuestOutputFinishExecutor.
++  void FinishGuestOutputRefresh();
++  std::function<void(std::function<void()>)> guest_output_finish_executor_;
++  std::mutex guest_output_finish_mutex_;
++  std::condition_variable guest_output_finish_cv_;
++  uint32_t guest_output_finish_pending_ = 0;
+ 
+   // Ordered by the Z order, and then by the time of addition.
+   // Note: All the iteration logic involving this Z ordering must be the same as
 diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
 index 68274d2..c4aa730 100644
 --- a/resources/templates/codegen/pch_h.inja
@@ -364,6 +889,154 @@ index 7a711a8..3bae941 100644
  
    if (out_index) {
      *out_index = index;
+diff --git a/src/core/memory_win.cpp b/src/core/memory_win.cpp
+index 9a668e9..4e05549 100644
+--- a/src/core/memory_win.cpp
++++ b/src/core/memory_win.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include "platform_win.h"
++#include <psapi.h>
+ 
+ #include <rex/memory/utils.h>
+ 
+@@ -157,6 +158,22 @@ bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* o
+ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+   access_out = PageAccess::kNoAccess;
+ 
++  // Fast path for a page in memory: QueryWorkingSetEx looks at this one page,
++  // while VirtualQuery also measures how far the protection reaches by walking
++  // the page tables (hundreds of thousands of pages in the guest views). Called
++  // on every write-watch fault. length is then just this page.
++  {
++    PSAPI_WORKING_SET_EX_INFORMATION ws;
++    ws.VirtualAddress = base_address;
++    ws.VirtualAttributes.Flags = 0;
++    if (K32QueryWorkingSetEx(GetCurrentProcess(), &ws, sizeof(ws)) && ws.VirtualAttributes.Valid) {
++      const size_t page = page_size();
++      length = page - (reinterpret_cast<uintptr_t>(base_address) & (page - 1));
++      access_out = ToXeniaProtectFlags(DWORD(ws.VirtualAttributes.Win32Protection));
++      return true;
++    }
++  }
++
+   MEMORY_BASIC_INFORMATION info;
+   ZeroMemory(&info, sizeof(info));
+ 
+diff --git a/src/core/timer_queue.cpp b/src/core/timer_queue.cpp
+index 5cfea05..0e8c7f5 100644
+--- a/src/core/timer_queue.cpp
++++ b/src/core/timer_queue.cpp
+@@ -21,6 +21,12 @@
+ #include <rex/thread.h>
+ #include <rex/thread/timer_queue.h>
+ 
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>
++#endif
++
+ namespace dp = disruptorplus;
+ 
+ namespace rex::thread {
+@@ -64,18 +70,62 @@ class TimerQueue {
+ 
+     set_current_thread_name("rex::thread::TimerQueue");
+ 
++#ifdef _WIN32
++    // Sleep until the next timer is due instead of spin-waiting (the only
++    // timer on Windows is the 1 ms KeTimeStampBundle update, and spinning
++    // between its ticks cost ~20% of a core, taking CPU from the game and from
++    // other programs). A high-resolution waitable timer sleeps accurately to
++    // well under a millisecond; new items are picked up after at most 1 ms.
++    HANDLE sleep_timer =
++        CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                               TIMER_ALL_ACCESS);
++    if (!sleep_timer) {
++      sleep_timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
++    }
++#endif
++
+     while (!stop_token.stop_requested()) {
+-      {
++#ifdef _WIN32
++      if (sleep_timer) {
++        auto now = clock::now();
++        auto wake = now + std::chrono::milliseconds(1);
++        if (!wait_queue_.empty() && wait_queue_.front()->due_ < wake) {
++          wake = wait_queue_.front()->due_;
++        }
++        if (wake > now) {
++          LARGE_INTEGER due_time;
++          // Relative, in 100 ns units (negative = relative).
++          due_time.QuadPart = -std::max<int64_t>(
++              1, std::chrono::duration_cast<std::chrono::nanoseconds>(wake - now).count() / 100);
++          if (SetWaitableTimerEx(sleep_timer, &due_time, 0, nullptr, nullptr, nullptr, 0)) {
++            WaitForSingleObject(sleep_timer, INFINITE);
++          }
++        }
++      }
++#endif
++#ifdef _WIN32
++      // Only touch the ring buffer when something was queued: its wait with a
++      // timeout spin-waits ~150 us before looking at the clock.
++      const bool items_pending = !sleep_timer || published_count_.load(std::memory_order_acquire) !=
++                                                     consumed_count_;
++#else
++      const bool items_pending = true;
++#endif
++      if (items_pending) {
+         // Consume new wait items and add them to sorted wait queue
+         dp::sequence_t available = claim_strategy_.wait_until_published(
+             next_sequence, next_sequence - 1,
+-            wait_queue_.empty() ? clock::time_point::max() : wait_queue_.front()->due_);
++#ifdef _WIN32
++            sleep_timer ? clock::now() :
++#endif
++            (wait_queue_.empty() ? clock::time_point::max() : wait_queue_.front()->due_));
+ 
+         // Check for timeout
+         if (available != next_sequence - 1) {
+           std::forward_list<std::shared_ptr<WaitItem>> wait_items;
+           do {
+             wait_items.push_front(std::move(buffer_[next_sequence]));
++            ++consumed_count_;
+           } while (next_sequence++ != available);
+ 
+           consumed_.publish(available);
+@@ -121,6 +171,11 @@ class TimerQueue {
+         wait_queue_.merge(wait_items, comp);
+       }
+     }
++#ifdef _WIN32
++    if (sleep_timer) {
++      CloseHandle(sleep_timer);
++    }
++#endif
+   }
+ 
+   std::weak_ptr<WaitItem> QueueTimer(std::shared_ptr<WaitItem> wait_item) {
+@@ -132,6 +187,7 @@ class TimerQueue {
+     auto sequence = claim_strategy_.claim_one();
+     buffer_[sequence] = std::move(wait_item);
+     claim_strategy_.publish(sequence);
++    published_count_.fetch_add(1, std::memory_order_release);
+ 
+     return wait_item_weak;
+   }
+@@ -149,6 +205,10 @@ class TimerQueue {
+   // This is a _sorted_ (ascending due_) list of active timers managed by a
+   // dedicated thread
+   std::forward_list<std::shared_ptr<WaitItem>> wait_queue_;
++  // Items published by QueueTimer / consumed by the dispatch thread (only the
++  // dispatch thread touches consumed_count_).
++  std::atomic<uint64_t> published_count_{0};
++  uint64_t consumed_count_ = 0;
+   std::jthread dispatch_thread_;
+ };
+ 
 diff --git a/src/filesystem/devices/host_path_file.cpp b/src/filesystem/devices/host_path_file.cpp
 index 4c57a18..57341ec 100644
 --- a/src/filesystem/devices/host_path_file.cpp
@@ -449,6 +1122,7 @@ index 4c57a18..57341ec 100644
      return X_STATUS_END_OF_FILE;
 diff --git a/src/filesystem/devices/read_cache.h b/src/filesystem/devices/read_cache.h
 new file mode 100644
+index 0000000..a342980
 --- /dev/null
 +++ b/src/filesystem/devices/read_cache.h
 @@ -0,0 +1,101 @@
@@ -634,13 +1308,14 @@ index 0d8f8af..176bac7 100644
      VISIBILITY_INLINES_HIDDEN ON
  )
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index a744375..9f1ec6b 100644
+index a744375..15b6544 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
-@@ -10,10 +10,17 @@
+@@ -10,10 +10,19 @@
   */
  
  #include <algorithm>
++#include <atomic>
 +#include <chrono>
  #include <cinttypes>
  #include <cmath>
@@ -649,13 +1324,14 @@ index a744375..9f1ec6b 100644
 +#include <functional>
 +#include <future>
 +#include <memory>
++#include <mutex>
  #include <string_view>
 +#include <unordered_map>
 +#include <vector>
  
  #include <fmt/format.h>
  
-@@ -37,6 +44,17 @@
+@@ -37,6 +46,17 @@
  
  REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
  
@@ -673,7 +1349,7 @@ index a744375..9f1ec6b 100644
  REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
                      "Refresh page-valid state from GPU-written memory at frame end. "
                      "Disable for minor CPU overhead reduction, but may break memory coherency.")
-@@ -99,6 +117,22 @@ ReadbackResolveMode ParseReadbackResolveMode(std::string_view value) {
+@@ -99,6 +119,77 @@ ReadbackResolveMode ParseReadbackResolveMode(std::string_view value) {
    return ReadbackResolveMode::kDisabled;
  }
  
@@ -689,14 +1365,69 @@ index a744375..9f1ec6b 100644
 +// stream waits, and it reuses its command memory: executing the indirect
 +// buffers from guest memory then read whatever the game had written there
 +// since (packet overflows, broken resolves, crashes).
-+using IbSnapshots = std::unordered_map<uint64_t, std::shared_ptr<std::vector<uint32_t>>>;
++using IbSnapshots = std::unordered_map<uint64_t, std::shared_ptr<uint32_t>>;
++
++// Reused host memory for queued command streams and their IB snapshots.
++// Fresh buffers per stream (several MB per frame in busy scenes: the per-frame
++// command buffers hold every draw) came straight from VirtualAlloc, zero-filled
++// and page-faulted in on the submitting game thread and released with
++// VirtualFree on the command processor thread - tens of thousands of page
++// faults a second. Buffers are kept by power-of-two size class instead; the
++// contents are always fully written before use, so nothing is zeroed.
++class StreamBufferPool {
++ public:
++  static std::shared_ptr<uint32_t> Acquire(size_t dwords) {
++    uint32_t cls = 10;  // 4 KB minimum
++    while ((size_t(1) << cls) < dwords) ++cls;
++    uint32_t* data = nullptr;
++    {
++      State& st = GetState();
++      std::lock_guard<std::mutex> lock(st.mutex);
++      auto& list = st.free[cls];
++      if (!list.empty()) {
++        data = list.back();
++        list.pop_back();
++        st.cached_bytes -= size_t(4) << cls;
++      }
++    }
++    if (!data) data = new uint32_t[size_t(1) << cls];
++    return std::shared_ptr<uint32_t>(data, [cls](uint32_t* d) { Release(d, cls); });
++  }
++
++ private:
++  static constexpr uint32_t kClasses = 40;
++  static constexpr size_t kMaxCachedBytes = size_t(256) << 20;
++  struct State {
++    std::mutex mutex;
++    std::vector<uint32_t*> free[kClasses];
++    size_t cached_bytes = 0;
++  };
++  // Never destroyed: queued streams can release buffers during shutdown.
++  static State& GetState() {
++    static State* state = new State;
++    return *state;
++  }
++  static void Release(uint32_t* data, uint32_t cls) {
++    {
++      State& st = GetState();
++      std::lock_guard<std::mutex> lock(st.mutex);
++      const size_t bytes = size_t(4) << cls;
++      if (st.cached_bytes + bytes <= kMaxCachedBytes) {
++        st.free[cls].push_back(data);
++        st.cached_bytes += bytes;
++        return;
++      }
++    }
++    delete[] data;
++  }
++};
 +thread_local const IbSnapshots* ib_snapshots = nullptr;
 +inline uint64_t IbKey(uint32_t cpu_ptr, uint32_t count) { return (uint64_t(cpu_ptr) << 32) | count; }
 +
  }  // namespace
  
  CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
-@@ -158,15 +192,215 @@ void CommandProcessor::InitializeShaderStorage(const std::filesystem::path& cach
+@@ -158,15 +249,249 @@ void CommandProcessor::InitializeShaderStorage(const std::filesystem::path& cach
                                                 uint32_t title_id, bool blocking) {}
  
  void CommandProcessor::CallInThread(std::function<void()> fn) {
@@ -735,6 +1466,7 @@ index a744375..9f1ec6b 100644
 +std::atomic<uint64_t> stat_regwait_count{0};
 +std::atomic<uint64_t> stat_regwait_us{0};
 +std::atomic<uint64_t> stat_lag_drains{0};
++std::atomic<uint64_t> stat_tiling_syncs{0};
 +
 +// When each queued stream was submitted (by sequence number), to bound how far
 +// the command processor may run behind the game. On machines where the
@@ -764,12 +1496,14 @@ index a744375..9f1ec6b 100644
 +  const uint64_t regwaits = stat_regwait_count.exchange(0);
 +  const uint64_t regwait_us = stat_regwait_us.exchange(0);
 +  const uint64_t drains = stat_lag_drains.exchange(0);
++  const uint64_t tiling_syncs = stat_tiling_syncs.exchange(0);
 +  REXLOG_INFO(
 +      "SUBMIT {:.0f}/s, {:.0f} KB/s | exec {:.1f} ms/s ({:.0f} us each) | waited {:.1f} ms/s "
-+      "({:.0f} us each) | WAIT_REG_MEM {:.0f}/s, {:.1f} ms/s | queue drains (lag) {:.0f}/s",
++      "({:.0f} us each) | WAIT_REG_MEM {:.0f}/s, {:.1f} ms/s | queue drains (lag) {:.0f}/s | "
++      "tiling streams run in step {:.0f}/s",
 +      n / seconds, bytes / 1024.0 / seconds, exec / 1000.0 / seconds, n ? double(exec) / n : 0.0,
 +      wait / 1000.0 / seconds, n ? double(wait) / n : 0.0, regwaits / seconds,
-+      regwait_us / 1000.0 / seconds, drains / seconds);
++      regwait_us / 1000.0 / seconds, drains / seconds, tiling_syncs / seconds);
 +}
 +
 +void MarkDone(uint64_t seq) {
@@ -821,11 +1555,25 @@ index a744375..9f1ec6b 100644
 +    return false;
 +  }
 +  // A spare dword distinguishes the full linear stream from an empty ring.
-+  auto bytes = std::make_shared<std::vector<uint8_t>>(size_bytes + 4);
-+  std::memcpy(bytes->data(), data, size_bytes);
++  const size_t stream_dwords = size_t(size_bytes / 4u) + 1u;
++  std::shared_ptr<uint32_t> bytes = StreamBufferPool::Acquire(stream_dwords);
++  std::memcpy(bytes.get(), data, size_bytes);
++  bytes.get()[stream_dwords - 1] = 0;
 +  // Queued streams: copy the indirect buffers they refer to now (nested ones
 +  // too, as deep as execution goes), while they still hold this stream's data.
 +  std::shared_ptr<IbSnapshots> snapshots;
++  // Predicated tiling (SET_BIN_* packets): D3D replays its tiling command
++  // buffers per tile and recycles them right after the kick (CPU-written
++  // fences), so a queued replay can read a buffer that is already being
++  // rewritten (packet overflows, rainbow garbage, broken resolves writing into
++  // textures, freezes - seen in the Friendly Fire shop). Such streams run in
++  // step with the game, as with no queue. File "tiling_sync.off" disables.
++  bool tiling = false;
++  static const bool tiling_sync = [] {
++    FILE* f = std::fopen("tiling_sync.off", "rb");
++    if (f) std::fclose(f);
++    return f == nullptr;
++  }();
 +  if (!REXCVAR_GET(gpu_async_submit) && REXCVAR_GET(gpu_async_depth) > 0) {
 +    snapshots = std::make_shared<IbSnapshots>();
 +    size_t total = 0;
@@ -844,6 +1592,14 @@ index a744375..9f1ec6b 100644
 +        } else {
 +          const uint32_t opcode = (header >> 8) & 0x7Fu;
 +          const uint32_t count = ((header >> 16) & 0x3FFFu) + 1u;
++          // Real tiling selects a different bin per tile; a constant select
++          // (sent every frame in single-pass rendering too) is not tiling.
++          if ((opcode == PM4_SET_BIN_SELECT || opcode == PM4_SET_BIN_SELECT_LO) && i + 1 < n) {
++            static std::atomic<uint32_t> last_select{0xFFFFFFFFu};
++            const uint32_t select = rex::byte_swap(dwords[i + 1]);
++            const uint32_t previous = last_select.exchange(select, std::memory_order_relaxed);
++            if (previous != 0xFFFFFFFFu && previous != select) tiling = true;
++          }
 +          if ((opcode == PM4_INDIRECT_BUFFER || opcode == PM4_INDIRECT_BUFFER_PFD) && count >= 2 &&
 +              i + 2 < n && depth < 5) {
 +            const uint32_t ptr = GpuToCpu(CpuToGpu(rex::byte_swap(dwords[i + 1])));
@@ -851,25 +1607,26 @@ index a744375..9f1ec6b 100644
 +            const uint64_t key = IbKey(ptr, length);
 +            if (length && total + length * 4u < (64u << 20) && !snapshots->count(key)) {
 +              const uint32_t* src = SelectGuestDataSource(ptr, length);
-+              auto copy = std::make_shared<std::vector<uint32_t>>(length + 1u, 0u);
-+              std::memcpy(copy->data(), src, length * sizeof(uint32_t));
++              std::shared_ptr<uint32_t> copy = StreamBufferPool::Acquire(length + 1u);
++              std::memcpy(copy.get(), src, length * sizeof(uint32_t));
++              copy.get()[length] = 0;
 +              total += length * 4u;
 +              (*snapshots)[key] = copy;
-+              scan(copy->data(), length, depth + 1);
++              scan(copy.get(), length, depth + 1);
 +            }
 +          }
 +          i += count + 1u;
 +        }
 +      }
 +    };
-+    scan(reinterpret_cast<const uint32_t*>(bytes->data()), size_bytes / 4u, 0);
++    scan(bytes.get(), size_bytes / 4u, 0);
 +  }
 +  const uint64_t seq = submit_seq.fetch_add(1) + 1;
 +  const uint64_t submit_start = NowUs();
 +  enqueue_us[seq % kEnqueueSlots].store(submit_start, std::memory_order_relaxed);
-+  CallInThread([this, bytes, size_bytes, seq, snapshots]() {
++  CallInThread([this, bytes, stream_dwords, size_bytes, seq, snapshots]() {
 +    const uint64_t exec_start = NowUs();
-+    memory::RingBuffer reader(bytes->data(), bytes->size());
++    memory::RingBuffer reader(reinterpret_cast<uint8_t*>(bytes.get()), stream_dwords * 4u);
 +    reader.set_write_offset(size_bytes);
 +    ib_snapshots = snapshots.get();
 +    ExecutePacketsResync(&reader);
@@ -888,7 +1645,15 @@ index a744375..9f1ec6b 100644
 +  // executed, so the submitting thread prepares the next stream while the
 +  // command processor executes this one.
 +  const int32_t depth = std::max(REXCVAR_GET(gpu_async_depth), 0);
-+  const uint64_t need = seq > uint64_t(depth) ? seq - uint64_t(depth) : 0;
++  uint64_t need = seq > uint64_t(depth) ? seq - uint64_t(depth) : 0;
++  // D3D sends the SET_BIN packets and the replayed tiling buffers as separate
++  // streams, so everything in the 100 ms after a SET_BIN stream runs in step.
++  static std::atomic<uint64_t> tiling_until_us{0};
++  if (tiling) tiling_until_us.store(NowUs() + 100000, std::memory_order_relaxed);
++  if (tiling_sync && NowUs() < tiling_until_us.load(std::memory_order_relaxed)) {
++    need = seq;
++    stat_tiling_syncs.fetch_add(1, std::memory_order_relaxed);
++  }
 +  bool ok = need == 0 || WaitDone(need, worker_running_);
 +  // Bound the lag in time as well: if the oldest stream still queued has
 +  // waited too long, let the command processor catch up completely.
@@ -914,7 +1679,7 @@ index a744375..9f1ec6b 100644
  void CommandProcessor::InvalidateGpuMemory() {}
  
  ReadbackResolveMode CommandProcessor::GetReadbackResolveMode(
-@@ -204,9 +438,16 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -204,9 +529,16 @@ void CommandProcessor::WorkerThreadMain() {
    }
  
    while (worker_running_) {
@@ -934,7 +1699,7 @@ index a744375..9f1ec6b 100644
        fn();
      }
  
-@@ -229,10 +470,10 @@ void CommandProcessor::WorkerThreadMain() {
+@@ -229,10 +561,10 @@ void CommandProcessor::WorkerThreadMain() {
          rex::thread::MaybeYield();
          loop_count++;
          write_ptr_index = write_ptr_index_.load();
@@ -947,7 +1712,15 @@ index a744375..9f1ec6b 100644
          continue;
        }
      }
-@@ -341,6 +582,12 @@ uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
+@@ -246,6 +578,7 @@ void CommandProcessor::WorkerThreadMain() {
+     if (read_ptr_writeback_ptr_) {
+       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
+                                        read_ptr_index_);
++      OnHostWroteGuestMemory(read_ptr_writeback_ptr_, 4);
+     }
+ 
+     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
+@@ -341,6 +674,12 @@ uint32_t CommandProcessor::ReadRegisterValue(uint32_t index) const {
  }
  
  void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -960,7 +1733,7 @@ index a744375..9f1ec6b 100644
    RegisterFile& regs = *register_file_;
    if (index >= RegisterFile::kRegisterCount) {
      auto [it, inserted] = extended_register_values_.insert_or_assign(index, value);
-@@ -355,9 +602,8 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+@@ -355,9 +694,8 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
  
    // Volatile for the WAIT_REG_MEM loop.
    const_cast<volatile uint32_t&>(regs.values[index]) = value;
@@ -972,7 +1745,15 @@ index a744375..9f1ec6b 100644
  
    // Scratch register writeback.
    if (index >= XE_GPU_REG_SCRATCH_REG0 && index <= XE_GPU_REG_SCRATCH_REG7) {
-@@ -619,14 +865,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+@@ -367,6 +705,7 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+       uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
+       uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
+       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
++      OnHostWroteGuestMemory(mem_addr, 4);
+     }
+   } else {
+     switch (index) {
+@@ -619,14 +958,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
    memory::RingBuffer reader(memory_->TranslatePhysical(primary_buffer_ptr_), primary_buffer_size_);
    reader.set_read_offset(read_index * sizeof(uint32_t));
    reader.set_write_offset(write_index * sizeof(uint32_t));
@@ -988,7 +1769,7 @@ index a744375..9f1ec6b 100644
  
    OnPrimaryBufferEnd();
  
-@@ -636,30 +875,91 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
+@@ -636,30 +968,91 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
  void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
    SCOPE_profile_cpu_f("gpu");
  
@@ -1003,7 +1784,7 @@ index a744375..9f1ec6b 100644
 +  uint8_t* ib_data = nullptr;
 +  if (ib_snapshots) {
 +    auto it = ib_snapshots->find(IbKey(ptr, count));
-+    if (it != ib_snapshots->end()) ib_data = reinterpret_cast<uint8_t*>(it->second->data());
++    if (it != ib_snapshots->end()) ib_data = reinterpret_cast<uint8_t*>(it->second.get());
 +  }
 +  if (!ib_data) {
 +    ib_data = reinterpret_cast<uint8_t*>(const_cast<uint32_t*>(SelectGuestDataSource(ptr, count)));
@@ -1092,7 +1873,7 @@ index a744375..9f1ec6b 100644
  }
  
  bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
-@@ -702,6 +1002,12 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+@@ -702,6 +1095,12 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
  
    uint32_t base_index = (packet & 0x7FFF);
    uint32_t write_one_reg = (packet >> 15) & 0x1;
@@ -1105,7 +1886,7 @@ index a744375..9f1ec6b 100644
    for (uint32_t m = 0; m < count; m++) {
      uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
      uint32_t target_index = write_one_reg ? base_index : base_index + m;
-@@ -880,9 +1186,10 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
+@@ -880,9 +1279,10 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
      }
  
      default:
@@ -1117,7 +1898,7 @@ index a744375..9f1ec6b 100644
        break;
    }
  
-@@ -989,8 +1296,30 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -989,8 +1389,30 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
  
    bool is_memory = (wait_info & 0x10) != 0;
  
@@ -1148,7 +1929,7 @@ index a744375..9f1ec6b 100644
      uint32_t value = 0;
      if (is_memory) {
        value =
-@@ -1033,8 +1362,11 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1033,8 +1455,11 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
        // Wait.
        if (wait >= 0x100) {
          PrepareForWait();
@@ -1162,7 +1943,7 @@ index a744375..9f1ec6b 100644
            rex::thread::MaybeYield();
          } else {
            rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
-@@ -1052,6 +1384,13 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
+@@ -1052,6 +1477,13 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
      }
    } while (!matched);
  
@@ -1176,7 +1957,60 @@ index a744375..9f1ec6b 100644
    return true;
  }
  
-@@ -1469,6 +1808,29 @@ bool CommandProcessor::ExecutePacketType3_SET_CONSTANT2(memory::RingBuffer* read
+@@ -1095,6 +1527,7 @@ bool CommandProcessor::ExecutePacketType3_REG_TO_MEM(memory::RingBuffer* reader,
+   mem_addr &= ~0x3;
+   reg_val = GpuSwap(reg_val, endianness);
+   memory::store(memory_->TranslatePhysical(mem_addr), reg_val);
++  OnHostWroteGuestMemory(mem_addr, 4);
+ 
+   return true;
+ }
+@@ -1109,6 +1542,7 @@ bool CommandProcessor::ExecutePacketType3_MEM_WRITE(memory::RingBuffer* reader,
+     auto addr = write_addr & ~0x3;
+     write_data = GpuSwap(write_data, endianness);
+     memory::store(memory_->TranslatePhysical(addr), write_data);
++    OnHostWroteGuestMemory(addr, 4);
+     write_addr += 4;
+   }
+ 
+@@ -1170,6 +1604,7 @@ bool CommandProcessor::ExecutePacketType3_COND_WRITE(memory::RingBuffer* reader,
+       write_reg_addr &= ~0x3;
+       write_data = GpuSwap(write_data, endianness);
+       memory::store(memory_->TranslatePhysical(write_reg_addr), write_data);
++      OnHostWroteGuestMemory(write_reg_addr, 4);
+     } else {
+       // Register.
+       WriteRegister(write_reg_addr, write_data);
+@@ -1215,6 +1650,7 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
+   address &= ~0x3;
+   data_value = GpuSwap(data_value, endianness);
+   memory::store(memory_->TranslatePhysical(address), data_value);
++  OnHostWroteGuestMemory(address, 4);
+   return true;
+ }
+ 
+@@ -1243,6 +1679,11 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_EXT(memory::RingBuffer* re
+   assert_true(endianness == xenos::Endian::k8in16);
+   memory::copy_and_swap_16_unaligned(memory_->TranslatePhysical(address), extents,
+                                      rex::countof(extents));
++  // Not invalidating the GPU-side copy of this memory: the extents are only
++  // read by the CPU (the D3D runtime's tiling logic), never by the GPU, and
++  // the game issues one per draw - invalidating the page each time cost
++  // ~180,000 invalidations per second (and re-uploads of the surrounding
++  // command buffer memory) in Saints Row.
+   return true;
+ }
+ 
+@@ -1277,6 +1718,8 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* re
+       pSampleCounts->ZPass_A = fake_sample_count;
+       pSampleCounts->Total_A = fake_sample_count;
+     }
++    OnHostWroteGuestMemory(register_file_->values[XE_GPU_REG_RB_SAMPLE_COUNT_ADDR],
++                           uint32_t(sizeof(xe_gpu_depth_sample_counts)));
+   }
+ 
+   return true;
+@@ -1469,6 +1912,29 @@ bool CommandProcessor::ExecutePacketType3_SET_CONSTANT2(memory::RingBuffer* read
    return true;
  }
  
@@ -1206,7 +2040,7 @@ index a744375..9f1ec6b 100644
  bool CommandProcessor::ExecutePacketType3_LOAD_ALU_CONSTANT(memory::RingBuffer* reader,
                                                              uint32_t packet, uint32_t count) {
    // load constants from memory
-@@ -1479,7 +1841,7 @@ bool CommandProcessor::ExecutePacketType3_LOAD_ALU_CONSTANT(memory::RingBuffer*
+@@ -1479,7 +1945,7 @@ bool CommandProcessor::ExecutePacketType3_LOAD_ALU_CONSTANT(memory::RingBuffer*
    uint32_t size_dwords = reader->ReadAndSwap<uint32_t>();
    size_dwords &= 0xFFF;
    uint32_t type = (offset_type >> 16) & 0xFF;
@@ -1215,7 +2049,7 @@ index a744375..9f1ec6b 100644
    switch (type) {
      case 0:  // ALU
        WriteALURangeFromMem(index, xlat_address, size_dwords);
-@@ -1525,7 +1887,8 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD(memory::RingBuffer* reader, ui
+@@ -1525,7 +1991,8 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD(memory::RingBuffer* reader, ui
    assert_true(start == 0);
  
    auto shader =
@@ -1226,7 +2060,7 @@ index a744375..9f1ec6b 100644
      case xenos::ShaderType::kVertex:
        active_vertex_shader_ = shader;
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..7f7841e 100644
+index 19874a5..a337930 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -10,6 +10,8 @@
@@ -1316,7 +2150,97 @@ index 19874a5..7f7841e 100644
    return true;
  }
  
-@@ -256,6 +237,8 @@ void D3D12CommandProcessor::PushUAVBarrier(ID3D12Resource* resource) {
+@@ -235,6 +216,89 @@ bool D3D12CommandProcessor::PushTransitionBarrier(ID3D12Resource* resource,
+   return true;
+ }
+ 
++// The presenter's end of a guest output refresh runs on the replay thread (set
++// on the first swap while the replay thread is on; file "swap_drain" next to the
++// exe = the old wait at every swap).
++static std::atomic<bool> g_swap_finish_on_replay_thread{false};
++
++void D3D12CommandProcessor::StartReplayThread() {
++  replay_thread_enabled_ = true;
++  if (FILE* f = std::fopen("replay_thread.off", "rb")) {
++    std::fclose(f);
++    replay_thread_enabled_ = false;
++  }
++  REXLOG_INFO("D3D12 replay thread {}", replay_thread_enabled_ ? "on" : "off");
++  if (!replay_thread_enabled_) {
++    return;
++  }
++  replay_thread_exit_ = false;
++  replay_thread_ = std::thread([this]() { ReplayThreadMain(); });
++}
++
++void D3D12CommandProcessor::StopReplayThread() {
++  if (!replay_thread_.joinable()) {
++    return;
++  }
++  if (g_swap_finish_on_replay_thread.exchange(false) && graphics_system_ &&
++      graphics_system_->presenter()) {
++    graphics_system_->presenter()->SetGuestOutputFinishExecutor(nullptr);
++  }
++  DrainReplay();
++  {
++    std::lock_guard<std::mutex> lock(replay_mutex_);
++    replay_thread_exit_ = true;
++  }
++  replay_cv_.notify_all();
++  replay_thread_.join();
++  replay_thread_enabled_ = false;
++  replay_free_lists_.clear();
++}
++
++void D3D12CommandProcessor::DrainReplay() {
++  if (!replay_thread_enabled_) {
++    return;
++  }
++  std::unique_lock<std::mutex> lock(replay_mutex_);
++  replay_done_cv_.wait(lock, [this]() { return replay_done_ >= replay_enqueued_; });
++}
++
++void D3D12CommandProcessor::ReplayThreadMain() {
++#ifdef _WIN32
++  SetThreadDescription(GetCurrentThread(), L"GPU Replay");
++#endif
++  ID3D12CommandQueue* direct_queue = GetD3D12Provider().GetDirectQueue();
++  for (;;) {
++    ReplayJob job;
++    {
++      std::unique_lock<std::mutex> lock(replay_mutex_);
++      replay_cv_.wait(lock, [this]() { return replay_thread_exit_ || !replay_queue_.empty(); });
++      if (replay_queue_.empty()) {
++        return;
++      }
++      job = std::move(replay_queue_.front());
++      replay_queue_.pop_front();
++    }
++    if (!job.list) {
++      if (job.closure) job.closure();
++      continue;
++    }
++    job.command_allocator->Reset();
++    command_list_->Reset(job.command_allocator, nullptr);
++    job.list->Execute(command_list_, command_list_1_);
++    command_list_->Close();
++    ID3D12CommandList* execute_command_lists[] = {command_list_};
++    direct_queue->ExecuteCommandLists(1, execute_command_lists);
++    direct_queue->Signal(submission_fence_, job.fence_value);
++    job.list->Reset();
++    {
++      std::lock_guard<std::mutex> lock(replay_mutex_);
++      replay_free_lists_.push_back(std::move(job.list));
++      replay_done_ = job.fence_value;
++    }
++    replay_done_cv_.notify_all();
++  }
++}
++
+ void D3D12CommandProcessor::PushAliasingBarrier(ID3D12Resource* old_resource,
+                                                 ID3D12Resource* new_resource) {
+   D3D12_RESOURCE_BARRIER barrier;
+@@ -256,6 +320,8 @@ void D3D12CommandProcessor::PushUAVBarrier(ID3D12Resource* resource) {
  void D3D12CommandProcessor::SubmitBarriers() {
    UINT barrier_count = UINT(barriers_.size());
    if (barrier_count != 0) {
@@ -1325,7 +2249,15 @@ index 19874a5..7f7841e 100644
      deferred_command_list_.D3DResourceBarrier(barrier_count, barriers_.data());
      barriers_.clear();
    }
-@@ -1502,9 +1485,11 @@ bool D3D12CommandProcessor::SetupContext() {
+@@ -905,6 +971,7 @@ bool D3D12CommandProcessor::SetupContext() {
+   command_list_->Close();
+   // Optional - added in Creators Update (SDK 10.0.15063.0).
+   command_list_->QueryInterface(IID_PPV_ARGS(&command_list_1_));
++  StartReplayThread();
+ 
+   bindless_resources_used_ = REXCVAR_GET(d3d12_bindless) &&
+                              provider.GetResourceBindingTier() >= D3D12_RESOURCE_BINDING_TIER_2;
+@@ -1502,9 +1569,11 @@ bool D3D12CommandProcessor::SetupContext() {
      // kNullTexture2DArray.
      D3D12_SHADER_RESOURCE_VIEW_DESC null_srv_desc;
      null_srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1339,7 +2271,7 @@ index 19874a5..7f7841e 100644
      null_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
      null_srv_desc.Texture2DArray.MostDetailedMip = 0;
      null_srv_desc.Texture2DArray.MipLevels = 1;
-@@ -1619,6 +1604,7 @@ bool D3D12CommandProcessor::SetupContext() {
+@@ -1619,6 +1688,7 @@ bool D3D12CommandProcessor::SetupContext() {
    }
  
    occlusion_query_resources_available_ = InitializeOcclusionQueryResources();
@@ -1347,7 +2279,15 @@ index 19874a5..7f7841e 100644
  
    // Just not to expose uninitialized memory.
    std::memset(&system_constants_, 0, sizeof(system_constants_));
-@@ -1893,6 +1879,8 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -1628,6 +1698,7 @@ bool D3D12CommandProcessor::SetupContext() {
+ 
+ void D3D12CommandProcessor::ShutdownContext() {
+   AwaitAllQueueOperationsCompletion();
++  StopReplayThread();
+   InvalidateAllVertexBufferResidency();
+   ShutdownOcclusionQueryResources();
+ 
+@@ -1893,6 +1964,8 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
  
  void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
@@ -1356,32 +2296,62 @@ index 19874a5..7f7841e 100644
    SCOPE_profile_cpu_f("gpu");
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
-@@ -2257,10 +2245,14 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -1904,6 +1977,26 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+     REXGPU_ERROR("IssueSwap: presenter is null");
+     return;
+   }
++  if (replay_thread_enabled_ && !g_swap_finish_on_replay_thread.load()) {
++    static const bool swap_drain = [] {
++      FILE* f = std::fopen("swap_drain", "rb");
++      if (f) std::fclose(f);
++      return f != nullptr;
++    }();
++    if (!swap_drain) {
++      presenter->SetGuestOutputFinishExecutor([this](std::function<void()> fn) {
++        {
++          std::lock_guard<std::mutex> lock(replay_mutex_);
++          ReplayJob job;
++          job.closure = std::move(fn);
++          replay_queue_.push_back(std::move(job));
++        }
++        replay_cv_.notify_one();
++      });
++      g_swap_finish_on_replay_thread.store(true);
++      REXLOG_INFO("Swap: presenting from the replay thread (no wait at each swap)");
++    }
++  }
+ 
+   // In case the swap command is the only one in the frame.
+   if (!BeginSubmission(true)) {
+@@ -2257,10 +2350,15 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
  }
  
  void D3D12CommandProcessor::OnPrimaryBufferEnd() {
+-  if (REXCVAR_GET(d3d12_submit_on_primary_buffer_end) && submission_open_ &&
+-      CanEndSubmissionImmediately()) {
 +  PollGpuTimer();
 +  // Keep an occlusion query that spans command buffers within one submission,
 +  // since a host query cannot cross submissions.
-   if (REXCVAR_GET(d3d12_submit_on_primary_buffer_end) && submission_open_ &&
--      CanEndSubmissionImmediately()) {
-+      !active_occlusion_query_.valid && CanEndSubmissionImmediately()) {
++  if ((REXCVAR_GET(d3d12_submit_on_primary_buffer_end) ||
++       (replay_thread_enabled_ && draws_in_submission_ >= kReplayChunkDraws)) &&
++      submission_open_ && !active_occlusion_query_.valid && CanEndSubmissionImmediately()) {
      EndSubmission(false);
    }
 +  PollOcclusionQueries();
  }
  
  Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
-@@ -2271,6 +2263,8 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
+@@ -2271,6 +2369,9 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_
  bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
 +  GpuTimerSwitch(kGpuTimeDraw);
 +  ++gpu_count_draws_;
++  ++draws_in_submission_;
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
-@@ -2398,8 +2392,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2398,8 +2499,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
            bound_depth_and_color_render_target_formats, &pipeline_handle, &root_signature)) {
      return false;
    }
@@ -1393,7 +2363,7 @@ index 19874a5..7f7841e 100644
      return true;
    }
  
-@@ -2871,6 +2866,7 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+@@ -2871,6 +2973,7 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
  }
  
  bool D3D12CommandProcessor::IssueCopy() {
@@ -1401,7 +2371,21 @@ index 19874a5..7f7841e 100644
  #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
    SCOPE_profile_cpu_f("gpu");
  #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
-@@ -3302,6 +3298,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -3112,6 +3215,7 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
+     // submission, but just in case of a failure, or queue operations being done
+     // outside of a submission, await explicitly.
+     if (queue_operations_done_since_submission_signal_) {
++      DrainReplay();
+       UINT64 fence_value = ++queue_operations_since_submission_fence_last_;
+       ID3D12CommandQueue* direct_queue = GetD3D12Provider().GetDirectQueue();
+       if (SUCCEEDED(direct_queue->Signal(queue_operations_since_submission_fence_, fence_value) &&
+@@ -3297,11 +3401,13 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
+ 
+   if (!submission_open_) {
+     submission_open_ = true;
++    draws_in_submission_ = 0;
+ 
+     // Start a new deferred command list - will submit it to the real one in the
      // end of the submission (when async pipeline creation requests are
      // fulfilled).
      deferred_command_list_.Reset();
@@ -1409,7 +2393,7 @@ index 19874a5..7f7841e 100644
  
      // Reset cached state of the command list.
      ff_viewport_update_needed_ = true;
-@@ -3413,6 +3410,7 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
+@@ -3413,6 +3519,7 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
      // Submit barriers now because resources with the queued barriers may be
      // destroyed between frames.
      SubmitBarriers();
@@ -1417,7 +2401,71 @@ index 19874a5..7f7841e 100644
  
      ID3D12CommandQueue* direct_queue = provider.GetDirectQueue();
  
-@@ -4802,6 +4800,122 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
+@@ -3423,12 +3530,44 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
+     // happens between Xenia submissions.
+     ID3D12CommandAllocator* command_allocator =
+         command_allocator_writable_first_->command_allocator;
+-    command_allocator->Reset();
+-    command_list_->Reset(command_allocator, nullptr);
+-    deferred_command_list_.Execute(command_list_, command_list_1_);
+-    command_list_->Close();
+-    ID3D12CommandList* execute_command_lists[] = {command_list_};
+-    direct_queue->ExecuteCommandLists(1, execute_command_lists);
++    const bool replay_async = replay_thread_enabled_;
++    if (replay_async) {
++      // Hand the recorded list to the replay thread, which resets the
++      // allocator, translates, submits and signals the submission fence.
++      std::unique_ptr<DeferredCommandList> job_list;
++      {
++        std::lock_guard<std::mutex> lock(replay_mutex_);
++        if (!replay_free_lists_.empty()) {
++          job_list = std::move(replay_free_lists_.back());
++          replay_free_lists_.pop_back();
++        }
++      }
++      if (!job_list) {
++        job_list = std::make_unique<DeferredCommandList>(*this);
++      }
++      job_list->Reset();
++      job_list->SwapContents(deferred_command_list_);
++      {
++        std::lock_guard<std::mutex> lock(replay_mutex_);
++        replay_queue_.push_back({std::move(job_list), command_allocator, submission_current_});
++        replay_enqueued_ = submission_current_;
++      }
++      replay_cv_.notify_one();
++      if (is_swap && !g_swap_finish_on_replay_thread) {
++        // The presenter uses the queue right after this - everything recorded
++        // so far must be on the queue before. (With the finish executor the
++        // presenter's publish + paint run on the replay thread after this job
++        // instead, and this thread goes on with the next frame.)
++        DrainReplay();
++      }
++    } else {
++      command_allocator->Reset();
++      command_list_->Reset(command_allocator, nullptr);
++      deferred_command_list_.Execute(command_list_, command_list_1_);
++      command_list_->Close();
++      ID3D12CommandList* execute_command_lists[] = {command_list_};
++      direct_queue->ExecuteCommandLists(1, execute_command_lists);
++    }
+     command_allocator_writable_first_->last_usage_submission = submission_current_;
+     if (command_allocator_submitted_last_) {
+       command_allocator_submitted_last_->next = command_allocator_writable_first_;
+@@ -3442,7 +3581,11 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
+       command_allocator_writable_last_ = nullptr;
+     }
+ 
+-    direct_queue->Signal(submission_fence_, submission_current_++);
++    if (replay_async) {
++      ++submission_current_;
++    } else {
++      direct_queue->Signal(submission_fence_, submission_current_++);
++    }
+ 
+     submission_open_ = false;
+ 
+@@ -4802,6 +4945,122 @@ ID3D12Resource* D3D12CommandProcessor::RequestReadbackBuffer(uint32_t size) {
    return readback_buffer_;
  }
  
@@ -1540,7 +2588,7 @@ index 19874a5..7f7841e 100644
  bool D3D12CommandProcessor::InitializeOcclusionQueryResources() {
    active_occlusion_query_ = {};
    occlusion_query_cursor_ = 0;
-@@ -4890,6 +5004,7 @@ void D3D12CommandProcessor::DisableHostOcclusionQueries() {
+@@ -4890,6 +5149,7 @@ void D3D12CommandProcessor::DisableHostOcclusionQueries() {
    }
    occlusion_query_cursor_ = 0;
    occlusion_query_resources_available_ = false;
@@ -1548,7 +2596,7 @@ index 19874a5..7f7841e 100644
  }
  
  bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_address) {
-@@ -4897,9 +5012,13 @@ bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_addre
+@@ -4897,9 +5157,13 @@ bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_addre
      return false;
    }
    if (active_occlusion_query_.valid) {
@@ -1565,7 +2613,7 @@ index 19874a5..7f7841e 100644
      return false;
    }
  
-@@ -4919,43 +5038,49 @@ bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_addre
+@@ -4919,43 +5183,49 @@ bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_addre
    return true;
  }
  
@@ -1636,11 +2684,677 @@ index 19874a5..7f7841e 100644
  }
  
  uint64_t D3D12CommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
+@@ -4971,11 +5241,27 @@ uint64_t D3D12CommandProcessor::NormalizeOcclusionSamples(uint64_t samples) cons
+   return (samples + (scale >> 1)) / scale;
+ }
+ 
++void D3D12CommandProcessor::OnHostWroteGuestMemory(uint32_t physical_address, uint32_t length) {
++  // Fence / event writes land on pages the GPU side usually holds nothing of:
++  // then there is nothing to invalidate and no watch (a watch needs valid
++  // pages), so skip the global lock and the watch callbacks. ~2000 writes/s.
++  if (shared_memory_ && length &&
++      shared_memory_->RangeHasNoValidPages(physical_address & 0x1FFFFFFF, length)) {
++    return;
++  }
++  if (shared_memory_ && length) {
++    shared_memory_->MemoryInvalidationCallback(physical_address & 0x1FFFFFFF, length, true);
++  }
++}
++
+ void D3D12CommandProcessor::WriteGuestOcclusionResult(
+     xenos::xe_gpu_depth_sample_counts* sample_counts, uint64_t samples) {
+   if (!sample_counts) {
+     return;
+   }
++  OnHostWroteGuestMemory(
++      uint32_t(reinterpret_cast<uint8_t*>(sample_counts) - memory_->TranslatePhysical(0)),
++      uint32_t(sizeof(*sample_counts)));
+   uint32_t clamped = samples > uint64_t(UINT32_MAX) ? UINT32_MAX : uint32_t(samples);
+   sample_counts->Total_A = clamped;
+   sample_counts->Total_B = 0;
+diff --git a/src/graphics/d3d12/deferred_command_list.cpp b/src/graphics/d3d12/deferred_command_list.cpp
+index e6d6277..9c11c46 100644
+--- a/src/graphics/d3d12/deferred_command_list.cpp
++++ b/src/graphics/d3d12/deferred_command_list.cpp
+@@ -26,6 +26,7 @@ DeferredCommandList::DeferredCommandList(const D3D12CommandProcessor& command_pr
+ 
+ void DeferredCommandList::Reset() {
+   command_stream_.clear();
++  upload_batch_count_ = 0;
+ }
+ 
+ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+@@ -268,6 +269,30 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+             reinterpret_cast<const uint8_t*>(stream) + sizeof(DebugMarkerHeader));
+         command_list->SetMarker(1, label_name, static_cast<UINT>(args.label_length + 1));
+       } break;
++      case Command::kUploadBatch: {
++        const UploadBatch& batch = upload_batches_[*reinterpret_cast<const uint32_t*>(stream)];
++        if (!batch.copies.empty()) {
++          D3D12_RESOURCE_BARRIER barrier = {};
++          barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++          barrier.Transition.pResource = batch.dst;
++          barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++          const bool transition = batch.state_before != D3D12_RESOURCE_STATE_COPY_DEST;
++          if (transition) {
++            barrier.Transition.StateBefore = batch.state_before;
++            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++            command_list->ResourceBarrier(1, &barrier);
++          }
++          for (const UploadCopy& copy : batch.copies) {
++            command_list->CopyBufferRegion(batch.dst, copy.dst_offset, copy.src, copy.src_offset,
++                                           copy.num_bytes);
++          }
++          if (transition) {
++            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++            barrier.Transition.StateAfter = batch.state_before;
++            command_list->ResourceBarrier(1, &barrier);
++          }
++        }
++      } break;
+       default:
+         assert_unhandled_case(header.command);
+         break;
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index dd321a5..9f6fa79 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -9,9 +9,13 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstdio>
++#include <chrono>
++#include <atomic>
+ #include "thirdparty/dxbc/DXBCChecksum.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <array>
+ #include <cstdint>
+ #include <cstring>
+@@ -19,7 +23,11 @@
+ #include <memory>
+ #include <string>
+ #include <tuple>
++#include <unordered_map>
+ #include <utility>
++#include <vector>
++
++#include <fmt/format.h>
+ 
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+@@ -1184,7 +1192,31 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+ 
+   // Copying.
+   bool copied = false;
+-  if (resolve_info.copy_dest_extent_length) {
++  // Direct resolve with the memory write skipped: the only reader of this
++  // destination takes the render target straight into its texture.
++  bool memory_write_skipped = false;
++  if (resolve_info.copy_dest_extent_length && draw_resolution_scaled &&
++      GetPath() == Path::kHostRenderTargets && texture_cache.IsDirectResolveMemorySkipEnabled() &&
++      texture_cache.CanSkipResolveMemory(resolve_info.copy_dest_base)) {
++    texture_cache.InvalidateDirectResolves(resolve_info.copy_dest_extent_start,
++                                           resolve_info.copy_dest_extent_length, false);
++    if (SnapshotDirectResolve(resolve_info, texture_cache) &&
++        texture_cache.LastDirectResolveWroteConsumer()) {
++      texture_cache.SetDirectResolveMemorySkipped(resolve_info.copy_dest_base, true);
++      texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
++                                        resolve_info.copy_dest_extent_length);
++      written_address_out = resolve_info.copy_dest_extent_start;
++      written_length_out = resolve_info.copy_dest_extent_length;
++      copied = true;
++      memory_write_skipped = true;
++    }
++  }
++  if (resolve_info.copy_dest_extent_length && draw_resolution_scaled) {
++    texture_cache.CountResolveForStats(resolve_info.copy_dest_base,
++                                       resolve_info.coordinate_info.width_div_8 * 8,
++                                       resolve_info.height_div_8 * 8, memory_write_skipped);
++  }
++  if (resolve_info.copy_dest_extent_length && !memory_write_skipped) {
+     draw_util::ResolveCopyShaderConstants copy_shader_constants;
+     uint32_t copy_group_count_x, copy_group_count_y;
+     draw_util::ResolveCopyShaderIndex copy_shader =
+@@ -1309,6 +1341,16 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+             shared_memory.MarkUAVWritesCommitNeeded();
+           }
+ 
++          // Direct resolve: older snapshots of this memory are out of date;
++          // take a new one if this resolve qualifies.
++          if (draw_resolution_scaled) {
++            texture_cache.InvalidateDirectResolves(resolve_info.copy_dest_extent_start,
++                                                   resolve_info.copy_dest_extent_length);
++            if (GetPath() == Path::kHostRenderTargets &&
++                SnapshotDirectResolve(resolve_info, texture_cache)) {
++              texture_cache.SetDirectResolveMemorySkipped(resolve_info.copy_dest_base, false);
++            }
++          }
+           // Invalidate textures and mark the range as scaled if needed.
+           texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                             resolve_info.copy_dest_extent_length);
+@@ -1322,7 +1364,7 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+             "memory region");
+       }
+     }
+-  } else {
++  } else if (!memory_write_skipped) {
+     copied = true;
+   }
+ 
+@@ -3798,7 +3840,61 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
+     const std::vector<Transfer>* render_target_transfers,
+     const uint64_t* render_target_resolve_clear_values,
+     const Transfer::Rectangle* resolve_clear_rectangle) {
++  // Nothing to do (almost every draw): return before the GPU timer scope and
++  // the per-call bookkeeping below.
++  if (!(render_target_resolve_clear_values && resolve_clear_rectangle)) {
++    bool any_transfers = false;
++    if (render_target_transfers) {
++      for (uint32_t i = 0; i < render_target_count; ++i) {
++        if (!render_target_transfers[i].empty()) {
++          any_transfers = true;
++          break;
++        }
++      }
++    }
++    if (!any_transfers) {
++      return;
++    }
++  }
++  D3D12CommandProcessor::GpuTimeScope gpu_time_scope(command_processor_, D3D12CommandProcessor::kGpuTimeRenderTargetTransfer);
+   assert_true(GetPath() == Path::kHostRenderTargets);
++  // Drop transfers that reinterpret colour as depth or depth as colour -
++  // Saints Row reuses EDRAM base 0 for the main colour buffer and the shadow
++  // map every frame and overwrites the result anyway; saves ~0.6 ms GPU per
++  // frame at 2x resolution. On by default; the file "keep_cross_transfers"
++  // next to the exe (checked twice a second) restores the normal behaviour.
++  std::vector<Transfer> filtered_transfers[1 + xenos::kMaxColorRenderTargets];
++  {
++    static bool skip_cross = true;
++    static uint64_t skip_cross_tick = 0;
++    static uint64_t skipped = 0;
++    const uint64_t now = GetTickCount64();
++    if (now - skip_cross_tick >= 500) {
++      skip_cross_tick = now;
++      const bool enabled = GetFileAttributesW(L"keep_cross_transfers") == INVALID_FILE_ATTRIBUTES;
++      if (enabled != skip_cross) {
++        skip_cross = enabled;
++        REXLOG_INFO("RT transfers between colour and depth: {}",
++                    enabled ? "skipped (default)" : "normal (keep_cross_transfers file)");
++      }
++    }
++    if (skip_cross && render_target_transfers &&
++        render_target_count <= 1 + xenos::kMaxColorRenderTargets) {
++      for (uint32_t i = 0; i < render_target_count; ++i) {
++        filtered_transfers[i].clear();
++        if (!render_targets[i]) continue;
++        const bool dest_depth = render_targets[i]->key().is_depth != 0;
++        for (const Transfer& transfer : render_target_transfers[i]) {
++          if (transfer.source && (transfer.source->key().is_depth != 0) != dest_depth) {
++            ++skipped;
++            continue;
++          }
++          filtered_transfers[i].push_back(transfer);
++        }
++      }
++      render_target_transfers = filtered_transfers;
++    }
++  }
+ 
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+   ID3D12Device* device = provider.GetDevice();
+@@ -5533,6 +5629,209 @@ ID3D12PipelineState* D3D12RenderTargetCache::GetOrCreateDirectResolvePipeline(
+   return pipeline;
+ }
+ 
++// DIRECT RESOLVE snapshot: for a resolve
++// of a whole plain 8888 colour render target into an 8888 texture, also copy
++// the host render target region into a host texture owned by the texture
++// cache, so loading that texture later is one GPU copy instead of an untile
++// from the scaled resolve buffer. The normal resolve still runs (memory stays
++// correct for anything else reading it).
++static const char kDirectResolveCopyCS[] = R"(
++Texture2D<float4> source : register(t0);
++RWTexture2D<unorm float4> dest : register(u0);
++cbuffer constants : register(b0) {
++  uint2 origin;
++  uint2 size;
++  uint swap_red_blue;
++  float scale;
++};
++[numthreads(8, 8, 1)]
++void main(uint3 id : SV_DispatchThreadID) {
++  if (id.x >= size.x || id.y >= size.y) return;
++  float4 color = source.Load(int3(origin + id.xy, 0));
++  if (swap_red_blue) color = color.bgra;
++  dest[id.xy] = saturate(color * scale);
++}
++)";
++
++bool D3D12RenderTargetCache::EnsureDirectResolveCopyPipeline() {
++  if (direct_resolve_copy_pipeline_) return true;
++  if (direct_resolve_copy_init_tried_) return false;
++  direct_resolve_copy_init_tried_ = true;
++  typedef HRESULT(WINAPI * D3DCompileFunction)(
++      LPCVOID src_data, SIZE_T src_data_size, LPCSTR source_name, const D3D_SHADER_MACRO* defines,
++      ID3DInclude* include, LPCSTR entry_point, LPCSTR target, UINT flags1, UINT flags2,
++      ID3DBlob** code, ID3DBlob** error_msgs);
++  HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
++  auto compile = compiler ? reinterpret_cast<D3DCompileFunction>(GetProcAddress(compiler, "D3DCompile"))
++                          : nullptr;
++  if (!compile) {
++    REXLOG_ERROR("Direct resolve: D3DCompile not available");
++    return false;
++  }
++  ID3DBlob* code = nullptr;
++  ID3DBlob* errors = nullptr;
++  HRESULT hr = compile(kDirectResolveCopyCS, sizeof(kDirectResolveCopyCS) - 1, "direct_resolve_copy",
++                       nullptr, nullptr, "main", "cs_5_1", 1u << 15, 0, &code, &errors);
++  if (errors) {
++    REXLOG_ERROR("Direct resolve: shader compiler output: {}",
++                 std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()));
++    errors->Release();
++  }
++  if (FAILED(hr) || !code) {
++    REXLOG_ERROR("Direct resolve: failed to compile the copy shader (0x{:08X})", uint32_t(hr));
++    return false;
++  }
++  D3D12_DESCRIPTOR_RANGE ranges[2] = {};
++  ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++  ranges[0].NumDescriptors = 1;
++  ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
++  ranges[1].NumDescriptors = 1;
++  D3D12_ROOT_PARAMETER parameters[3] = {};
++  parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++  parameters[0].Constants.Num32BitValues = 6;
++  parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++  for (int i = 0; i < 2; ++i) {
++    parameters[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++    parameters[1 + i].DescriptorTable.NumDescriptorRanges = 1;
++    parameters[1 + i].DescriptorTable.pDescriptorRanges = &ranges[i];
++    parameters[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++  }
++  D3D12_ROOT_SIGNATURE_DESC desc = {};
++  desc.NumParameters = 3;
++  desc.pParameters = parameters;
++  direct_resolve_copy_root_signature_.Attach(
++      ui::d3d12::util::CreateRootSignature(command_processor_.GetD3D12Provider(), desc));
++  if (!direct_resolve_copy_root_signature_) {
++    code->Release();
++    REXLOG_ERROR("Direct resolve: failed to create the copy root signature");
++    return false;
++  }
++  D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
++  pso.pRootSignature = direct_resolve_copy_root_signature_.Get();
++  pso.CS.pShaderBytecode = code->GetBufferPointer();
++  pso.CS.BytecodeLength = code->GetBufferSize();
++  hr = command_processor_.GetD3D12Provider().GetDevice()->CreateComputePipelineState(
++      &pso, IID_PPV_ARGS(&direct_resolve_copy_pipeline_));
++  code->Release();
++  if (FAILED(hr)) {
++    REXLOG_ERROR("Direct resolve: failed to create the copy pipeline (0x{:08X})", uint32_t(hr));
++    return false;
++  }
++  REXLOG_INFO("Direct resolve: copy shader ready");
++  return true;
++}
++
++bool D3D12RenderTargetCache::SnapshotDirectResolve(const draw_util::ResolveInfo& resolve_info,
++                                                   D3D12TextureCache& texture_cache) {
++  if (!texture_cache.IsDirectResolveEnabled()) return false;
++  auto skip = [&](const char* reason) {
++    texture_cache.CountDirectResolveSkip(resolve_info.copy_dest_base, reason);
++    return false;
++  };
++  if (resolve_info.IsCopyingDepth()) return skip("depth");
++  const draw_util::ResolveEdramInfo edram = resolve_info.color_edram_info;
++  if (edram.msaa_samples != xenos::MsaaSamples::k1X) return skip("msaa");
++  if (xenos::ColorRenderTargetFormat(edram.format) != xenos::ColorRenderTargetFormat::k_8_8_8_8) {
++    return skip("rt format not 8888");
++  }
++  const reg::RB_COPY_DEST_INFO dest_info = resolve_info.copy_dest_info;
++  if (dest_info.copy_dest_format != xenos::ColorFormat::k_8_8_8_8) return skip("dest format not 8888");
++  if (uint32_t(dest_info.copy_dest_number) != 0) return skip("dest number format");
++  if (dest_info.copy_dest_array || dest_info.copy_dest_slice) return skip("3d dest");
++  if (uint32_t(dest_info.copy_dest_endian) > 3) return skip("128-bit endian");
++  const draw_util::ResolveCopyDestCoordinateInfo dest_coords = resolve_info.copy_dest_coordinate_info;
++  if (dest_coords.offset_x_div_8 || dest_coords.offset_y_div_8) return skip("dest offset");
++  if (resolve_info.copy_dest_base & 0xFFF) return skip("dest not page aligned");
++
++  uint32_t dump_base, dump_row_length_used, dump_rows, dump_pitch;
++  resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
++  std::vector<ResolveCopyDumpRectangle> rectangles;
++  GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch, rectangles);
++  if (rectangles.size() != 1) return skip(rectangles.empty() ? "no render target" : "several render targets");
++  auto& rt = *static_cast<D3D12RenderTarget*>(rectangles[0].render_target);
++  const RenderTargetKey rt_key = rt.key();
++  if (rt_key.is_depth || rt_key.msaa_samples != xenos::MsaaSamples::k1X ||
++      xenos::ColorRenderTargetFormat(rt_key.resource_format) != xenos::ColorRenderTargetFormat::k_8_8_8_8) {
++    return skip("render target not plain 8888");
++  }
++  if (rt_key.pitch_tiles_at_32bpp != edram.pitch_tiles) return skip("pitch differs");
++  const uint32_t pitch = edram.pitch_tiles;
++  const uint32_t delta = (edram.base_tiles - rt_key.base_tiles) & (xenos::kEdramTileCount - 1);
++  const uint32_t scale_x = draw_resolution_scale_x(), scale_y = draw_resolution_scale_y();
++  const uint32_t x0 = ((delta % pitch) * xenos::kEdramTileWidthSamples +
++                       resolve_info.coordinate_info.edram_offset_x_div_8 * 8) * scale_x;
++  const uint32_t y0 = ((delta / pitch) * xenos::kEdramTileHeightSamples +
++                       resolve_info.coordinate_info.edram_offset_y_div_8 * 8) * scale_y;
++  const uint32_t width = resolve_info.coordinate_info.width_div_8 * 8;
++  const uint32_t height = resolve_info.height_div_8 * 8;
++  const D3D12_RESOURCE_DESC rt_desc = rt.resource()->GetDesc();
++  if (x0 + width * scale_x > rt_desc.Width || y0 + height * scale_y > rt_desc.Height) {
++    return skip("outside the render target");
++  }
++  const bool needs_shader = dest_info.copy_dest_swap || dest_info.copy_dest_exp_bias;
++  if (needs_shader && !EnsureDirectResolveCopyPipeline()) return skip("no copy shader");
++  ID3D12Resource* snapshot = texture_cache.BeginDirectResolve(
++      resolve_info.copy_dest_base, resolve_info.copy_dest_extent_start,
++      resolve_info.copy_dest_extent_length, width, height, dest_coords.pitch_aligned_div_32,
++      xenos::TextureFormat::k_8_8_8_8, xenos::Endian(uint32_t(dest_info.copy_dest_endian)),
++      needs_shader ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COPY_DEST);
++  if (!snapshot) return skip("no snapshot texture");
++  if (needs_shader) {
++    // Swap red/blue and/or apply 2^exp_bias like the resolve copy shader does.
++    ui::d3d12::util::DescriptorCpuGpuHandlePair descriptors[2];
++    if (!command_processor_.RequestOneUseSingleViewDescriptors(2, descriptors)) {
++      texture_cache.InvalidateDirectResolves(resolve_info.copy_dest_extent_start,
++                                             resolve_info.copy_dest_extent_length);
++      return skip("no descriptors");
++    }
++    ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
++    device->CopyDescriptorsSimple(1, descriptors[0].first, rt.descriptor_srv().GetHandle(),
++                                  D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc = {};
++    uav_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++    uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
++    device->CreateUnorderedAccessView(snapshot, nullptr, &uav_desc, descriptors[1].first);
++    command_processor_.PushTransitionBarrier(
++        rt.resource(), rt.SetResourceState(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
++        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    struct {
++      uint32_t origin_x, origin_y, size_x, size_y, swap;
++      float scale;
++    } constants = {x0, y0, width * scale_x, height * scale_y, uint32_t(dest_info.copy_dest_swap),
++                   std::ldexp(1.0f, int(dest_info.copy_dest_exp_bias))};
++    DeferredCommandList& list = command_processor_.GetDeferredCommandList();
++    command_processor_.SetExternalPipeline(direct_resolve_copy_pipeline_.Get());
++    list.D3DSetComputeRootSignature(direct_resolve_copy_root_signature_.Get());
++    list.D3DSetComputeRoot32BitConstants(0, 6, &constants, 0);
++    list.D3DSetComputeRootDescriptorTable(1, descriptors[0].second);
++    list.D3DSetComputeRootDescriptorTable(2, descriptors[1].second);
++    command_processor_.SubmitBarriers();
++    list.D3DDispatch((constants.size_x + 7) / 8, (constants.size_y + 7) / 8, 1);
++    return true;
++  }
++  command_processor_.PushTransitionBarrier(
++      rt.resource(), rt.SetResourceState(D3D12_RESOURCE_STATE_COPY_SOURCE),
++      D3D12_RESOURCE_STATE_COPY_SOURCE);
++  command_processor_.SubmitBarriers();
++  D3D12_TEXTURE_COPY_LOCATION location_source, location_dest;
++  location_source.pResource = rt.resource();
++  location_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  location_source.SubresourceIndex = 0;
++  location_dest.pResource = snapshot;
++  location_dest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  location_dest.SubresourceIndex = 0;
++  D3D12_BOX box;
++  box.left = x0;
++  box.top = y0;
++  box.front = 0;
++  box.right = x0 + width * scale_x;
++  box.bottom = y0 + height * scale_y;
++  box.back = 1;
++  command_processor_.GetDeferredCommandList().D3DCopyTextureRegion(&location_dest, 0, 0, 0,
++                                                                   &location_source, &box);
++  return true;
++}
++
+ bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,
+                                                     draw_util::ResolveCopyShaderIndex copy_shader,
+                                                     bool draw_resolution_scaled) {
+diff --git a/src/graphics/d3d12/shared_memory.cpp b/src/graphics/d3d12/shared_memory.cpp
+index a5c97a0..7148cbd 100644
+--- a/src/graphics/d3d12/shared_memory.cpp
++++ b/src/graphics/d3d12/shared_memory.cpp
+@@ -13,6 +13,8 @@
+ #include <utility>
+ #include <vector>
+ 
++#include <chrono>
++#include <cstdio>
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+@@ -36,6 +38,13 @@ D3D12SharedMemory::~D3D12SharedMemory() {
+ }
+ 
+ bool D3D12SharedMemory::Initialize() {
++  // Upload batching is on unless a file named upload_batching.off is next to
++  // the game.
++  if (FILE* f = std::fopen("upload_batching.off", "rb")) {
++    std::fclose(f);
++    upload_batching_ = false;
++  }
++  REXLOG_INFO("Shared memory: upload batching {}", upload_batching_ ? "on" : "off");
+   InitializeCommon();
+ 
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+@@ -163,6 +172,7 @@ void D3D12SharedMemory::Shutdown(bool from_destructor) {
+ 
+ void D3D12SharedMemory::ClearCache() {
+   SharedMemory::ClearCache();
++  CloseUploadSegment();
+ 
+   upload_buffer_pool_->ClearCache();
+ }
+@@ -177,6 +187,11 @@ void D3D12SharedMemory::BeginSubmission() {
+ }
+ 
+ void D3D12SharedMemory::CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATES new_state) {
++  if (new_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
++      new_state == D3D12_RESOURCE_STATE_COPY_DEST) {
++    // GPU writes to the buffer follow: a new upload segment after them.
++    CloseUploadSegment();
++  }
+   if (buffer_state_ == new_state) {
+     if (new_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && buffer_uav_writes_commit_needed_) {
+       command_processor_.PushUAVBarrier(buffer_);
+@@ -301,11 +316,168 @@ bool D3D12SharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocat
+   return true;
+ }
+ 
++void D3D12SharedMemory::CloseUploadSegment() {
++  upload_batch_open_ = false;
++  for (uint32_t block : segment_touched_blocks_) {
++    segment_used_pages_[block] = 0;
++    segment_uploaded_pages_[block] = 0;
++    segment_block_touched_[block] = 0;
++  }
++  segment_touched_blocks_.clear();
++}
++
++void D3D12SharedMemory::MarkSegmentPages(std::vector<uint64_t>& bits, uint32_t page_first,
++                                         uint32_t page_count) {
++  if (!page_count) {
++    return;
++  }
++  uint32_t page_last = page_first + page_count - 1;
++  for (uint32_t block = page_first >> 6; block <= (page_last >> 6) && block < bits.size();
++       ++block) {
++    uint64_t mask = UINT64_MAX;
++    if (block == (page_first >> 6)) {
++      mask &= ~((uint64_t(1) << (page_first & 63)) - 1);
++    }
++    if (block == (page_last >> 6) && (page_last & 63) != 63) {
++      mask &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
++    }
++    bits[block] |= mask;
++    if (!segment_block_touched_[block]) {
++      segment_block_touched_[block] = 1;
++      segment_touched_blocks_.push_back(block);
++    }
++  }
++}
++
++bool D3D12SharedMemory::SegmentPagesSet(const std::vector<uint64_t>& bits, uint32_t page_first,
++                                        uint32_t page_count) const {
++  if (!page_count) {
++    return false;
++  }
++  uint32_t page_last = page_first + page_count - 1;
++  for (uint32_t block = page_first >> 6; block <= (page_last >> 6) && block < bits.size();
++       ++block) {
++    uint64_t mask = UINT64_MAX;
++    if (block == (page_first >> 6)) {
++      mask &= ~((uint64_t(1) << (page_first & 63)) - 1);
++    }
++    if (block == (page_last >> 6) && (page_last & 63) != 63) {
++      mask &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
++    }
++    if (bits[block] & mask) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void D3D12SharedMemory::OnRangesUsed(const std::pair<uint32_t, uint32_t>* ranges, size_t count) {
++  if (!upload_batching_ || !upload_batch_open_) {
++    // Nothing moved before this point in the current segment yet: reads before
++    // the segment's first upload are before its batch anyway.
++    return;
++  }
++  for (size_t i = 0; i < count; ++i) {
++    if (!ranges[i].second) {
++      continue;
++    }
++    uint32_t page_first = ranges[i].first >> page_size_log2();
++    uint32_t page_last = (ranges[i].first + ranges[i].second - 1) >> page_size_log2();
++    MarkSegmentPages(segment_used_pages_, page_first, page_last - page_first + 1);
++  }
++}
++
+ bool D3D12SharedMemory::UploadRanges(
+     const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
++  D3D12CommandProcessor::GpuTimeScope gpu_time_scope(command_processor_, D3D12CommandProcessor::kGpuTimeUpload);
+   if (upload_page_ranges.empty()) {
+     return true;
+   }
++  ++command_processor_.gpu_count_uploads_;
++  ++stat_uploads_;
++  {
++    // Every 10 s: how many uploads went into how many batches (each batch is
++    // one COPY_DEST transition pair; before batching each upload was one).
++    auto now = std::chrono::steady_clock::now();
++    if (stat_since_ == std::chrono::steady_clock::time_point()) {
++      stat_since_ = now;
++      stat_barrier_batches_last_ = command_processor_.gpu_count_barrier_batches_;
++    }
++    double seconds = std::chrono::duration<double>(now - stat_since_).count();
++    if (seconds >= 10.0) {
++      uint64_t barrier_batches = command_processor_.gpu_count_barrier_batches_;
++      REXLOG_INFO(
++          "UPLOADS {:.0f}/s in {:.0f} batches/s (batching {}) | barrier batches {:.0f}/s | content "
++          "check {}: {:.0f} pages/s checked, {:.0f}/s unchanged (not uploaded)",
++          stat_uploads_ / seconds, stat_batches_ / seconds, upload_batching_ ? "on" : "off",
++          (barrier_batches - stat_barrier_batches_last_) / seconds, content_check_ ? "on" : "off",
++          content_check_pages_ / seconds, content_check_skipped_ / seconds);
++      content_check_pages_ = content_check_skipped_ = content_check_changed_known_ = 0;
++      stat_uploads_ = stat_batches_ = 0;
++      stat_barrier_batches_last_ = barrier_batches;
++      stat_since_ = now;
++    }
++  }
++  for (auto& r : upload_page_ranges) command_processor_.gpu_count_upload_bytes_ += uint64_t(r.second) << page_size_log2();
++  if (upload_batching_) {
++    if (segment_used_pages_.empty()) {
++      size_t blocks = size_t(((kBufferSize >> page_size_log2()) + 63) >> 6);
++      segment_used_pages_.assign(blocks, 0);
++      segment_uploaded_pages_.assign(blocks, 0);
++      segment_block_touched_.assign(blocks, 0);
++    }
++    uint64_t submission = command_processor_.GetCurrentSubmission();
++    if (submission != upload_batch_submission_) {
++      // A new deferred command list: the old batch index is gone.
++      CloseUploadSegment();
++      upload_batch_submission_ = submission;
++    }
++    auto& command_list = command_processor_.GetDeferredCommandList();
++    for (auto upload_range : upload_page_ranges) {
++      uint32_t upload_range_start = upload_range.first;
++      uint32_t upload_range_length = upload_range.second;
++      if (upload_batch_open_ &&
++          (SegmentPagesSet(segment_used_pages_, upload_range_start, upload_range_length) ||
++           SegmentPagesSet(segment_uploaded_pages_, upload_range_start, upload_range_length))) {
++        // Read (or uploaded) earlier in this segment: moving this upload before
++        // those reads would change what they see. Start a new segment here.
++        CloseUploadSegment();
++      }
++      if (!upload_batch_open_) {
++        // Pending barriers go into the list first, so the batch knows the
++        // buffer's state at its place in the list.
++        command_processor_.SubmitBarriers();
++        upload_batch_index_ = command_list.BeginUploadBatch(buffer_, buffer_state_);
++        ++stat_batches_;
++        upload_batch_open_ = true;
++      }
++      MarkSegmentPages(segment_uploaded_pages_, upload_range_start, upload_range_length);
++      while (upload_range_length != 0) {
++        ID3D12Resource* upload_buffer;
++        size_t upload_buffer_offset, upload_buffer_size;
++        uint8_t* upload_buffer_mapping = upload_buffer_pool_->RequestPartial(
++            command_processor_.GetCurrentSubmission(), upload_range_length << page_size_log2(),
++            size_t(1) << page_size_log2(), &upload_buffer, &upload_buffer_offset,
++            &upload_buffer_size, nullptr);
++        if (upload_buffer_mapping == nullptr) {
++          REXGPU_ERROR("Shared memory: Failed to get an upload buffer");
++          return false;
++        }
++        MakeRangeValid(upload_range_start << page_size_log2(), uint32_t(upload_buffer_size), false);
++        std::memcpy(upload_buffer_mapping,
++                    memory().TranslatePhysical(upload_range_start << page_size_log2()),
++                    upload_buffer_size);
++        command_list.AddUploadCopy(upload_batch_index_, upload_buffer,
++                                   UINT64(upload_buffer_offset),
++                                   UINT64(upload_range_start) << page_size_log2(),
++                                   UINT64(upload_buffer_size));
++        uint32_t upload_buffer_pages = uint32_t(upload_buffer_size >> page_size_log2());
++        upload_range_start += upload_buffer_pages;
++        upload_range_length -= upload_buffer_pages;
++      }
++    }
++    return true;
++  }
+   CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
+   command_processor_.SubmitBarriers();
+   auto& command_list = command_processor_.GetDeferredCommandList();
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
-index 2be0e8e..d15176c 100644
+index 2be0e8e..8b31058 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
 +++ b/src/graphics/d3d12/texture_cache.cpp
-@@ -611,9 +611,11 @@ bool D3D12TextureCache::Initialize() {
+@@ -11,11 +11,17 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <cfloat>
+ #include <cstddef>
+ #include <cstring>
+ #include <memory>
++#include <string>
++#include <unordered_map>
+ #include <utility>
++#include <vector>
++
++#include <fmt/format.h>
+ 
+ #include <rex/assert.h>
+ #include <rex/dbg.h>
+@@ -611,9 +617,11 @@ bool D3D12TextureCache::Initialize() {
    null_srv_descriptor_heap_start_ = null_srv_descriptor_heap_->GetCPUDescriptorHandleForHeapStart();
    D3D12_SHADER_RESOURCE_VIEW_DESC null_srv_desc;
    null_srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1654,14 +3368,474 @@ index 2be0e8e..d15176c 100644
    null_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
    null_srv_desc.Texture2DArray.MostDetailedMip = 0;
    null_srv_desc.Texture2DArray.MipLevels = 1;
-@@ -1559,6 +1561,7 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+@@ -672,6 +680,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
+ }
+ 
+ void D3D12TextureCache::BeginFrame() {
++  ++direct_resolve_frame_;
+   TextureCache::BeginFrame();
+ 
+   std::memset(unsupported_format_features_used_, 0, sizeof(unsupported_format_features_used_));
+@@ -1424,6 +1433,7 @@ D3D12TextureCache::D3D12Texture::D3D12Texture(D3D12TextureCache& texture_cache,
+ 
+ D3D12TextureCache::D3D12Texture::~D3D12Texture() {
+   auto& d3d12_texture_cache = static_cast<D3D12TextureCache&>(texture_cache());
++  d3d12_texture_cache.ForgetDirectResolveTexture(this);
+   for (const auto& descriptor_pair : srv_descriptors_) {
+     d3d12_texture_cache.ReleaseTextureDescriptor(descriptor_pair.second);
+   }
+@@ -1544,6 +1554,11 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+   // Untiling through a buffer instead of using unordered access because copying
+   // is not done that often.
+   desc.Flags = D3D12_RESOURCE_FLAG_NONE;
++  // Direct resolve may write resolved render targets straight into these.
++  if (key.scaled_resolve && key.dimension == xenos::DataDimension::k2DOrStacked &&
++      !key.mip_max_level) {
++    desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++  }
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+   ID3D12Device* device = provider.GetDevice();
+   // Assuming untiling will be the next operation.
+@@ -1559,8 +1574,13 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
  
  bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
                                                                bool load_mips) {
 +  D3D12CommandProcessor::GpuTimeScope gpu_time_scope(command_processor_, D3D12CommandProcessor::kGpuTimeTextureLoad);
    D3D12Texture& d3d12_texture = static_cast<D3D12Texture&>(texture);
    TextureKey texture_key = d3d12_texture.key();
++  LogDirectResolveStats();
++  if (TryLoadFromDirectResolve(texture, load_base, load_mips)) {
++    return true;
++  }
  
+   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
+   ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
+@@ -1935,6 +1955,425 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+   return true;
+ }
+ 
++// ---------------------------------------------------------------------------
++// DIRECT RESOLVE. See the header.
++
++bool D3D12TextureCache::IsDirectResolveEnabled() {
++  if (!IsDrawResolutionScaled()) return false;
++  static std::atomic<int> enabled{-1};
++  static std::atomic<uint64_t> next_check{0};
++  const uint64_t now = GetTickCount64();
++  if (enabled.load(std::memory_order_relaxed) < 0 || now >= next_check.load(std::memory_order_relaxed)) {
++    next_check.store(now + 500, std::memory_order_relaxed);
++    const bool on = GetFileAttributesW(L"direct_resolve_off") == INVALID_FILE_ATTRIBUTES;
++    const int old = enabled.exchange(on ? 1 : 0);
++    if (old != (on ? 1 : 0)) {
++      REXLOG_INFO("Direct resolve {}", on ? "ON" : "OFF (direct_resolve_off file)");
++      if (!on) {
++        std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++        for (auto& e : direct_resolves_) e.valid = false;
++      }
++    }
++  }
++  return enabled.load(std::memory_order_relaxed) == 1;
++}
++
++void D3D12TextureCache::CountDirectResolveSkip(uint32_t base, const char* reason) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  ++direct_resolve_stat_skips_[reason];
++  auto& d = direct_resolve_dest_stats_[base];
++  ++d.not_direct;
++  d.not_direct_reason = reason;
++}
++
++void D3D12TextureCache::CountResolveForStats(uint32_t base, uint32_t width, uint32_t height,
++                                             bool memory_skipped) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  auto& d = direct_resolve_dest_stats_[base];
++  d.width = width;
++  d.height = height;
++  ++d.resolves;
++  if (memory_skipped) ++d.memory_skipped;
++}
++
++const char* D3D12TextureCache::WhyNotSkipResolveMemory(uint32_t base) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  for (const auto& e : direct_resolves_) {
++    if (e.base == base) {
++      if (!e.consumer) return "no consumer texture";
++      if (e.never_skip) return "read the old way";
++      if (e.consumer_streak < 3) return "streak < 3";
++      return "ok";
++    }
++  }
++  return "no entry";
++}
++
++void D3D12TextureCache::InvalidateDirectResolves(uint32_t start, uint32_t length,
++                                                 bool memory_written) {
++  const uint32_t end = start + length;
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  for (auto& e : direct_resolves_) {
++    if (memory_written && start < e.extent_end && e.extent_start < end) e.memory_stale = false;
++    if (e.valid && start < e.extent_end && e.extent_start < end) {
++      e.valid = false;
++      ++direct_resolve_stat_invalidated_;
++    }
++  }
++}
++
++
++bool D3D12TextureCache::IsDirectResolveMemorySkipEnabled() {
++  static std::atomic<int> enabled{0};
++  static std::atomic<uint64_t> next_check{0};
++  const uint64_t now = GetTickCount64();
++  if (now >= next_check.load(std::memory_order_relaxed)) {
++    next_check.store(now + 500, std::memory_order_relaxed);
++    const bool on =
++        GetFileAttributesW(L"direct_resolve_skip_memory.off") == INVALID_FILE_ATTRIBUTES;
++    if (enabled.exchange(on ? 1 : 0) != (on ? 1 : 0)) {
++      REXLOG_INFO("Direct resolve memory skip {}", on ? "on" : "OFF (direct_resolve_skip_memory.off)");
++    }
++  }
++  return enabled.load(std::memory_order_relaxed) == 1 && IsDirectResolveEnabled();
++}
++
++bool D3D12TextureCache::CanSkipResolveMemory(uint32_t base) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  for (const auto& e : direct_resolves_) {
++    if (e.base == base) {
++      return e.consumer && !e.never_skip && e.consumer_streak >= 3;
++    }
++  }
++  return false;
++}
++
++void D3D12TextureCache::SetDirectResolveMemorySkipped(uint32_t base, bool skipped) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  for (auto& e : direct_resolves_) {
++    if (e.base == base) {
++      e.memory_stale = skipped;
++      if (skipped) ++direct_resolve_stat_memory_skips_;
++    }
++  }
++}
++
++void D3D12TextureCache::ForgetDirectResolveTexture(const void* texture) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  for (auto& e : direct_resolves_) {
++    if (e.consumer == texture) {
++      e.consumer = nullptr;
++      if (e.written_to_consumer) e.valid = false;
++      e.written_to_consumer = false;
++    }
++  }
++}
++
++void D3D12TextureCache::OnScaledResolveRangeWrittenByCpu(uint32_t address_first,
++                                                         uint32_t address_last) {
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  for (auto& e : direct_resolves_) {
++    if (e.valid && address_first < e.extent_end && e.extent_start <= address_last) {
++      e.valid = false;
++      ++direct_resolve_stat_cpu_invalidated_;
++    }
++  }
++}
++
++ID3D12Resource* D3D12TextureCache::BeginDirectResolve(uint32_t base, uint32_t extent_start,
++                                                      uint32_t extent_length, uint32_t width,
++                                                      uint32_t height, uint32_t pitch_div_32,
++                                                      xenos::TextureFormat format,
++                                                      xenos::Endian endian,
++                                                      D3D12_RESOURCE_STATES wanted_state) {
++  const DXGI_FORMAT dxgi_format = GetDXGIResourceFormat(format, width, height);
++  if (dxgi_format == DXGI_FORMAT_UNKNOWN) return nullptr;
++  const uint32_t scaled_width = width * draw_resolution_scale_x();
++  const uint32_t scaled_height = height * draw_resolution_scale_y();
++  const uint64_t completed = command_processor_.GetCompletedSubmission();
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  // Free replaced snapshots the GPU is done with.
++  direct_resolve_graveyard_.erase(
++      std::remove_if(direct_resolve_graveyard_.begin(), direct_resolve_graveyard_.end(),
++                     [&](const auto& g) { return g.first <= completed; }),
++      direct_resolve_graveyard_.end());
++  // Anything else overlapping this range is out of date now.
++  const uint32_t extent_end = extent_start + extent_length;
++  DirectResolveSnapshot* slot = nullptr;
++  for (auto& e : direct_resolves_) {
++    if (e.base == base && e.width == width && e.height == height && e.dxgi_format == dxgi_format) {
++      slot = &e;
++    } else if (e.valid && extent_start < e.extent_end && e.extent_start < extent_end) {
++      e.valid = false;
++      ++direct_resolve_stat_invalidated_;
++    }
++  }
++  // Known consumer texture that matches: write into it directly.
++  if (slot && slot->consumer) {
++    D3D12Texture& consumer = *static_cast<D3D12Texture*>(slot->consumer);
++    const TextureKey ck = consumer.key();
++    if (ck.GetWidth() == width && ck.GetHeight() == height && ck.format == format &&
++        ck.pitch == pitch_div_32 && ck.endianness == endian &&
++        GetDXGIResourceFormat(ck) == dxgi_format) {
++      command_processor_.PushTransitionBarrier(consumer.resource(),
++                                               consumer.SetResourceState(wanted_state), wanted_state);
++      slot->extent_start = extent_start;
++      slot->extent_end = extent_end;
++      slot->valid = true;
++      slot->written_to_consumer = true;
++      slot->last_used_frame = direct_resolve_frame_;
++      ++direct_resolve_stat_direct_writes_;
++      ++direct_resolve_dest_stats_[base].direct_writes;
++      direct_resolve_last_wrote_consumer_ = true;
++      return consumer.resource();
++    }
++    slot->consumer = nullptr;
++  }
++  direct_resolve_last_wrote_consumer_ = false;
++  if (slot) {
++    slot->written_to_consumer = false;
++    slot->memory_stale = false;
++  }
++  if (!slot) {
++    if (direct_resolves_.size() >= 48) {
++      // Replace the least recently used one.
++      auto lru = std::min_element(direct_resolves_.begin(), direct_resolves_.end(),
++                                  [](const auto& a, const auto& b) {
++                                    return a.last_used_frame < b.last_used_frame;
++                                  });
++      direct_resolve_graveyard_.emplace_back(command_processor_.GetCurrentSubmission(),
++                                             std::move(lru->resource));
++      *lru = DirectResolveSnapshot();
++      slot = &*lru;
++    } else {
++      direct_resolves_.emplace_back();
++      slot = &direct_resolves_.back();
++    }
++    D3D12_RESOURCE_DESC desc = {};
++    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++    desc.Width = scaled_width;
++    desc.Height = scaled_height;
++    desc.DepthOrArraySize = 1;
++    desc.MipLevels = 1;
++    desc.Format = dxgi_format;
++    desc.SampleDesc.Count = 1;
++    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++    D3D12_HEAP_PROPERTIES heap = {};
++    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
++    ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
++    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
++                                               D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
++                                               IID_PPV_ARGS(&slot->resource)))) {
++      REXLOG_ERROR("Direct resolve: failed to create a {}x{} snapshot texture", scaled_width,
++                   scaled_height);
++      *slot = DirectResolveSnapshot();
++      return nullptr;
++    }
++    slot->state = D3D12_RESOURCE_STATE_COPY_DEST;
++  }
++  slot->base = base;
++  slot->extent_start = extent_start;
++  slot->extent_end = extent_end;
++  slot->width = width;
++  slot->height = height;
++  slot->pitch_div_32 = pitch_div_32;
++  slot->format = format;
++  slot->endian = endian;
++  slot->dxgi_format = dxgi_format;
++  slot->valid = true;
++  slot->last_used_frame = direct_resolve_frame_;
++  if (slot->state != wanted_state) {
++    command_processor_.PushTransitionBarrier(slot->resource.Get(), slot->state, wanted_state);
++    slot->state = wanted_state;
++  }
++  ++direct_resolve_stat_snapshots_;
++  return slot->resource.Get();
++}
++
++bool D3D12TextureCache::TryLoadFromDirectResolve(Texture& texture, bool load_base, bool load_mips) {
++  const TextureKey key = texture.key();
++  if (!key.scaled_resolve) return false;
++  const bool handled = TryLoadFromDirectResolveInner(texture, load_base, load_mips);
++  // (With direct resolve switched off every load goes the old way; that says
++  // nothing about who reads the memory, and skipping is off then anyway.)
++  if (!handled && IsDirectResolveEnabled()) {
++    // Loading the old way: if memory writes were skipped for this range, the
++    // memory is stale - never skip for that destination again.
++    const uint32_t start = uint32_t(key.base_page) << 12;
++    const uint32_t end = start + texture.GetGuestBaseSize();
++    const std::string why = fmt::format("{} ({}x{} fmt {} base {:08X}{})", direct_resolve_last_miss_reason_,
++                                        key.GetWidth(), key.GetHeight(), uint32_t(key.format), start,
++                                        key.mip_max_level ? " mips" : "");
++    std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++    for (auto& e : direct_resolves_) {
++      if (start < e.extent_end && e.extent_start < end) {
++        auto& d = direct_resolve_dest_stats_[e.base];
++        ++d.old_way_loads;
++        d.old_way_reason = why;
++        if (!e.never_skip) d.never_skip_reason = why;
++        // Only a read of memory whose last write was skipped matters: the
++        // memory then really is stale (one wrong frame), and that
++        // destination is never skipped again. Other readers of the same
++        // memory (e.g. a depth view written by a later depth resolve) are
++        // fine while a normal write came last.
++        if (e.memory_stale) {
++          ++direct_resolve_stat_stale_reads_;
++          REXLOG_WARN("Direct resolve: memory at {:08X} was read the old way after its write was "
++                      "skipped ({}) - no more skipping there", e.base, why);
++          e.never_skip = true;
++          e.consumer_streak = 0;
++        }
++      }
++    }
++  }
++  return handled;
++}
++
++bool D3D12TextureCache::TryLoadFromDirectResolveInner(Texture& texture, bool load_base,
++                                                      bool load_mips) {
++  const TextureKey key = texture.key();
++  auto miss = [&](const char* reason) {
++    direct_resolve_last_miss_reason_ = reason;
++    std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++    ++direct_resolve_stat_load_misses_[reason];
++    ++direct_resolve_stat_scaled_loads_normal_;
++    return false;
++  };
++  if (!IsDirectResolveEnabled()) return miss("off");
++  if (!load_base || load_mips || key.mip_max_level != 0) return miss("mips");
++  if (key.dimension != xenos::DataDimension::k2DOrStacked || key.depth_or_array_size_minus_1) {
++    return miss("not 2D");
++  }
++  if (!key.tiled) return miss("linear");
++  if (key.signed_separate) return miss("signed");
++  const uint32_t base = uint32_t(key.base_page) << 12;
++  ID3D12Resource* source = nullptr;
++  {
++    std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++    DirectResolveSnapshot* found = nullptr;
++    for (auto& e : direct_resolves_) {
++      if (e.valid && e.base == base) {
++        found = &e;
++        break;
++      }
++    }
++    if (!found) {
++      direct_resolve_last_miss_reason_ = "no valid snapshot";
++      ++direct_resolve_stat_load_misses_["no snapshot"];
++      ++direct_resolve_stat_scaled_loads_normal_;
++      return false;
++    }
++    const char* reason = nullptr;
++    if (found->format != key.format) reason = "format differs";
++    else if (found->width != key.GetWidth() || found->height != key.GetHeight()) reason = "size differs";
++    else if (found->pitch_div_32 != key.pitch) reason = "pitch differs";
++    else if (found->endian != key.endianness) reason = "endian differs";
++    else if (found->dxgi_format != GetDXGIResourceFormat(key)) reason = "host format differs";
++    if (reason) {
++      direct_resolve_last_miss_reason_ = reason;
++      ++direct_resolve_stat_load_misses_[reason];
++      ++direct_resolve_stat_scaled_loads_normal_;
++      return false;
++    }
++    if (found->written_to_consumer) {
++      if (found->consumer == &texture) {
++        // The resolve already wrote this texture's resource.
++        found->last_used_frame = direct_resolve_frame_;
++        ++direct_resolve_stat_noop_loads_;
++        ++found->consumer_streak;
++        static_cast<D3D12Texture&>(texture).MarkAsUsed();
++        return true;
++      }
++      // Written into another texture of the same memory: no snapshot copy.
++      direct_resolve_last_miss_reason_ = "other consumer";
++      ++direct_resolve_stat_load_misses_["other consumer"];
++      ++direct_resolve_stat_scaled_loads_normal_;
++      return false;
++    }
++    found->consumer = &texture;
++    source = found->resource.Get();
++    if (found->state != D3D12_RESOURCE_STATE_COPY_SOURCE) {
++      command_processor_.PushTransitionBarrier(source, found->state,
++                                               D3D12_RESOURCE_STATE_COPY_SOURCE);
++      found->state = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    }
++    found->last_used_frame = direct_resolve_frame_;
++    ++direct_resolve_stat_loads_;
++  }
++  D3D12Texture& d3d12_texture = static_cast<D3D12Texture&>(texture);
++  ID3D12Resource* texture_resource = d3d12_texture.resource();
++  command_processor_.PushTransitionBarrier(
++      texture_resource, d3d12_texture.SetResourceState(D3D12_RESOURCE_STATE_COPY_DEST),
++      D3D12_RESOURCE_STATE_COPY_DEST);
++  command_processor_.SubmitBarriers();
++  D3D12_TEXTURE_COPY_LOCATION location_source, location_dest;
++  location_source.pResource = source;
++  location_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  location_source.SubresourceIndex = 0;
++  location_dest.pResource = texture_resource;
++  location_dest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  location_dest.SubresourceIndex = 0;
++  command_processor_.GetDeferredCommandList().D3DCopyTextureRegion(&location_dest, 0, 0, 0,
++                                                                   &location_source, nullptr);
++  d3d12_texture.MarkAsUsed();
++  return true;
++}
++
++void D3D12TextureCache::LogDirectResolveStats() {
++  const uint64_t now = GetTickCount64();
++  std::lock_guard<std::mutex> lock(direct_resolve_mutex_);
++  if (!direct_resolve_stat_tick_) direct_resolve_stat_tick_ = now;
++  if (now - direct_resolve_stat_tick_ < 10000) return;
++  const double seconds = double(now - direct_resolve_stat_tick_) / 1000.0;
++  direct_resolve_stat_tick_ = now;
++  std::string skips, misses;
++  for (const auto& [k, v] : direct_resolve_stat_skips_) skips += fmt::format(" [{}: {:.1f}/s]", k, v / seconds);
++  for (const auto& [k, v] : direct_resolve_stat_load_misses_) misses += fmt::format(" [{}: {:.1f}/s]", k, v / seconds);
++  size_t valid = 0;
++  for (const auto& e : direct_resolves_) valid += e.valid;
++  REXLOG_INFO(
++      "DIRECT RESOLVE per second: direct writes into textures {:.1f}, loads skipped {:.1f}, "
++      "snapshots {:.1f}, loads from snapshots {:.1f}, scaled loads the "
++      "old way {:.1f}, invalidated {:.1f} (by CPU {:.1f}), memory writes skipped {:.1f}, stale "
++      "reads {:.1f} | snapshots kept {} ({} valid) | resolves "
++      "not snapshotted:{} | loads not from snapshots:{}",
++      direct_resolve_stat_direct_writes_ / seconds, direct_resolve_stat_noop_loads_ / seconds,
++      direct_resolve_stat_snapshots_ / seconds, direct_resolve_stat_loads_ / seconds,
++      direct_resolve_stat_scaled_loads_normal_ / seconds, direct_resolve_stat_invalidated_ / seconds,
++      direct_resolve_stat_cpu_invalidated_ / seconds, direct_resolve_stat_memory_skips_ / seconds,
++      direct_resolve_stat_stale_reads_ / seconds, direct_resolves_.size(), valid, skips, misses);
++  direct_resolve_stat_memory_skips_ = direct_resolve_stat_stale_reads_ = 0;
++  {
++    std::vector<std::pair<uint32_t, DirectResolveDestStats>> v(direct_resolve_dest_stats_.begin(),
++                                                               direct_resolve_dest_stats_.end());
++    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second.resolves > b.second.resolves; });
++    for (size_t i = 0; i < v.size() && i < 16; ++i) {
++      const auto& d = v[i].second;
++      const char* why_no_skip = "?";
++      for (const auto& e : direct_resolves_) {
++        if (e.base == v[i].first) {
++          why_no_skip = !e.consumer ? "no consumer" : e.never_skip ? "read old way" :
++                        e.consumer_streak < 3 ? "streak<3" : "ok";
++          break;
++        }
++      }
++      REXLOG_INFO(
++          "  DR dest {:08X} {}x{}: resolves {:.1f}/s, direct {:.1f}, memory skipped {:.1f}, not direct "
++          "{:.1f} [{}], old-way loads {:.1f} [{}], skip state: {} [{}]",
++          v[i].first, d.width, d.height, d.resolves / seconds, d.direct_writes / seconds,
++          d.memory_skipped / seconds, d.not_direct / seconds, d.not_direct_reason, d.old_way_loads / seconds,
++          d.old_way_reason, why_no_skip, d.never_skip_reason);
++    }
++    direct_resolve_dest_stats_.clear();
++  }
++  direct_resolve_stat_direct_writes_ = direct_resolve_stat_noop_loads_ = 0;
++  direct_resolve_stat_snapshots_ = direct_resolve_stat_loads_ = direct_resolve_stat_scaled_loads_normal_ =
++      direct_resolve_stat_invalidated_ = direct_resolve_stat_cpu_invalidated_ = 0;
++  direct_resolve_stat_skips_.clear();
++  direct_resolve_stat_load_misses_.clear();
++}
++
+ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {
+   uint32_t bindings_remaining = fetch_constant_mask;
+   uint32_t binding_index;
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
 index 8f2fcb0..c12df68 100644
 --- a/src/graphics/graphics_system.cpp
@@ -1699,20 +3873,149 @@ index 8f2fcb0..c12df68 100644
  void GraphicsSystem::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
    command_processor_->EnableReadPointerWriteBack(ptr, block_size_log2);
  }
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..ae6963f 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -11,7 +11,9 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
+ #include <cstring>
++#include <rex/logging.h>
+ #include <iterator>
+ #include <tuple>
+ #include <unordered_set>
+@@ -341,6 +343,7 @@ void RenderTargetCache::InitializeCommon() {
+ }
+ 
+ void RenderTargetCache::DestroyAllRenderTargets(bool shutting_down) {
++  ++ownership_epoch_;
+   ownership_ranges_.clear();
+   if (!shutting_down) {
+     ownership_ranges_.emplace(std::piecewise_construct, std::forward_as_tuple(uint32_t(0)),
+@@ -361,6 +364,7 @@ void RenderTargetCache::ShutdownCommon() {
+ }
+ 
+ void RenderTargetCache::ClearCache() {
++  ++ownership_epoch_;
+   // Keep only render targets currently owning any EDRAM data.
+   if (!render_targets_.empty()) {
+     std::unordered_set<RenderTargetKey, RenderTargetKey::Hasher> used_render_targets;
+@@ -395,6 +399,19 @@ void RenderTargetCache::ClearCache() {
+ 
+ void RenderTargetCache::BeginFrame() {
+   ResetAccumulatedRenderTargets();
++  if (++update_fast_check_ >= 120) {
++    update_fast_check_ = 0;
++    bool enabled = true;
++    if (FILE* f = std::fopen("rt_fast.off", "rb")) {
++      enabled = false;
++      std::fclose(f);
++    }
++    if (enabled != update_fast_enabled_) {
++      update_fast_enabled_ = enabled;
++      update_fast_valid_ = false;
++      REXLOG_INFO("Render target update fast path {}", enabled ? "on" : "OFF (rt_fast.off)");
++    }
++  }
+ }
+ 
+ bool RenderTargetCache::Update(bool is_rasterization_done,
+@@ -540,6 +557,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+   }
+ 
+   if (!depth_and_color_rts_used_bits) {
++    update_fast_valid_ = false;
+     // Nothing to bind, don't waste time on things like memexport-only draws -
+     // just check if old bindings can still be used.
+     std::memset(last_update_used_render_targets_, 0, sizeof(last_update_used_render_targets_));
+@@ -574,6 +592,36 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+                        : true,
+                    vertex_shader));
+ 
++  // Fast path (see update_fast_key_).
++  UpdateFastKey fast_key = {};
++  const bool fast_possible = !interlock_barrier_only && update_fast_enabled_;
++  if (fast_possible) {
++    fast_key.used_bits = depth_and_color_rts_used_bits;
++    fast_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
++    fast_key.msaa_samples = uint32_t(msaa_samples);
++    fast_key.rts_are_64bpp = rts_are_64bpp & depth_and_color_rts_used_bits;
++    fast_key.height_used = height_used;
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      if (depth_and_color_rts_used_bits & (uint32_t(1) << i)) {
++        fast_key.edram_bases[i] = edram_bases[i];
++        fast_key.resource_formats[i] = resource_formats[i];
++      }
++    }
++    if (update_fast_valid_ && update_fast_epoch_ == ownership_epoch_ &&
++        !std::memcmp(&fast_key, &update_fast_key_, sizeof(fast_key))) {
++      // Same render targets as the previous update, ownership unchanged since:
++      // the ownership change would be a no-op (no transfers), the used render
++      // targets are the same; the accumulated ones stay valid unless reset.
++      if (!are_accumulated_render_targets_valid_) {
++        std::memcpy(last_update_accumulated_render_targets_, last_update_used_render_targets_,
++                    sizeof(last_update_accumulated_render_targets_));
++        are_accumulated_render_targets_valid_ = true;
++      }
++      return true;
++    }
++  }
++  update_fast_valid_ = false;
++
+   // Sorted by EDRAM base and then by index in the pipeline - for simplicity,
+   // treat render targets placed closer to the end of the EDRAM as truncating
+   // the previous one (and in case multiple render targets are placed at the
+@@ -758,6 +806,11 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+     are_accumulated_render_targets_valid_ = true;
+   }
+ 
++  if (fast_possible) {
++    update_fast_key_ = fast_key;
++    update_fast_epoch_ = ownership_epoch_;
++    update_fast_valid_ = true;
++  }
+   return true;
+ }
+ 
+@@ -1126,6 +1179,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+ 
+ void RenderTargetCache::PixelShaderInterlockFullEdramBarrierPlaced() {
+   assert_true(GetPath() == Path::kPixelShaderInterlock);
++  ++ownership_epoch_;
+   // Clear ownership - any overlap of data written before the barrier is safe.
+   OwnershipRange empty_range(xenos::kEdramTileCount, RenderTargetKey(), RenderTargetKey(),
+                              RenderTargetKey());
+@@ -1248,6 +1302,7 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+   if (length_tiles == 0) {
+     return;
+   }
++  ++ownership_epoch_;
+   uint32_t dest_pitch_tiles = dest.GetPitchTiles();
+   bool dest_is_64bpp = dest.Is64bpp();
+   bool host_depth_encoding_different = dest.is_depth && GetPath() == Path::kHostRenderTargets &&
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index 76f5600..6cb38fd 100644
+index 76f5600..324b8c3 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
-@@ -10,6 +10,8 @@
+@@ -10,7 +10,10 @@
   */
  
  #include <algorithm>
 +#include <atomic>
 +#include <chrono>
  #include <cstdint>
++#include <cstdio>
  #include <utility>
  
-@@ -253,6 +255,15 @@ void TextureCache::ClearCache() {
+ #include <rex/assert.h>
+@@ -250,9 +253,19 @@ bool TextureCache::GetConfigDrawResolutionScale(uint32_t& x_out, uint32_t& y_out
+ }
+ 
+ void TextureCache::ClearCache() {
++  InvalidateLookupCache();
    DestroyAllTextures();
  }
  
@@ -1728,7 +4031,13 @@ index 76f5600..6cb38fd 100644
  void TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_index) {
    // If memory usage is too high, destroy unused textures.
    uint64_t current_time = rex::chrono::Clock::QueryHostUptimeMillis();
-@@ -297,6 +308,7 @@ void TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_inde
+@@ -292,11 +305,13 @@ void TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_inde
+       ResetTextureBindings();
+     }
+     // Remove the texture from the map and destroy it via its unique_ptr.
++    InvalidateLookupCache();
+     auto found_texture_it = textures_.find(texture->key());
+     assert_true(found_texture_it != textures_.end());
      if (found_texture_it != textures_.end()) {
        assert_true(found_texture_it->second.get() == texture);
        textures_.erase(found_texture_it);
@@ -1736,7 +4045,7 @@ index 76f5600..6cb38fd 100644
        // `texture` is invalid now.
      }
    }
-@@ -312,6 +324,19 @@ void TextureCache::BeginSubmission(uint64_t new_submission_index) {
+@@ -312,6 +327,19 @@ void TextureCache::BeginSubmission(uint64_t new_submission_index) {
  }
  
  void TextureCache::BeginFrame() {
@@ -1756,7 +4065,27 @@ index 76f5600..6cb38fd 100644
    // In case there was a failure to create something in the previous frame, make
    // sure bindings are reset so a new attempt will surely be made if the texture
    // is requested again.
-@@ -462,8 +487,12 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -319,6 +347,9 @@ void TextureCache::BeginFrame() {
+ }
+ 
+ void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled) {
++  // The texture lookup cache only depends on which pages are scaled-resolved:
++  // it is invalidated below when this resolve marks pages that were not marked
++  // yet (the game resolves into the same buffers every frame).
+   if (length_unscaled == 0) {
+     return;
+   }
+@@ -339,6 +370,9 @@ void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_
+       if (i == block_last && (page_last & 31) != 31) {
+         add_bits &= (UINT32_C(1) << ((page_last & 31) + 1)) - 1;
+       }
++      if ((scaled_resolve_pages_[i] & add_bits) != add_bits) {
++        InvalidateLookupCache();
++      }
+       scaled_resolve_pages_[i] |= add_bits;
+       scaled_resolve_pages_l2_[i >> 6] |= UINT64_C(1) << (i & 63);
+     }
+@@ -462,8 +496,12 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
  
    // Update the texture keys and the textures.
    uint32_t bindings_changed = 0;
@@ -1771,7 +4100,7 @@ index 76f5600..6cb38fd 100644
    auto queue_pending_texture_load = [&](Texture* texture) {
      if (texture == nullptr) {
        return;
-@@ -567,7 +596,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+@@ -567,7 +605,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
                      uint32_t(pending_shared_memory_ranges.size()));
  
    bool batched_shared_memory_request_succeeded = true;
@@ -1781,15 +4110,49 @@ index 76f5600..6cb38fd 100644
    if (!pending_shared_memory_ranges.empty()) {
      pending_shared_memory_range_pairs.reserve(pending_shared_memory_ranges.size());
      for (const PendingSharedMemoryRange& pending_range : pending_shared_memory_ranges) {
-@@ -762,6 +792,7 @@ void TextureCache::DestroyAllTextures(bool from_destructor) {
+@@ -757,11 +796,41 @@ void TextureCache::WatchCallback(const std::unique_lock<std::recursive_mutex>& g
+ 
+ void TextureCache::DestroyAllTextures(bool from_destructor) {
+   ResetTextureBindings(from_destructor);
++  InvalidateLookupCache();
+   textures_.clear();
+   COUNT_profile_set("gpu/texture_cache/textures", 0);
  }
  
  TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
 +  stat_lookups.fetch_add(1, std::memory_order_relaxed);
++  // A file "texture_lookup_cache.off" next to the exe skips the
++  // lookup cache (every lookup goes to the texture map, the old behaviour).
++  static const bool lookup_cache_off = [] {
++    FILE* f = std::fopen("texture_lookup_cache.off", "rb");
++    if (f) std::fclose(f);
++    return f != nullptr;
++  }();
++  if (lookup_cache_off) {
++    return FindOrCreateTextureUncached(key);
++  }
++  if (lookup_cache_.empty()) {
++    lookup_cache_.resize(kLookupCacheSize);
++  }
++  const uint64_t epoch = lookup_cache_epoch_.load(std::memory_order_acquire);
++  LookupCacheEntry& entry = lookup_cache_[TextureKey::Hasher()(key) & (kLookupCacheSize - 1)];
++  if (entry.epoch == epoch && entry.key == key) {
++    return entry.texture;
++  }
++  Texture* texture = FindOrCreateTextureUncached(key);
++  if (texture) {
++    entry.key = key;
++    entry.texture = texture;
++    entry.epoch = epoch;
++  }
++  return texture;
++}
++
++TextureCache::Texture* TextureCache::FindOrCreateTextureUncached(TextureKey key) {
    // Check if the texture is a scaled resolve texture.
    if (IsDrawResolutionScaled() && key.tiled && IsScaledResolveSupportedForFormat(key)) {
      texture_util::TextureGuestLayout scaled_resolve_guest_layout = key.GetGuestLayout();
-@@ -775,6 +806,12 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+@@ -775,6 +844,12 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
      }
    }
  
@@ -1802,7 +4165,7 @@ index 76f5600..6cb38fd 100644
    auto get_host_extent = [this, &key](uint32_t& host_width_out, uint32_t& host_height_out,
                                        uint32_t& host_depth_or_array_size_out) {
      host_width_out = key.GetWidth();
-@@ -867,7 +904,14 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+@@ -867,7 +942,14 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
    // Create the texture and add it to the map.
    Texture* texture;
    {
@@ -1817,7 +4180,17 @@ index 76f5600..6cb38fd 100644
      if (!new_texture) {
        key.LogAction("Failed to create");
        return nullptr;
-@@ -1035,7 +1079,9 @@ bool TextureCache::IsRangeScaledResolved(uint32_t start_unscaled, uint32_t lengt
+@@ -992,6 +1074,9 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+ }
+ 
+ void TextureCache::ResetTextureBindings(bool from_destructor) {
++  // Not a lookup cache invalidation: bindings do not change which texture a
++  // key maps to (this runs every frame and whenever a texture is outdated).
++  // Destroying textures invalidates the lookup cache where it happens.
+   uint32_t bindings_reset = 0;
+   for (size_t i = 0; i < texture_bindings_.size(); ++i) {
+     TextureBinding& binding = texture_bindings_[i];
+@@ -1035,7 +1120,9 @@ bool TextureCache::IsRangeScaledResolved(uint32_t start_unscaled, uint32_t lengt
    uint32_t block_last = page_last >> 5;
    uint32_t l2_block_first = block_first >> 6;
    uint32_t l2_block_last = block_last >> 6;
@@ -1828,19 +4201,324 @@ index 76f5600..6cb38fd 100644
    for (uint32_t i = l2_block_first; i <= l2_block_last; ++i) {
      uint64_t l2_block = scaled_resolve_pages_l2_[i];
      if (i == l2_block_first) {
+@@ -1079,6 +1166,7 @@ void TextureCache::ScaledResolveGlobalWatchCallback(
+     // Resolves themselves do exactly the opposite of what this should do.
+     return;
+   }
++  OnScaledResolveRangeWrittenByCpu(address_first, address_last);
+   // Mark scaled resolve ranges as non-scaled. Textures themselves will be
+   // invalidated by their shared memory watches.
+   uint32_t resolve_page_first = address_first >> 12;
+@@ -1109,6 +1197,9 @@ void TextureCache::ScaledResolveGlobalWatchCallback(
+       if (resolve_block_index == resolve_block_last && (resolve_page_last & 31) != 31) {
+         resolve_keep_bits |= ~((UINT32_C(1) << ((resolve_page_last & 31) + 1)) - 1);
+       }
++      if (scaled_resolve_pages_[resolve_block_index] & ~resolve_keep_bits) {
++        InvalidateLookupCache();
++      }
+       scaled_resolve_pages_[resolve_block_index] &= resolve_keep_bits;
+       if (scaled_resolve_pages_[resolve_block_index] == 0) {
+         scaled_resolve_pages_l2_[i] &= ~(UINT64_C(1) << resolve_block_relative_index);
+diff --git a/src/graphics/pipeline/texture/util.cpp b/src/graphics/pipeline/texture/util.cpp
+index 26d554c..28ddc03 100644
+--- a/src/graphics/pipeline/texture/util.cpp
++++ b/src/graphics/pipeline/texture/util.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <unordered_map>
+ 
+ #include <rex/assert.h>
+ #include <rex/graphics/pipeline/texture/util.h>
+@@ -199,12 +200,54 @@ bool GetPackedMipOffset(uint32_t width, uint32_t height, uint32_t depth,
+   return true;
+ }
+ 
++static TextureGuestLayout ComputeGuestTextureLayout(
++    xenos::DataDimension dimension, uint32_t base_pitch_texels_div_32, uint32_t width_texels,
++    uint32_t height_texels, uint32_t depth_or_array_size, bool is_tiled, xenos::TextureFormat format,
++    bool has_packed_levels, bool has_base, uint32_t max_level);
++
++// The layout only depends on these parameters, and the same few hundred
++// textures are looked at on every draw, so results are kept per thread.
+ TextureGuestLayout GetGuestTextureLayout(xenos::DataDimension dimension,
+                                          uint32_t base_pitch_texels_div_32, uint32_t width_texels,
+                                          uint32_t height_texels, uint32_t depth_or_array_size,
+                                          bool is_tiled, xenos::TextureFormat format,
+                                          bool has_packed_levels, bool has_base,
+                                          uint32_t max_level) {
++  struct Key {
++    uint64_t a, b;
++    bool operator==(const Key& o) const { return a == o.a && b == o.b; }
++  };
++  struct KeyHash {
++    size_t operator()(const Key& k) const {
++      return size_t(k.a * 0x9E3779B97F4A7C15ull ^ (k.b + 0x632BE59BD9B4E019ull + (k.a << 6)));
++    }
++  };
++  thread_local std::unordered_map<Key, TextureGuestLayout, KeyHash> cache;
++  const Key key{uint64_t(width_texels) | (uint64_t(height_texels) << 24) |
++                    (uint64_t(uint32_t(dimension) & 0xFF) << 48) |
++                    (uint64_t(uint32_t(format) & 0xFF) << 56),
++                uint64_t(base_pitch_texels_div_32) | (uint64_t(depth_or_array_size) << 24) |
++                    (uint64_t(max_level & 0xFF) << 48) | (uint64_t(is_tiled) << 56) |
++                    (uint64_t(has_packed_levels) << 57) | (uint64_t(has_base) << 58)};
++  auto it = cache.find(key);
++  if (it != cache.end()) {
++    return it->second;
++  }
++  if (cache.size() >= 8192) {
++    cache.clear();
++  }
++  TextureGuestLayout layout =
++      ComputeGuestTextureLayout(dimension, base_pitch_texels_div_32, width_texels, height_texels,
++                                depth_or_array_size, is_tiled, format, has_packed_levels, has_base,
++                                max_level);
++  cache.emplace(key, layout);
++  return layout;
++}
++
++static TextureGuestLayout ComputeGuestTextureLayout(
++    xenos::DataDimension dimension, uint32_t base_pitch_texels_div_32, uint32_t width_texels,
++    uint32_t height_texels, uint32_t depth_or_array_size, bool is_tiled, xenos::TextureFormat format,
++    bool has_packed_levels, bool has_base, uint32_t max_level) {
+   TextureGuestLayout layout;
+ 
+   if (dimension == xenos::DataDimension::k1D) {
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
-index ec0df7c..f4c5d19 100644
+index ec0df7c..345064e 100644
 --- a/src/graphics/shared_memory.cpp
 +++ b/src/graphics/shared_memory.cpp
-@@ -10,6 +10,7 @@
+@@ -10,13 +10,29 @@
   */
  
  #include <algorithm>
 +#include <atomic>
++#include <cstdio>
  #include <cstring>
++#include <array>
++#include <string>
++#include <unordered_map>
  #include <utility>
++#include <vector>
++
++#include <fmt/format.h>
  
-@@ -342,6 +343,46 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+ #include <rex/assert.h>
+ #include <rex/bit.h>
+ #include <rex/dbg.h>
+ #include <rex/graphics/shared_memory.h>
++#include <rex/hash.h>
++#include <rex/logging.h>
++
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>
++#endif
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ 
+@@ -34,9 +50,107 @@ void SharedMemory::InitializeCommon() {
+   num_system_page_flags_ = ((kBufferSize >> page_size_log2_) + 63) / 64;
+   system_page_flags_valid_.assign(num_system_page_flags_, 0);
+   system_page_flags_valid_and_gpu_written_.assign(num_system_page_flags_, 0);
++  page_hashes_.assign(size_t(kBufferSize >> page_size_log2_), 0);
++  page_hash_known_.assign(num_system_page_flags_, 0);
++  if (FILE* f = std::fopen("upload_check.off", "rb")) {
++    std::fclose(f);
++    content_check_ = false;
++  }
++  if (FILE* f = std::fopen("verify_every_frame", "rb")) {
++    std::fclose(f);
++    verify_every_frame_ = true;
++  }
++  volatile_regions_.assign(size_t(((kBufferSize >> 16) + 63) >> 6), 0);
++  // Seen changing without write faults in Saints Row (dynamic buffers written
++  // through an unwatched view) - verified every frame from the start.
++  for (uint32_t address : {0x0EC80000u, 0x0ECC0000u, 0x0EF80000u, 0x0F240000u, 0x0F440000u}) {
++    volatile_regions_[(address >> 16) >> 6] |= uint64_t(1) << ((address >> 16) & 63);
++  }
+ 
+   memory_invalidation_callback_handle_ =
+       memory_.RegisterPhysicalMemoryInvalidationCallback(MemoryInvalidationCallbackThunk, this);
++
++  // File "bg_verify.off" next to the exe: re-verify on the command processor as before.
++  background_verify_ = content_check_ && !verify_every_frame_ && page_size_log2_ == 12;
++  if (FILE* f = std::fopen("bg_verify.off", "rb")) {
++    std::fclose(f);
++    background_verify_ = false;
++  }
++  if (background_verify_) {
++    verifier_exit_ = false;
++    verifier_thread_ = std::thread([this]() { VerifierThreadMain(); });
++  }
++  REXLOG_INFO("Shared memory: background page verification {}", background_verify_ ? "on" : "off");
++}
++
++void SharedMemory::VerifierThreadMain() {
++#ifdef _WIN32
++  SetThreadDescription(GetCurrentThread(), L"GPU Page Verify");
++#endif
++  const uint32_t log2 = page_size_log2_;
++  const size_t page_size = size_t(1) << log2;
++  uint64_t last_log = GetTickCount64();
++  std::vector<uint32_t> pages;
++  for (;;) {
++    {
++      std::unique_lock<std::mutex> lock(verifier_mutex_);
++      verifier_cv_.wait(lock, [this]() { return verifier_exit_ || verifier_busy_; });
++      if (verifier_exit_) {
++        return;
++      }
++      pages.swap(verifier_pages_);
++    }
++    for (const uint32_t page : pages) {
++      const uint64_t bit = uint64_t(1) << (page & 63);
++      uint64_t stored = 0;
++      {
++        auto global_lock = global_critical_region_.Acquire();
++        if (!(system_page_flags_valid_[page >> 6] & bit) ||
++            (system_page_flags_valid_and_gpu_written_[page >> 6] & bit) ||
++            !(page_hash_known_[page >> 6] & bit)) {
++          continue;
++        }
++        stored = page_hashes_[page];
++      }
++      const uint64_t hash = XXH3_64bits(memory().TranslatePhysical(page << log2), page_size);
++      verifier_checked_.fetch_add(1, std::memory_order_relaxed);
++      if (hash == stored) {
++        continue;
++      }
++      // Changed without a write fault: invalidate it like a CPU write would,
++      // and verify its 64 KB region every frame from now on.
++      bool still_same = false;
++      {
++        auto global_lock = global_critical_region_.Acquire();
++        still_same = (system_page_flags_valid_[page >> 6] & bit) &&
++                     (page_hash_known_[page >> 6] & bit) && page_hashes_[page] == stored;
++        if (still_same) {
++          const uint32_t region = (page << log2) >> 16;
++          reinterpret_cast<std::atomic<uint64_t>*>(volatile_regions_.data() + (region >> 6))
++              ->fetch_or(uint64_t(1) << (region & 63), std::memory_order_relaxed);
++        }
++      }
++      if (still_same) {
++        verifier_changed_.fetch_add(1, std::memory_order_relaxed);
++        MemoryInvalidationCallback(page << log2, uint32_t(page_size), true);
++      }
++    }
++    pages.clear();
++    {
++      std::lock_guard<std::mutex> lock(verifier_mutex_);
++      verifier_busy_ = false;
++    }
++    const uint64_t now = GetTickCount64();
++    if (now - last_log >= 10000) {
++      const double seconds = double(now - last_log) / 1000.0;
++      last_log = now;
++      REXLOG_INFO(
++          "BACKGROUND VERIFY: {:.0f} pages/s hashed, {:.1f}/s changed without a fault, {:.1f} "
++          "frames/s fell back (verifier busy)",
++          verifier_checked_.exchange(0) / seconds, verifier_changed_.exchange(0) / seconds,
++          verifier_skipped_frames_.exchange(0) / seconds);
++    }
++  }
+ }
+ 
+ void SharedMemory::InitializeSparseHostGpuMemory(uint32_t granularity_log2) {
+@@ -48,6 +162,14 @@ void SharedMemory::InitializeSparseHostGpuMemory(uint32_t granularity_log2) {
+ }
+ 
+ void SharedMemory::ShutdownCommon() {
++  if (verifier_thread_.joinable()) {
++    {
++      std::lock_guard<std::mutex> lock(verifier_mutex_);
++      verifier_exit_ = true;
++    }
++    verifier_cv_.notify_all();
++    verifier_thread_.join();
++  }
+   FireWatches(0, (kBufferSize - 1) >> page_size_log2_, false);
+   assert_true(global_watches_.empty());
+   // No watches now, so no references to the pools accessible by guest threads -
+@@ -102,7 +224,63 @@ void SharedMemory::SetSystemPageBlocksValidWithGpuDataWritten() {
+ 
+   // Pages that are valid only because the CPU uploaded them lose their valid
+   // bit here, so the next frame re-reads them from guest memory.
+-  system_page_flags_valid_ = system_page_flags_valid_and_gpu_written_;
++  if (!content_check_ || verify_every_frame_ || volatile_regions_.empty() ||
++      page_size_log2_ != 12) {
++    system_page_flags_valid_ = system_page_flags_valid_and_gpu_written_;
++    return;
++  }
++  // With the content check, re-reading a page means hashing it; a page whose
++  // contents are unchanged is not uploaded. CPU writes are caught by write
++  // faults anyway, so only regions seen changing without a fault need this
++  // every frame; the rest is re-verified every 4th frame (a quarter of the 64
++  // KB regions each frame).
++  const uint32_t phase = (verify_phase_++) & 3;
++  // Hand this frame's quarter to the background verifier when it is free (it
++  // then invalidates only pages that really changed); otherwise invalidate the
++  // quarter here as before, so nothing goes unchecked.
++  std::unique_lock<std::mutex> verifier_lock;
++  bool hand_off = false;
++  if (background_verify_) {
++    verifier_lock = std::unique_lock<std::mutex>(verifier_mutex_, std::try_to_lock);
++    if (verifier_lock.owns_lock() && !verifier_busy_) {
++      hand_off = true;
++      verifier_pages_.clear();
++    } else {
++      verifier_skipped_frames_.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
++  for (size_t i = 0; i < system_page_flags_valid_.size(); ++i) {
++    uint64_t invalidate = 0;
++    for (uint32_t k = 0; k < 4; ++k) {
++      const uint32_t region = uint32_t(i) * 4 + k;
++      const uint64_t region_mask = UINT64_C(0xFFFF) << (16 * k);
++      if ((volatile_regions_[region >> 6] >> (region & 63)) & 1) {
++        invalidate |= region_mask;
++      } else if (k == phase) {
++        if (hand_off) {
++          // Pages with a known hash go to the verifier; valid pages without
++          // one are re-read on their next use, as before.
++          uint64_t verify = system_page_flags_valid_[i] & ~system_page_flags_valid_and_gpu_written_[i] &
++                            page_hash_known_[i] & region_mask;
++          invalidate |= region_mask & ~verify;
++          uint32_t bit_index;
++          while (rex::bit_scan_forward(verify, &bit_index)) {
++            verify &= verify - 1;
++            verifier_pages_.push_back(uint32_t(i) * 64 + bit_index);
++          }
++        } else {
++          invalidate |= region_mask;
++        }
++      }
++    }
++    system_page_flags_valid_[i] =
++        system_page_flags_valid_and_gpu_written_[i] | (system_page_flags_valid_[i] & ~invalidate);
++  }
++  if (hand_off && !verifier_pages_.empty()) {
++    verifier_busy_ = true;
++    verifier_lock.unlock();
++    verifier_cv_.notify_one();
++  }
+ }
+ 
+ void SharedMemory::ClearCache() {
+@@ -305,6 +483,9 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+       system_page_flags_valid_[i] |= valid_bits;
+       uint64_t& gpu_written = system_page_flags_valid_and_gpu_written_[i];
+       gpu_written = written_by_gpu ? (gpu_written | valid_bits) : (gpu_written & ~valid_bits);
++      if (written_by_gpu && !page_hash_known_.empty()) {
++        page_hash_known_[i] &= ~valid_bits;
++      }
+     }
+   }
+ 
+@@ -342,6 +523,47 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
      return true;
    }
  
@@ -1880,6 +4558,7 @@ index ec0df7c..f4c5d19 100644
 +      }
 +    }
 +    if (all_valid) {
++      OnRangesUsed(ranges, count);
 +      return true;
 +    }
 +  }
@@ -1887,6 +4566,117 @@ index ec0df7c..f4c5d19 100644
    // Some texture or buffer is empty, for example - safe to draw in this case.
    std::vector<std::pair<uint32_t, uint32_t>> merged_ranges;
    merged_ranges.reserve(count);
+@@ -461,11 +683,97 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
+                     uint32_t(upload_ranges_.size()));
+ 
+-  if (upload_ranges_.empty()) {
+-    return true;
++  if (!upload_ranges_.empty() && content_check_ && !page_hashes_.empty()) {
++    FilterUnchangedUploadPages();
++  }
++  if (!upload_ranges_.empty()) {
++    if (!UploadRanges(upload_ranges_)) {
++      return false;
++    }
++    if (content_check_ && !content_check_new_pages_.empty()) {
++      CommitUploadedPageHashes();
++    }
++  }
++  OnRangesUsed(merged_ranges.data(), merged_ranges.size());
++  return true;
++}
++
++void SharedMemory::FilterUnchangedUploadPages() {
++  const uint32_t log2 = page_size_log2_;
++  const size_t page_size = size_t(1) << log2;
++  content_check_ranges_.clear();
++  content_check_new_pages_.clear();
++  content_check_new_hashes_.clear();
++  auto append = [this](uint32_t start, uint32_t count) {
++    if (!count) {
++      return;
++    }
++    if (!content_check_ranges_.empty()) {
++      auto& last = content_check_ranges_.back();
++      if (last.first + last.second == start) {
++        last.second += count;
++        return;
++      }
++    }
++    content_check_ranges_.emplace_back(start, count);
++  };
++  for (const std::pair<uint32_t, uint32_t>& range : upload_ranges_) {
++    const uint32_t start = range.first;
++    const uint32_t end = range.first + range.second;
++    // Mark valid and protect first: a CPU write from here on faults, which
++    // invalidates the page again and forgets its hash, so a page is never
++    // treated as unchanged because of a hash of data that is gone.
++    MakeRangeValid(start << log2, range.second << log2, false);
++    uint32_t run_start = UINT32_MAX;
++    for (uint32_t page = start; page < end; ++page) {
++      const void* data = memory().TranslatePhysical(page << log2);
++      const uint64_t hash = XXH3_64bits(data, page_size);
++      const uint64_t known_bits =
++          reinterpret_cast<const std::atomic<uint64_t>*>(page_hash_known_.data() + (page >> 6))
++              ->load(std::memory_order_acquire);
++      ++content_check_pages_;
++      if (((known_bits >> (page & 63)) & 1) && page_hashes_[page] == hash) {
++        // The GPU buffer already holds exactly these bytes.
++        ++content_check_skipped_;
++        if (run_start != UINT32_MAX) {
++          append(run_start, page - run_start);
++          run_start = UINT32_MAX;
++        }
++        continue;
++      }
++      if ((known_bits >> (page & 63)) & 1) {
++        ++content_check_changed_known_;
++        const uint32_t untracked_region = (page << log2) >> 16;
++        volatile_regions_[untracked_region >> 6] |= uint64_t(1) << (untracked_region & 63);
++      }
++      if (run_start == UINT32_MAX) {
++        run_start = page;
++      }
++      content_check_new_pages_.push_back(page);
++      content_check_new_hashes_.push_back(hash);
++    }
++    if (run_start != UINT32_MAX) {
++      append(run_start, end - run_start);
++    }
+   }
++  upload_ranges_.swap(content_check_ranges_);
++}
+ 
+-  return UploadRanges(upload_ranges_);
++void SharedMemory::CommitUploadedPageHashes() {
++  auto global_lock = global_critical_region_.Acquire();
++  for (size_t i = 0; i < content_check_new_pages_.size(); ++i) {
++    const uint32_t page = content_check_new_pages_[i];
++    const uint64_t bit = uint64_t(1) << (page & 63);
++    // Only if nothing wrote to the page since it was protected before hashing:
++    // then the uploaded bytes are the hashed bytes.
++    if ((system_page_flags_valid_[page >> 6] & bit) &&
++        !(system_page_flags_valid_and_gpu_written_[page >> 6] & bit)) {
++      page_hashes_[page] = content_check_new_hashes_[i];
++      page_hash_known_[page >> 6] |= bit;
++    }
++  }
++  content_check_new_pages_.clear();
++  content_check_new_hashes_.clear();
+ }
+ 
+ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+@@ -526,6 +834,9 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+     }
+     system_page_flags_valid_[i] &= ~invalidate_bits;
+     system_page_flags_valid_and_gpu_written_[i] &= ~invalidate_bits;
++    if (!page_hash_known_.empty()) {
++      page_hash_known_[i] &= ~invalidate_bits;
++    }
+   }
+ 
+   FireWatches(page_first, page_last, false);
 diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
 index 305380e..06ffab5 100644
 --- a/src/graphics/util/draw.cpp
@@ -2107,6 +4897,90 @@ index 77bce25..1707cc2 100644
    }
  }
  
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+index 306118e..17d1c86 100644
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -500,8 +500,15 @@ bool D3D12Presenter::RefreshGuestOutputImpl(
+         guest_output_resource_current_desc.Height != frontbuffer_height) {
+       // Main target painting has its own reference to the textures for reading
+       // in its own submission tracker timeline, safe to release here.
++      // With a finish executor (see Presenter::SetGuestOutputFinishExecutor)
++      // the refresher's signal can be queued before the refresh's own GPU
++      // work, so signal anew now (after everything submitted so far) and await
++      // that instead.
++      const UINT64 flush_submission =
++          guest_output_resource_refresher_submission_tracker_.GetCurrentSubmission();
++      guest_output_resource_refresher_submission_tracker_.NextSubmission();
+       guest_output_resource_refresher_submission_tracker_.AwaitSubmissionCompletion(
+-          guest_output_resource_ref.first);
++          std::max(flush_submission, guest_output_resource_ref.first));
+       guest_output_resource_ref.second.Reset();
+     }
+   }
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..252cc15 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -550,6 +550,12 @@ bool Presenter::RefreshGuestOutput(
+     uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t display_aspect_ratio_x,
+     uint32_t display_aspect_ratio_y,
+     std::function<bool(GuestOutputRefreshContext& context)> refresher) {
++  // The previous refresh must have been published (see
++  // SetGuestOutputFinishExecutor) before the writable image is chosen again.
++  {
++    std::unique_lock<std::mutex> lock(guest_output_finish_mutex_);
++    guest_output_finish_cv_.wait(lock, [this]() { return guest_output_finish_pending_ == 0; });
++  }
+   GuestOutputProperties& writable_properties =
+       guest_output_properties_[guest_output_mailbox_writable_];
+   writable_properties.frontbuffer_width = frontbuffer_width;
+@@ -576,6 +582,36 @@ bool Presenter::RefreshGuestOutput(
+     guest_output_active_last_refresh_ = false;
+   }
+ 
++  if (guest_output_finish_executor_) {
++    {
++      std::lock_guard<std::mutex> lock(guest_output_finish_mutex_);
++      ++guest_output_finish_pending_;
++    }
++    guest_output_finish_executor_([this]() {
++      FinishGuestOutputRefresh();
++      {
++        std::lock_guard<std::mutex> lock(guest_output_finish_mutex_);
++        --guest_output_finish_pending_;
++      }
++      guest_output_finish_cv_.notify_all();
++    });
++    return is_active;
++  }
++  FinishGuestOutputRefresh();
++  return is_active;
++}
++
++void Presenter::SetGuestOutputFinishExecutor(
++    std::function<void(std::function<void()>)> executor) {
++  {
++    // Let a refresh already handed to the old executor finish first.
++    std::unique_lock<std::mutex> lock(guest_output_finish_mutex_);
++    guest_output_finish_cv_.wait(lock, [this]() { return guest_output_finish_pending_ == 0; });
++  }
++  guest_output_finish_executor_ = std::move(executor);
++}
++
++void Presenter::FinishGuestOutputRefresh() {
+   // Make the new image the next to present on the host (the "ready" one),
+   // replacing the one already specified as the next (dropping it instead of
+   // enqueueing the new image after it) to achieve the lowest latency (also,
+@@ -645,8 +681,6 @@ bool Presenter::RefreshGuestOutput(
+       host_gpu_loss_callback_(false, false);
+     }
+   }
+-
+-  return is_active;
+ }
+ 
+ void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConfig& new_config) {
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
 index b94fe9e..8e5f781 100644
 --- a/src/ui/rex_app.cpp
@@ -2129,99 +5003,3 @@ index b94fe9e..8e5f781 100644
          if (!debug_overlay_ && !console_overlay_ && !settings_overlay_ && !achievements_overlay_)
            return true;
          return !imgui_drawer_->GetIO().WantCaptureMouse;
-diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
-index dd321a5..a1f731e 100644
---- a/src/graphics/d3d12/render_target_cache.cpp
-+++ b/src/graphics/d3d12/render_target_cache.cpp
-@@ -3798,6 +3798,7 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
-     const std::vector<Transfer>* render_target_transfers,
-     const uint64_t* render_target_resolve_clear_values,
-     const Transfer::Rectangle* resolve_clear_rectangle) {
-+  D3D12CommandProcessor::GpuTimeScope gpu_time_scope(command_processor_, D3D12CommandProcessor::kGpuTimeRenderTargetTransfer);
-   assert_true(GetPath() == Path::kHostRenderTargets);
- 
-   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
-diff --git a/src/graphics/d3d12/shared_memory.cpp b/src/graphics/d3d12/shared_memory.cpp
-index a5c97a0..8b2ec69 100644
---- a/src/graphics/d3d12/shared_memory.cpp
-+++ b/src/graphics/d3d12/shared_memory.cpp
-@@ -303,9 +303,12 @@ bool D3D12SharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocat
- 
- bool D3D12SharedMemory::UploadRanges(
-     const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
-+  D3D12CommandProcessor::GpuTimeScope gpu_time_scope(command_processor_, D3D12CommandProcessor::kGpuTimeUpload);
-   if (upload_page_ranges.empty()) {
-     return true;
-   }
-+  ++command_processor_.gpu_count_uploads_;
-+  for (auto& r : upload_page_ranges) command_processor_.gpu_count_upload_bytes_ += uint64_t(r.second) << page_size_log2();
-   CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
-   command_processor_.SubmitBarriers();
-   auto& command_list = command_processor_.GetDeferredCommandList();
-diff --git a/src/graphics/pipeline/texture/util.cpp b/src/graphics/pipeline/texture/util.cpp
-index 26d554c..28ddc03 100644
---- a/src/graphics/pipeline/texture/util.cpp
-+++ b/src/graphics/pipeline/texture/util.cpp
-@@ -11,6 +11,7 @@
- 
- #include <algorithm>
- #include <cstring>
-+#include <unordered_map>
- 
- #include <rex/assert.h>
- #include <rex/graphics/pipeline/texture/util.h>
-@@ -199,12 +200,54 @@ bool GetPackedMipOffset(uint32_t width, uint32_t height, uint32_t depth,
-   return true;
- }
- 
-+static TextureGuestLayout ComputeGuestTextureLayout(
-+    xenos::DataDimension dimension, uint32_t base_pitch_texels_div_32, uint32_t width_texels,
-+    uint32_t height_texels, uint32_t depth_or_array_size, bool is_tiled, xenos::TextureFormat format,
-+    bool has_packed_levels, bool has_base, uint32_t max_level);
-+
-+// The layout only depends on these parameters, and the same few hundred
-+// textures are looked at on every draw, so results are kept per thread.
- TextureGuestLayout GetGuestTextureLayout(xenos::DataDimension dimension,
-                                          uint32_t base_pitch_texels_div_32, uint32_t width_texels,
-                                          uint32_t height_texels, uint32_t depth_or_array_size,
-                                          bool is_tiled, xenos::TextureFormat format,
-                                          bool has_packed_levels, bool has_base,
-                                          uint32_t max_level) {
-+  struct Key {
-+    uint64_t a, b;
-+    bool operator==(const Key& o) const { return a == o.a && b == o.b; }
-+  };
-+  struct KeyHash {
-+    size_t operator()(const Key& k) const {
-+      return size_t(k.a * 0x9E3779B97F4A7C15ull ^ (k.b + 0x632BE59BD9B4E019ull + (k.a << 6)));
-+    }
-+  };
-+  thread_local std::unordered_map<Key, TextureGuestLayout, KeyHash> cache;
-+  const Key key{uint64_t(width_texels) | (uint64_t(height_texels) << 24) |
-+                    (uint64_t(uint32_t(dimension) & 0xFF) << 48) |
-+                    (uint64_t(uint32_t(format) & 0xFF) << 56),
-+                uint64_t(base_pitch_texels_div_32) | (uint64_t(depth_or_array_size) << 24) |
-+                    (uint64_t(max_level & 0xFF) << 48) | (uint64_t(is_tiled) << 56) |
-+                    (uint64_t(has_packed_levels) << 57) | (uint64_t(has_base) << 58)};
-+  auto it = cache.find(key);
-+  if (it != cache.end()) {
-+    return it->second;
-+  }
-+  if (cache.size() >= 8192) {
-+    cache.clear();
-+  }
-+  TextureGuestLayout layout =
-+      ComputeGuestTextureLayout(dimension, base_pitch_texels_div_32, width_texels, height_texels,
-+                                depth_or_array_size, is_tiled, format, has_packed_levels, has_base,
-+                                max_level);
-+  cache.emplace(key, layout);
-+  return layout;
-+}
-+
-+static TextureGuestLayout ComputeGuestTextureLayout(
-+    xenos::DataDimension dimension, uint32_t base_pitch_texels_div_32, uint32_t width_texels,
-+    uint32_t height_texels, uint32_t depth_or_array_size, bool is_tiled, xenos::TextureFormat format,
-+    bool has_packed_levels, bool has_base, uint32_t max_level) {
-   TextureGuestLayout layout;
- 
-   if (dimension == xenos::DataDimension::k1D) {

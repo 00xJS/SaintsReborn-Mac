@@ -15,6 +15,7 @@
 // to the player's own copy of the packfile and cached in mods/.cache, which is
 // then mounted over the game folder.
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -178,9 +179,9 @@ int LGameFileRead(lua_State* L) {
 
 int LSetting(lua_State* L) { return PushSetting(L, ContextOf(L)->mod->settings); }
 
-void RunPatchScript(const ModInfo& mod) {
+bool RunPatchScript(const ModInfo& mod) {
   lua_State* L = luaL_newstate();
-  if (!L) return;
+  if (!L) return false;
   luaL_openlibs(L);
   ScriptContext context{&mod};
   static const luaL_Reg kFunctions[] = {
@@ -212,13 +213,16 @@ void RunPatchScript(const ModInfo& mod) {
   lua_pop(L, 1);
 
   std::string script = PathToUtf8(mod.patch_script);
+  bool ok = true;
   if (luaL_loadfile(L, script.c_str()) != LUA_OK || lua_pcall(L, 0, 0, 0) != LUA_OK) {
     const char* message = lua_tostring(L, -1);
     Log(mod.name, std::string("patch.lua failed: ") + (message ? message : "?"));
+    ok = false;
   } else {
     Log(mod.name, "Ran patch.lua");
   }
   lua_close(L);
+  return ok;
 }
 
 uint64_t Fnv1a(uint64_t hash, const std::string& data) {
@@ -227,6 +231,47 @@ uint64_t Fnv1a(uint64_t hash, const std::string& data) {
     hash *= 1099511628211ull;
   }
   return hash;
+}
+
+// Everything the patch scripts can depend on: the patching mods (order,
+// settings, every file in their folders except logs, by name, size and time)
+// and the game's packfiles (size and time). If none of it changed since the
+// last start, the scripts would produce the same packfiles, so they are not
+// run again (they took ~1.5 s at every start).
+std::string PatchInputsKey(const std::vector<ModInfo>& mods, const fs::path& game_dir) {
+  uint64_t hash = 14695981039346656037ull;
+  hash = Fnv1a(hash, "wml-patch-inputs-1");
+  std::error_code ec;
+  auto add_file = [&](const fs::path& path, const std::string& name) {
+    hash = Fnv1a(hash, Lower(name));
+    hash = Fnv1a(hash, std::to_string(fs::file_size(path, ec)));
+    hash = Fnv1a(hash, std::to_string(fs::last_write_time(path, ec).time_since_epoch().count()));
+  };
+  for (const auto& mod : mods) {
+    if (!mod.has_patch()) continue;
+    hash = Fnv1a(hash, "mod:" + mod.id + "|" + mod.name);
+    for (const auto& kv : mod.settings) hash = Fnv1a(hash, kv.first + "=" + kv.second);
+    std::vector<std::pair<std::string, fs::path>> files;
+    for (auto it = fs::recursive_directory_iterator(mod.folder, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      if (!it->is_regular_file(ec)) continue;
+      const std::string ext = Lower(PathToUtf8(it->path().extension()));
+      if (ext == ".log") continue;
+      files.emplace_back(PathToUtf8(fs::relative(it->path(), mod.folder, ec)), it->path());
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& f : files) add_file(f.second, f.first);
+  }
+  std::vector<std::pair<std::string, fs::path>> packs;
+  for (auto it = fs::directory_iterator(game_dir / "packfiles", ec);
+       it != fs::directory_iterator(); it.increment(ec)) {
+    if (it->is_regular_file(ec)) packs.emplace_back(PathToUtf8(it->path().filename()), it->path());
+  }
+  std::sort(packs.begin(), packs.end());
+  for (const auto& p : packs) add_file(p.second, p.first);
+  char text[32];
+  std::snprintf(text, sizeof(text), "%016llx", (unsigned long long)hash);
+  return text;
 }
 
 }  // namespace
@@ -261,22 +306,55 @@ int PushSetting(lua_State* L, const std::vector<std::pair<std::string, std::stri
 
 fs::path RunPatchScripts(const std::vector<ModInfo>& mods, const fs::path& game_dir,
                          const fs::path& cache_dir) {
+  fs::path files_dir = cache_dir / "files";
+  std::error_code ec;
+  bool any_patch = false;
+  for (const auto& mod : mods) any_patch = any_patch || mod.has_patch();
+  const fs::path inputs_file = cache_dir / "keys" / "_patch_inputs.key";
+  const std::string inputs_key = any_patch ? PatchInputsKey(mods, game_dir) : std::string();
+  if (any_patch) {
+    // Same inputs as the last start: reuse its packfiles without running the
+    // scripts (the file lists them; every one must still exist).
+    std::ifstream in(inputs_file);
+    std::string old_key, line;
+    std::getline(in, old_key);
+    if (old_key == inputs_key) {
+      std::vector<fs::path> outputs;
+      bool all_there = true;
+      while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        fs::path output = files_dir / fs::u8path(line);
+        if (!fs::exists(output, ec)) {
+          all_there = false;
+          break;
+        }
+        outputs.push_back(output);
+      }
+      if (all_there) {
+        Log("WML", "Patch scripts skipped: mods and game files unchanged since the last start (" +
+                       std::to_string(outputs.size()) + " cached packfile(s))");
+        return outputs.empty() ? fs::path() : files_dir;
+      }
+    }
+  }
+
   PatchState state;
   state.game_dir = game_dir;
   g_state = &state;
+  bool all_ok = true;
   for (const auto& mod : mods) {
-    if (mod.has_patch()) RunPatchScript(mod);
+    if (mod.has_patch()) all_ok = RunPatchScript(mod) && all_ok;
   }
   g_state = nullptr;
 
   // Build (or reuse) the patched packfiles, and remove outdated ones.
-  fs::path files_dir = cache_dir / "files";
-  std::error_code ec;
+  std::vector<std::string> output_names;
   std::set<fs::path> wanted;
   for (auto& [key, pp] : state.packs) {
     if (pp.replacements.empty()) continue;
     fs::path output = files_dir / fs::u8path(pp.relative_path);
     wanted.insert(output.lexically_normal());
+    output_names.push_back(pp.relative_path);
 
     uint64_t hash = 14695981039346656037ull;
     hash = Fnv1a(hash, std::to_string(fs::file_size(pp.source, ec)));
@@ -304,6 +382,7 @@ fs::path RunPatchScripts(const std::vector<ModInfo>& mods, const fs::path& game_
     if (!pp.pack->Save(output, pp.replacements, &error)) {
       Log("WML", "Could not build " + pp.relative_path + ": " + error);
       fs::remove(output, ec);
+      all_ok = false;
       continue;
     }
     fs::create_directories(key_file.parent_path(), ec);
@@ -320,6 +399,16 @@ fs::path RunPatchScripts(const std::vector<ModInfo>& mods, const fs::path& game_
       }
     }
     for (const auto& path : stale) fs::remove(path, ec);
+  }
+  if (any_patch) {
+    fs::create_directories(inputs_file.parent_path(), ec);
+    if (all_ok) {
+      std::ofstream out(inputs_file, std::ios::trunc);
+      out << inputs_key << "\n";
+      for (const auto& name : output_names) out << name << "\n";
+    } else {
+      fs::remove(inputs_file, ec);
+    }
   }
   return wanted.empty() ? fs::path() : files_dir;
 }

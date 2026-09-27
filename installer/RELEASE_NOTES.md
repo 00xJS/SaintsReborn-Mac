@@ -1,3 +1,20 @@
+## What's new in 1.2
+
+- Much faster, most of all in busy streets and while driving.
+  - The game no longer waits for the GPU thread: up to 32 command buffers are
+    queued, still at most 4 ms behind.
+  - The GPU work is recorded and sent from its own thread.
+  - Shared memory uploads are batched, and unchanged memory is no longer
+    uploaded again.
+  - Resolved images go straight into the textures that use them.
+  - Less work per draw: cached texture and render target lookups.
+  - A timer thread that kept a CPU core busy now sleeps.
+  - Memory-watch faults are cheaper.
+  - The shop menus draw the scene once instead of four times.
+- F10 can also turn the frame rate cap off.
+- Much faster startup: mods load in a fraction of a second (was over 5 s), and
+  mods that change game files are only rebuilt when something changed.
+
 ## What's new in 1.1
 
 - SaintsRowPC is now called **Saints Reborn**. Old links still work, and

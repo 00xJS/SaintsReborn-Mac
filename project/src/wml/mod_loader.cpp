@@ -300,6 +300,13 @@ HostFunction FindFunction(uint32_t guest_address) {
   return it == g_function_map.end() ? nullptr : it->second;
 }
 
+// While mods start up, hooks are queued and switched on together afterwards
+// (one MH_ApplyQueued). MinHook suspends every thread of the process for each
+// enable (and lists all threads on the PC to find them), which cost tens of ms
+// per hook: ~60 hooks made mod loading take over 5 s.
+bool g_hook_batch = false;
+uint32_t g_hooks_queued = 0;
+
 int InstallHook(uint32_t guest_address, HostFunction hook, HostFunction* original) {
   if (!hook || !original) return -1;
   HostFunction target = FindFunction(guest_address);
@@ -320,7 +327,7 @@ int InstallHook(uint32_t guest_address, HostFunction hook, HostFunction* origina
   void* head = head_it != g_hook_heads.end() ? head_it->second : reinterpret_cast<void*>(target);
   void* trampoline = nullptr;
   if (MH_CreateHook(head, reinterpret_cast<void*>(hook), &trampoline) != MH_OK ||
-      MH_EnableHook(head) != MH_OK) {
+      (g_hook_batch ? MH_QueueEnableHook(head) : MH_EnableHook(head)) != MH_OK) {
     char text[96];
     std::snprintf(text, sizeof(text), "Hook failed at %08X", guest_address);
     Log("WML", text);
@@ -328,6 +335,7 @@ int InstallHook(uint32_t guest_address, HostFunction hook, HostFunction* origina
   }
   *original = reinterpret_cast<HostFunction>(trampoline);
   g_hook_heads[guest_address] = reinterpret_cast<void*>(hook);
+  if (g_hook_batch) ++g_hooks_queued;
   return 0;
 }
 
@@ -493,7 +501,15 @@ void Initialize(const fs::path& exe_dir, const fs::path& game_dir,
 
 void Start(uint8_t* guest_base) {
   g_guest_base = guest_base;
+  const auto start_all = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(g_hook_mutex);
+    g_hook_batch = true;
+    g_hooks_queued = 0;
+  }
+  std::string timings;
   for (const auto& mod : g_mods) {
+    const auto start_mod = std::chrono::steady_clock::now();
     std::string kinds;
     if (mod.has_files()) kinds += " files";
     if (mod.has_code()) kinds += " code";
@@ -503,7 +519,31 @@ void Start(uint8_t* guest_base) {
                       ")");
     if (mod.has_code()) StartNativeMod(mod);
     if (mod.has_script()) StartLuaMod(mod);
+    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start_mod)
+                             .count();
+    if (mod.has_code() || mod.has_script()) {
+      timings += (timings.empty() ? "" : ", ") + mod.name + " " + std::to_string(ms) + " ms";
+    }
   }
+  const auto start_apply = std::chrono::steady_clock::now();
+  uint32_t queued;
+  MH_STATUS applied = MH_OK;
+  {
+    std::lock_guard<std::mutex> lock(g_hook_mutex);
+    g_hook_batch = false;
+    queued = g_hooks_queued;
+    if (queued && g_minhook_ready) applied = MH_ApplyQueued();
+  }
+  const auto end = std::chrono::steady_clock::now();
+  Log("WML", "Mods started in " +
+                 std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - start_all)
+                                    .count()) +
+                 " ms (" + std::to_string(queued) + " hooks switched on together in " +
+                 std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    end - start_apply)
+                                    .count()) +
+                 " ms" + (applied == MH_OK ? "" : ", FAILED") + "): " + timings);
 }
 
 void OnFrame() {

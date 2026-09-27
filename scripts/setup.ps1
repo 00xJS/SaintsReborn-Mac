@@ -142,6 +142,9 @@ if (-not (Done "sdk" $sdkKey)) {
     try {
         Step "Checking out ReXGlue SDK $($SdkCommit.Substring(0, 7)) and its dependencies"
         Run "git" @("-c", "advice.detachedHead=false", "checkout", "--force", $SdkCommit)
+        # Files an older version of the patch added are not tracked by the SDK,
+        # so the checkout leaves them behind and the new patch would not apply.
+        Run "git" @("clean", "-fdq", "--", "src", "include", "resources", "cmake")
         # Shallow submodules save several GB; fall back to full history if a
         # server refuses to serve a pinned commit shallowly.
         & git submodule update --init --recursive --force --depth 1

@@ -38,6 +38,7 @@ REXCVAR_DECLARE(std::string, input_backend);
 
 #ifdef _WIN32
 #include <windows.h>
+#include "wml_pagequery.h"
 
 // ============================================================================
 // Guest memory safety net
@@ -108,11 +109,12 @@ static LONG WINAPI NullPageHandler(EXCEPTION_POINTERS* ep) {
         ep->ExceptionRecord->ExceptionInformation[0] == 1) {
         const auto address = ep->ExceptionRecord->ExceptionInformation[1];
         if (address >= g_guest_base + 0xA0000000ull && address < g_guest_base + 0x100000000ull) {
-            MEMORY_BASIC_INFORMATION info{};
-            if (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) &&
-                info.State == MEM_COMMIT &&
-                ((info.Protect & 0xFF) == PAGE_READONLY ||
-                 (info.Protect & 0xFF) == PAGE_EXECUTE_READ)) {
+            // One-page query (wml_pagequery.h): VirtualQuery here walked the
+            // whole uniform region on every write-watch fault.
+            DWORD protect = 0;
+            bool committed = false;
+            if (WmlQueryPage(reinterpret_cast<void*>(address), &protect, &committed) && committed &&
+                ((protect & 0xFF) == PAGE_READONLY || (protect & 0xFF) == PAGE_EXECUTE_READ)) {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
         }
@@ -413,7 +415,7 @@ class SaintsRowApp : public rex::ui::WindowedApp,
                      public rex::ui::WindowInputListener {
 public:
     // F11 toggles between fullscreen and windowed, F1 shows the frame rate,
-    // F10 cycles the frame rate cap (30/60/90/120).
+    // F10 cycles the frame rate cap (30/60/90/120/off).
     void OnKeyDown(rex::ui::KeyEvent& e) override {
         if (e.virtual_key() == rex::ui::VirtualKey::kF11 && !e.prev_state() && window_) {
             window_->SetFullscreen(!window_->IsFullscreen());
@@ -596,23 +598,26 @@ public:
             rex::cvar::SetFlagByName("host_read_cache_mb", std::to_string(ram_cache_mb));
             REXLOG_INFO("Packfile RAM read cache budget: {} MiB (fills on demand)", ram_cache_mb);
             // Let the game prepare the next command buffers while the GPU thread
-            // executes earlier ones (queue depth 4; each queued buffer carries
-            // copies of the command memory it uses). The GPU thread may also run
-            // at most 4 ms behind: on PCs where it couldn't keep up it fell a
-            // frame or more behind with 8 queued, and the game reused memory the
-            // queued work still needed (garbled graphics, then a crash).
+            // executes earlier ones (queue depth 32, about a frame of command
+            // buffers; each queued buffer carries copies of the command memory it
+            // uses). The GPU thread may also run at most 12 ms behind: on PCs where
+            // it couldn't keep up it fell a frame or more behind, and the game
+            // reused memory the queued work still needed (garbled graphics, then a
+            // crash). The time limit, not the depth, is what keeps that from
+            // happening; 4 ms made the game wait for the GPU thread almost every
+            // frame while driving.
             // "gpu_queue.txt" next to the exe sets another depth,
             // "gpu_max_lag.txt" another lag in microseconds (0 = no limit); a file
             // named "sync_gpu" turns queueing off (wait for every buffer).
             {
-                int max_lag_us = 4000;
+                int max_lag_us = 12000;
                 if (FILE* lf = std::fopen("gpu_max_lag.txt", "rb")) {
                     int v = 0;
                     if (std::fscanf(lf, "%d", &v) == 1 && v >= 0 && v <= 1000000) max_lag_us = v;
                     std::fclose(lf);
                 }
                 rex::cvar::SetFlagByName("gpu_async_max_lag_us", std::to_string(max_lag_us));
-                int depth = 4;
+                int depth = 32;
                 if (FILE* qf = std::fopen("gpu_queue.txt", "rb")) {
                     int v = 0;
                     if (std::fscanf(qf, "%d", &v) == 1 && v >= 0 && v <= 64) depth = v;
