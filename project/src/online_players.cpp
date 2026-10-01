@@ -222,6 +222,11 @@ void sr::PlayersFillList(PPCContext& ctx, uint8_t* base) {
   const std::string text = rex::cvar::GetFlagByName("online_players");
   std::string state;
   const size_t count = Parse(text, state).size();
+  static const bool no_epic = [] {
+    HMODULE m = GetModuleHandleW(L"rexruntime.dll");
+    return m && GetProcAddress(m, "SrEosStub") != nullptr;
+  }();
+  if (state.empty() && no_epic) state = "nosdk";
   g_built_from = CountKey(text);
   g_built_at = std::chrono::steady_clock::now();
 
@@ -301,6 +306,41 @@ PPC_FUNC(sub_8265BBC0) {
     return;
   }
   ctx.r3.u64 = send(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r7.u32);
+}
+
+// Xbox Live storage (the multiplayer character, XSTORAGE:/3/MPStorage, 27,724
+// bytes from 0x83822500): the game's XStorageUploadFromMemory (sub_8265C6E0:
+// user, server path, size, buffer, XOVERLAPPED) and XStorageDownloadToMemory
+// (sub_8265C400: user, server path, size, buffer, results size, results,
+// XOVERLAPPED) wrappers talk to Live's servers. The runtime keeps the files
+// next to the profile settings instead (SrStorageUpload / SrStorageDownload,
+// xlivebase_app.cpp), so the character is still there after a restart.
+extern "C" void __imp__sub_8265C6E0(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8265C6E0) {
+  using Upload = uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+  static const Upload upload = [] {
+    HMODULE m = GetModuleHandleW(L"rexruntime.dll");
+    return m ? reinterpret_cast<Upload>(GetProcAddress(m, "SrStorageUpload")) : nullptr;
+  }();
+  if (!upload) {
+    __imp__sub_8265C6E0(ctx, base);
+    return;
+  }
+  ctx.r3.u64 = upload(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
+}
+
+extern "C" void __imp__sub_8265C400(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8265C400) {
+  using Download = uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+  static const Download download = [] {
+    HMODULE m = GetModuleHandleW(L"rexruntime.dll");
+    return m ? reinterpret_cast<Download>(GetProcAddress(m, "SrStorageDownload")) : nullptr;
+  }();
+  if (!download) {
+    __imp__sub_8265C400(ctx, base);
+    return;
+  }
+  ctx.r3.u64 = download(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32, ctx.r9.u32);
 }
 
 // Map check. sub_82373788(mode, id) finds a multiplayer map record by id

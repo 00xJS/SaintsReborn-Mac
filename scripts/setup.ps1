@@ -292,6 +292,42 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Warning: the keyboard/mouse button pictures could not be made; the game will show controller buttons." -ForegroundColor Yellow
 }
 
+# Online play over Epic (PLAYERS list, online lobbies, invites, chat, co-op by
+# join code): the Epic SDK and the game's Epic IDs can't be in the public
+# repository, so a ready-made online pack (Epic-enabled runtime and co-op DLL,
+# the Epic DLL and eos.ini) is downloaded from the GitHub release "online-pack".
+# It is installed only when it was built from exactly this source (stamp).
+if (-not $EosOn) {
+    Step "Online play (Epic)"
+    try {
+        . (Join-Path $Root "scripts\online_stamp.ps1")
+        $want = Get-OnlineStamp $Root $SdkCommit
+        $packUrl = "https://github.com/whompay/SaintsReborn/releases/download/online-pack/SaintsReborn-Online.zip"
+        $packZip = Join-Path $env:TEMP "SaintsReborn-Online.zip"
+        $packDir = Join-Path $env:TEMP "SaintsReborn-Online"
+        Remove-Item -Force -ErrorAction SilentlyContinue $packZip
+        & curl.exe -sSfL -o $packZip $packUrl
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $packZip)) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -UseBasicParsing -Uri $packUrl -OutFile $packZip
+        }
+        if (Test-Path $packDir) { Remove-Item -Recurse -Force $packDir }
+        Expand-Archive -Force $packZip $packDir
+        $have = (Get-Content -Raw (Join-Path $packDir "stamp.txt")).Trim()
+        if ($have -eq $want) {
+            Get-ChildItem -Recurse -File $packDir | Where-Object { $_.Name -ne "stamp.txt" } | ForEach-Object {
+                $dest = Join-Path $Dist $_.FullName.Substring($packDir.Length + 1)
+                New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+                Copy-Item -Force -ErrorAction Stop $_.FullName $dest
+            }
+            Write-Host "Online play: on (online pack installed)."
+        } else {
+            Write-Host "Online play: the online pack is for another version of the source, so online play stays off for now (System Link on a LAN and co-op by IP still work). Run the updater again later." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Online play: the online pack could not be installed ($($_.Exception.Message)). System Link on a LAN and co-op by IP still work; run the updater again later." -ForegroundColor Yellow
+    }
+}
 Stop-Transcript | Out-Null
 Write-Host "`nDone! Run dist\WhompaysModLoader.exe to choose mods and play, or dist\saintsrow.exe to play directly." -ForegroundColor Green
 Write-Host "F11 toggles fullscreen. See README.md for options."

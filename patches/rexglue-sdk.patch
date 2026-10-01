@@ -9078,10 +9078,10 @@ index 0000000..2489dd7
 +
 +}  // namespace
 diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
-index 3593403..774330b 100644
+index 3593403..22b588e 100644
 --- a/src/kernel/xam/apps/xlivebase_app.cpp
 +++ b/src/kernel/xam/apps/xlivebase_app.cpp
-@@ -10,8 +10,63 @@
+@@ -10,8 +10,68 @@
   */
  
  #include <rex/kernel/xam/apps/xlivebase_app.h>
@@ -9089,6 +9089,8 @@ index 3593403..774330b 100644
 +#include <unordered_map>
 +
 +#include <rex/cvar.h>
++#include <rex/filesystem.h>
++#include <rex/system/xam/content_manager.h>
  #include <rex/logging.h>
 +#include <rex/string.h>
  #include <rex/thread.h>
@@ -9097,6 +9099,9 @@ index 3593403..774330b 100644
 +#include <rex/system/xam/user_profile.h>
 +
 +#include <algorithm>
++#include <cctype>
++#include <cstdio>
++#include <filesystem>
 +#include <cstring>
 +#include <string>
 +#include <vector>
@@ -9145,7 +9150,7 @@ index 3593403..774330b 100644
  
  namespace rex {
  namespace kernel {
-@@ -29,6 +84,12 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -29,6 +89,12 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
                                              uint32_t buffer_length) {
    // NOTE: buffer_length may be zero or valid.
    auto buffer = memory_->TranslateVirtual(buffer_ptr);
@@ -9158,7 +9163,7 @@ index 3593403..774330b 100644
    switch (message) {
      case 0x00058004: {
        // Called on startup, seems to just return a bool in the buffer.
-@@ -51,20 +112,70 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -51,20 +117,70 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        return 0x80151802;  // ERROR_CONNECTION_INVALID
      }
      case 0x00058020: {
@@ -9241,7 +9246,7 @@ index 3593403..774330b 100644
      }
      case 0x00058046: {
        // Required to be successful for 4D530910 to detect signed-in profile
-@@ -73,6 +184,95 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -73,6 +189,95 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        REXKRNL_DEBUG("XLiveBaseUnk58046({:08X}, {:08X}) unimplemented", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
      }
@@ -9337,7 +9342,7 @@ index 3593403..774330b 100644
      case 0x00058037: {
        REXKRNL_DEBUG("XPresenceInitialize({:08X}, {:08X})", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
-@@ -89,3 +289,26 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -89,3 +294,116 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
  }  // namespace xam
  }  // namespace kernel
  }  // namespace rex
@@ -9363,6 +9368,96 @@ index 3593403..774330b 100644
 +    return 997;  // ERROR_IO_PENDING, like the console
 +  }
 +  return result;
++}
++
++// XStorage for the game exe (its wrappers sub_8265C6E0 / sub_8265C400 are
++// replaced there, project/src/online_players.cpp). Xbox Live kept these files
++// (the multiplayer character, XSTORAGE:/3/MPStorage) on its servers; Saints
++// Reborn keeps them next to the profile settings:
++// <content>/<title>/profile/<player name>/storage/<facility>_<name>.
++namespace {
++std::filesystem::path StorageFile(uint32_t path_ptr) {
++  auto* ks = REX_KERNEL_STATE();
++  std::string name;
++  if (path_ptr) {
++    auto* p = ks->memory()->TranslateVirtual<const uint8_t*>(path_ptr);
++    for (uint32_t i = 0; i < 260; ++i) {
++      const char16_t c = char16_t(p[i * 2] << 8 | p[i * 2 + 1]);
++      if (!c) break;
++      name.push_back(c < 0x80 && (std::isalnum(int(c)) || c == '-' || c == '.') ? char(c) : '_');
++    }
++  }
++  const std::string prefix = "XSTORAGE__";  // "XSTORAGE:/" after the replacement above
++  if (name.rfind(prefix, 0) == 0) name = name.substr(prefix.size());
++  if (name.empty()) name = "unnamed";
++  return ks->content_manager()->ResolveGameUserContentPath() / "storage" / name;
++}
++uint32_t StorageFinish(uint32_t overlapped_ptr, uint32_t result, uint32_t length) {
++  if (!overlapped_ptr) return result;
++  REX_KERNEL_STATE()->CompleteOverlappedImmediateEx(overlapped_ptr, result, result ? result : 0, length);
++  return 997;  // ERROR_IO_PENDING, like the console
++}
++}  // namespace
++
++// XStorageUploadFromMemory(user, server path, size, buffer, XOVERLAPPED)
++extern "C" __declspec(dllexport) uint32_t SrStorageUpload(uint32_t user, uint32_t path_ptr, uint32_t size,
++                                                          uint32_t buffer_ptr, uint32_t overlapped_ptr) {
++  auto* ks = REX_KERNEL_STATE();
++  if (!ks || !buffer_ptr || size > (16u << 20)) return 1627;
++  const auto file = StorageFile(path_ptr);
++  std::error_code ec;
++  std::filesystem::create_directories(file.parent_path(), ec);
++  auto tmp = file;
++  tmp += ".tmp";
++  bool ok = false;
++  if (FILE* f = rex::filesystem::OpenFile(tmp, "wb")) {
++    ok = std::fwrite(ks->memory()->TranslateVirtual<const uint8_t*>(buffer_ptr), 1, size, f) == size;
++    ok = std::fclose(f) == 0 && ok;
++  }
++  if (ok) {
++    std::filesystem::rename(tmp, file, ec);
++    ok = !ec;
++  }
++  REXLOG_INFO("LIVE XStorageUpload(user {}, {} bytes) -> {}{}", user, size, rex::path_to_utf8(file),
++              ok ? "" : " FAILED");
++  return StorageFinish(overlapped_ptr, ok ? 0 : 1627, ok ? size : 0);
++}
++
++// XStorageDownloadToMemory(user, server path, buffer size, buffer, results
++// size, XSTORAGE_DOWNLOAD_TO_MEMORY_RESULTS {u32 bytes, u64 owner xuid,
++// u64 created filetime}, XOVERLAPPED). Nothing stored yet: fails at once
++// (1627), which the game treats as "no saved character" (defaults).
++extern "C" __declspec(dllexport) uint32_t SrStorageDownload(uint32_t user, uint32_t path_ptr, uint32_t size,
++                                                            uint32_t buffer_ptr, uint32_t results_size,
++                                                            uint32_t results_ptr, uint32_t overlapped_ptr) {
++  auto* ks = REX_KERNEL_STATE();
++  if (!ks || !buffer_ptr) return 1627;
++  const auto file = StorageFile(path_ptr);
++  std::vector<uint8_t> data;
++  if (FILE* f = rex::filesystem::OpenFile(file, "rb")) {
++    std::fseek(f, 0, SEEK_END);
++    const long n = std::ftell(f);
++    std::fseek(f, 0, SEEK_SET);
++    if (n > 0 && n <= long(16u << 20)) {
++      data.resize(size_t(n));
++      if (std::fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
++    }
++    std::fclose(f);
++  }
++  if (data.empty()) {
++    REXLOG_INFO("LIVE XStorageDownload(user {}): {} not saved yet", user, rex::path_to_utf8(file));
++    return 1627;
++  }
++  const uint32_t n = uint32_t(std::min<size_t>(data.size(), size));
++  std::memcpy(ks->memory()->TranslateVirtual<uint8_t*>(buffer_ptr), data.data(), n);
++  if (results_ptr && results_size >= 20) {
++    auto* r = ks->memory()->TranslateVirtual<uint8_t*>(results_ptr);
++    std::memset(r, 0, results_size);
++    rex::memory::store_and_swap<uint32_t>(r + 0, n);
++    rex::memory::store_and_swap<uint64_t>(r + 4, ks->user_profile()->xuid());
++  }
++  REXLOG_INFO("LIVE XStorageDownload(user {}, {} of {} bytes) <- {}", user, n, data.size(), rex::path_to_utf8(file));
++  return StorageFinish(overlapped_ptr, 0, n);
 +}
 diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
 index 1fb1e16..45e5fbb 100644
@@ -10275,7 +10370,7 @@ index 9abcef6..feec2b3 100644
    // Handle ref is incremented, so return that.
    uint32_t handle = listener->handle();
 diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
-index 8778066..ec0690d 100644
+index 8778066..67a86e0 100644
 --- a/src/kernel/xam/xam_user.cpp
 +++ b/src/kernel/xam/xam_user.cpp
 @@ -14,8 +14,11 @@
@@ -10299,7 +10394,28 @@ index 8778066..ec0690d 100644
  namespace rex {
  namespace kernel {
  namespace xam {
-@@ -383,7 +388,13 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
+@@ -273,6 +278,11 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
+     if (setting && setting->is_set) {
+       setting->Append(&out_setting->data, &out_stream);
+     }
++    if ((setting_id & 0x3F00) == 0x3F00) {
++      REXKRNL_INFO("Profile read: setting {:08X} -> {} ({} bytes)", setting_id,
++                   setting && setting->is_set ? "found" : "not set",
++                   setting && setting->is_set ? static_cast<uint32_t>(out_setting->data.binary.size) : 0u);
++    }
+     ++out_setting;
+   }
+ 
+@@ -348,6 +358,8 @@ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_
+           // Data pointer was NULL, so just fill with zeroes
+           bytes.resize(binary_size, 0);
+         }
++        REXKRNL_INFO("Profile write: setting {:08X}, {} bytes (user {})",
++                     static_cast<uint32_t>(setting.setting_id), binary_size, user_index);
+         user_profile->AddSetting(
+             std::make_unique<xam::UserProfile::BinarySetting>(setting.setting_id, bytes));
+       } break;
+@@ -383,7 +395,13 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
    }
  
    // If we deny everything, games should hopefully not try to do stuff.
@@ -10314,7 +10430,7 @@ index 8778066..ec0690d 100644
    return X_ERROR_SUCCESS;
  }
  
-@@ -595,6 +606,72 @@ class XStaticAchievementEnumerator : public XEnumerator {
+@@ -595,6 +613,72 @@ class XStaticAchievementEnumerator : public XEnumerator {
    size_t current_item_ = 0;
  };
  
@@ -10387,7 +10503,7 @@ index 8778066..ec0690d 100644
  u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 xuid, u32 flags,
                                               u32 offset, u32 count, mapped_u32 buffer_size_ptr,
                                               mapped_u32 handle_ptr) {
-@@ -761,7 +838,7 @@ REX_EXPORT_STUB(__imp__XamUserAddRecentPlayer);
+@@ -761,7 +845,7 @@ REX_EXPORT_STUB(__imp__XamUserAddRecentPlayer);
  REX_EXPORT_STUB(__imp__XamUserAllowedToPostToSocialNetwork);
  REX_EXPORT_STUB(__imp__XamUserCreateAvatarAssetEnumerator);
  REX_EXPORT_STUB(__imp__XamUserCreatePlayerEnumerator);
@@ -12288,10 +12404,10 @@ index 0000000..d04c540
 +}
 diff --git a/src/system/eos_lan_off.cpp b/src/system/eos_lan_off.cpp
 new file mode 100644
-index 0000000..64c00b1
+index 0000000..06b32b7
 --- /dev/null
 +++ b/src/system/eos_lan_off.cpp
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,68 @@
 +// Built instead of eos_lan.cpp when the Epic Online Services SDK headers
 +// aren't available (REX_EOS_SDK_INCLUDE not set / not found). Online play
 +// over Epic (Live lobbies, PLAYERS list, invites, chat) is then off; System
@@ -12352,6 +12468,9 @@ index 0000000..64c00b1
 +#endif
 +SR_EXPORT int SrEosLend(int) { return 1; }
 +SR_EXPORT void SrEosReturn() {}
++// Marker: this runtime was built without the Epic SDK (the PLAYERS row then
++// says so instead of "CONNECTING...").
++SR_EXPORT int SrEosStub() { return 1; }
 +SR_EXPORT int SrMapCheck(uint32_t, int found) { return found ? 1 : 0; }
 +SR_EXPORT int SrChatAvailable() { return 0; }
 +SR_EXPORT int SrChatInSession() { return 0; }
@@ -12784,7 +12903,7 @@ index bd6c797..c4c6de2 100644
        data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
    content_license = package->GetPackageLicense();
 diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
-index a77f5e6..75e5554 100644
+index a77f5e6..a4383a9 100644
 --- a/src/system/xam/user_profile.cpp
 +++ b/src/system/xam/user_profile.cpp
 @@ -10,17 +10,47 @@
@@ -12835,6 +12954,24 @@ index a77f5e6..75e5554 100644
  UserProfile::UserProfile() {
    // 58410A1F checks the user XUID against a mask of 0x00C0000000000000 (3<<54),
    // if non-zero, it prevents the user from playing the game.
+@@ -137,6 +167,7 @@ void UserProfile::LoadSetting(UserProfile::Setting* setting) {
+     auto setting_id = fmt::format("{:08X}", setting->setting_id);
+     auto file_path = content_dir / setting_id;
+     auto file = rex::filesystem::OpenFile(file_path, "rb");
++    REXSYS_INFO("Profile load: {} {}", rex::path_to_utf8(file_path), file ? "found" : "NOT FOUND");
+     if (file) {
+       fseek(file, 0, SEEK_END);
+       uint32_t input_file_size = static_cast<uint32_t>(ftell(file));
+@@ -163,6 +194,9 @@ void UserProfile::SaveSetting(UserProfile::Setting* setting) {
+     auto setting_id = fmt::format("{:08X}", setting->setting_id);
+     auto file_path = content_dir / setting_id;
+     auto file = rex::filesystem::OpenFile(file_path, "wb");
++    REXSYS_INFO("Profile save: {} ({} bytes){}", rex::path_to_utf8(file_path), serialized_setting.size(),
++                file ? "" : " - COULD NOT OPEN");
++    if (!file) return;
+     fwrite(serialized_setting.data(), 1, serialized_setting.size(), file);
+     fclose(file);
+   } else {
 diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
 index 2d13ac8..d437ac5 100644
 --- a/src/system/xsocket.cpp
