@@ -213,7 +213,9 @@ fn write_cross_file(llvm_bin: &Path) -> Result<PathBuf> {
          set(CMAKE_AR \"{b}/llvm-ar\")\n\
          set(CMAKE_RANLIB \"{b}/llvm-ranlib\")\n\
          set(CMAKE_MT \"{b}/llvm-mt\")\n\
-         set(CMAKE_LINKER_TYPE LLD)\n"
+         set(CMAKE_LINKER_TYPE LLD)\n\
+         # Only the release C runtime is downloaded (no debug libraries).\n\
+         set(CMAKE_TRY_COMPILE_CONFIGURATION Release)\n"
     );
     let path = tools_root().join("windows-x64.cmake");
     fsx::write_text(&path, &text)?;
