@@ -63,7 +63,8 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to the release
-        if: github.event_name == 'release'
+        # Linux Setup is attached once the Linux build is finished.
+        if: github.event_name == 'release' && matrix.name == 'Windows'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -74,7 +75,8 @@ jobs:
   linux-sdk:
     name: Linux build of the SDK
     needs: build
-    if: github.event_name != 'release'
+    # Run by hand while the Linux build is being finished.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

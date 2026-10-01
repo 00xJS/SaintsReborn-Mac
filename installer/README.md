@@ -24,7 +24,7 @@ What it does:
 5. Installs the online pack when it matches the source (the stamp is the
    same as `scripts/online_stamp.ps1`), and creates shortcuts.
 
-On Linux it builds the same Windows game with the same compiler (a cross
+On Linux (work in progress) it builds the same Windows game with the same compiler (a cross
 build) and the player runs it with Proton. Linux players need `git` and the
 C++ standard library headers (`build-essential`, `gcc-c++` or `base-devel`).
 

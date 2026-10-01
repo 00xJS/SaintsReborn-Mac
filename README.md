@@ -38,32 +38,28 @@ use the faster one.
 
 ## Easy install
 
-Download Setup from the
-[latest release](https://github.com/whompay/SaintsReborn/releases/latest):
-**SaintsReborn-Setup.exe** for Windows, or **SaintsReborn-Setup-linux-x64** for
-Linux. Run it, choose your `.iso` or a folder with your game files (the one
-with `default.xex` and `packfiles` in it), and press **Install**.
+Download **SaintsReborn-Setup.exe** from the
+[latest release](https://github.com/whompay/SaintsReborn/releases/latest), run
+it, choose your `.iso` or a folder with your game files (the one with
+`default.xex` and `packfiles` in it), and press **Install**.
 
 Setup downloads the build tools it needs: clang, CMake, Ninja and Microsoft's
-C++ headers and libraries. That is about 1.5 GB, all kept in one folder, with
-no Visual Studio and no administrator rights needed. It then builds the game
-and adds a Saints Reborn shortcut. The first build takes 10–60 minutes,
-depending on your CPU.
+C++ headers and libraries. That is about 1.5 GB, all kept in one folder, and
+no Visual Studio is needed. Windows only asks for permission if the Visual C++
+runtime is missing. Setup then builds the game and adds a Saints Reborn
+shortcut. The first build takes 10–60 minutes, depending on your CPU.
 
 To update, run Setup again or use the **Update Saints Reborn** shortcut. Only
 what changed is rebuilt, and your saves and mod list are kept. Installs made
 with the old Setup can be updated the same way.
 
+Co-op and multiplayer are built in, so they don't appear in the mod loader's
+list. They are always on.
+
 ### Linux (Steam Deck, desktop Linux)
 
-Setup builds the Windows version of the game on Linux, and you play it with
-Proton. You need `git` and a C++ compiler's standard headers
-(`sudo apt install git build-essential`, `sudo dnf install git gcc-c++` or
-`sudo pacman -S git base-devel`). After the build, add
-`dist/WhompaysModLoader.exe` to Steam (**Add a Game > Add a Non-Steam Game**),
-then turn on **Properties > Compatibility > Force Proton**. If `umu-run` or
-`wine` is installed, Setup also adds a Saints Reborn entry to your
-application menu. Linux support is new, so please report problems.
+Coming soon: Setup will build the game on Linux, and you'll play it with
+Proton.
 
 ## Requirements (manual build with setup.bat)
 
