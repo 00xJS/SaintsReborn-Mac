@@ -9618,7 +9618,7 @@ index 9dcab94..759fdc9 100644
  
  u32 XamGetPrivateEnumStructureFromHandle_entry(u32 handle, mapped_u32 out_object_ptr) {
 diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
-index 58e36a4..aa22e94 100644
+index 58e36a4..488491a 100644
 --- a/src/kernel/xam/xam_net.cpp
 +++ b/src/kernel/xam/xam_net.cpp
 @@ -12,7 +12,19 @@
@@ -9885,7 +9885,7 @@ index 58e36a4..aa22e94 100644
  }
  
  u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
-@@ -476,26 +618,118 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
+@@ -476,26 +618,123 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
    rex::string::copy_truncating(string_out, "666.666.666.666", string_size);
  }
  
@@ -9929,6 +9929,11 @@ index 58e36a4..aa22e94 100644
 +  const uint32_t ip = in_addr;  // register value = the address as the guest reads it
 +  xn_addr.Zero();
 +  xn_addr->ina.s_addr = htonl(ip);
++  // The same XNADDR that player's XNetGetTitleXnAddr reports (inaOnline too):
++  // the match setup finds players by comparing all 36 bytes (sub_82380628
++  // marks a connected player ready only on a match; else the host waited for
++  // its 10 s timeout before every match).
++  if (REXCVAR_GET(xam_signed_in_to_live)) xn_addr->inaOnline.s_addr = htonl(ip);
 +  const uint8_t mac[6] = {0x00, 0x22, uint8_t(ip >> 24), uint8_t(ip >> 16), uint8_t(ip >> 8), uint8_t(ip)};
 +  std::memcpy(xn_addr->abEnet, mac, 6);
 +  bool kid_written = false;
@@ -10013,7 +10018,7 @@ index 58e36a4..aa22e94 100644
  // https://github.com/ILOVEPIE/Cxbx-Reloaded/blob/master/src/CxbxKrnl/EmuXOnline.h#L39
  struct XEthernetStatus {
    static const uint32_t XNET_ETHERNET_LINK_ACTIVE = 0x01;
-@@ -506,7 +740,9 @@ struct XEthernetStatus {
+@@ -506,7 +745,9 @@ struct XEthernetStatus {
  };
  
  u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
@@ -10024,7 +10029,7 @@ index 58e36a4..aa22e94 100644
  }
  
  u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
-@@ -559,7 +795,106 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
+@@ -559,7 +800,106 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
  
  u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
                                 u32 flags) {
@@ -10132,7 +10137,7 @@ index 58e36a4..aa22e94 100644
  }
  
  u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
-@@ -591,7 +926,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
+@@ -591,7 +931,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
      XThread::SetLastError(error);
      return -1;
    }
@@ -10142,7 +10147,7 @@ index 58e36a4..aa22e94 100644
    return socket->handle();
  }
  
-@@ -605,6 +941,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+@@ -605,6 +946,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
  
    // TODO: Absolutely delete this object. It is no longer valid after calling
    // closesocket.
@@ -10150,7 +10155,7 @@ index 58e36a4..aa22e94 100644
    socket->Close();
    socket->ReleaseHandle();
    return 0;
-@@ -652,6 +989,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
+@@ -652,6 +994,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
    }
  
    X_STATUS status = socket->IOControl(cmd, arg_ptr);
@@ -10159,7 +10164,7 @@ index 58e36a4..aa22e94 100644
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
      return -1;
-@@ -670,6 +1009,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
+@@ -670,6 +1014,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
    }
  
    N_XSOCKADDR_IN native_name(name);
@@ -10168,7 +10173,7 @@ index 58e36a4..aa22e94 100644
    X_STATUS status = socket->Bind(&native_name, namelen);
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
-@@ -795,9 +1136,71 @@ struct host_set {
+@@ -795,9 +1141,71 @@ struct host_set {
    }
  };
  
@@ -10240,7 +10245,7 @@ index 58e36a4..aa22e94 100644
    host_set host_readfds = {};
    fd_set native_readfds = {};
    if (readfds) {
-@@ -825,8 +1228,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+@@ -825,8 +1233,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
                                               reinterpret_cast<int32_t*>(&timeout.tv_usec));
      timeout_in = &timeout;
    }
@@ -10310,7 +10315,7 @@ index 58e36a4..aa22e94 100644
    if (readfds) {
      host_readfds.UpdateFrom(&native_readfds);
      host_readfds.Store(readfds);
-@@ -852,7 +1314,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
+@@ -852,7 +1319,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
      return -1;
    }
  
@@ -10325,7 +10330,7 @@ index 58e36a4..aa22e94 100644
  }
  
  u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
-@@ -871,6 +1339,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
+@@ -871,6 +1344,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
    uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
    int ret =
        socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
@@ -10345,7 +10350,7 @@ index 58e36a4..aa22e94 100644
  
    if (from_ptr) {
      from_ptr->sin_family = native_from.sin_family;
-@@ -916,9 +1397,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
+@@ -916,9 +1402,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
    }
  
    N_XSOCKADDR_IN native_to(to_ptr);
@@ -10395,7 +10400,7 @@ index 58e36a4..aa22e94 100644
  u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
    const uint8_t max_fd_count = std::min((uint32_t)fd_set->fd_count, uint32_t(64));
    for (uint8_t i = 0; i < max_fd_count; i++) {
-@@ -1030,25 +1551,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
+@@ -1030,25 +1556,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
  REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
  REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
  REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
@@ -10429,7 +10434,7 @@ index 58e36a4..aa22e94 100644
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
-@@ -1098,5 +1619,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
+@@ -1098,5 +1624,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
  REX_EXPORT_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
  REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
  REX_EXPORT_STUB(__imp__NetDll_getpeername);
