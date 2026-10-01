@@ -28,7 +28,7 @@ namespace SaintsRebornSetup
 {
     static class Config
     {
-        public const string Version = "1.1.0";
+        public const string Version = "1.1.1";
         public const string RepoUrl = "https://github.com/whompay/SaintsReborn.git";
         public const string RepoPage = "https://github.com/whompay/SaintsReborn";
         public const string Branch = "main";
@@ -337,6 +337,7 @@ namespace SaintsRebornSetup
                     });
                     if (r != DialogResult.Yes)
                     {
+                        RepairOnlinePack(dir);
                         CreateShortcuts(dir, shortcut);
                         RememberInstallDir(dir);
                         Progress(100);
@@ -566,6 +567,19 @@ namespace SaintsRebornSetup
             }
             ForceDelete(tmp);
             return true;
+        }
+
+        // Online play (Epic) comes as a separate online pack (scripts\online_pack.ps1).
+        // When the source is already up to date, a failed or missing pack is
+        // fetched again here instead of rebuilding the game.
+        void RepairOnlinePack(string dir)
+        {
+            string script = Path.Combine(dir, @"scripts\online_pack.ps1");
+            if (!File.Exists(script)) return;
+            Status("Checking the online play files");
+            string ps = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
+            RunLogged(ps, "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -Root \"" + dir +
+                      "\" -Dist \"" + Path.Combine(dir, "dist") + "\"", dir, null);
         }
 
         static string Short(string sha) { return sha.Length > 7 ? sha.Substring(0, 7) : sha; }
