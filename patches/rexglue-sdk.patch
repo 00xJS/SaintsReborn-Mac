@@ -13454,10 +13454,22 @@ index 306118e..cf92d40 100644
    // internally before the failure according to Jesse Natalie from the DirectX
    // Discord server.
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index 7360ed9..252cc15 100644
+index 7360ed9..fbfe2ef 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
-@@ -550,6 +550,12 @@ bool Presenter::RefreshGuestOutput(
+@@ -32,6 +32,11 @@ REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
+ REXCVAR_DEFINE_BOOL(present_letterbox, true, "UI/Presenter",
+                     "Enable letterboxing for non-native aspect ratios");
+ 
++REXCVAR_DEFINE_INT32(present_aspect_x, 0, "UI/Presenter",
++                     "Show the guest output at this aspect ratio (x:y); 0 = the guest's own");
++REXCVAR_DEFINE_INT32(present_aspect_y, 0, "UI/Presenter",
++                     "Show the guest output at this aspect ratio (x:y); 0 = the guest's own");
++
+ REXCVAR_DEFINE_INT32(present_safe_area_x, 90, "UI/Presenter",
+                      "Horizontal safe area percentage (0-100)")
+     .range(0, 100);
+@@ -550,6 +555,12 @@ bool Presenter::RefreshGuestOutput(
      uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t display_aspect_ratio_x,
      uint32_t display_aspect_ratio_y,
      std::function<bool(GuestOutputRefreshContext& context)> refresher) {
@@ -13470,7 +13482,7 @@ index 7360ed9..252cc15 100644
    GuestOutputProperties& writable_properties =
        guest_output_properties_[guest_output_mailbox_writable_];
    writable_properties.frontbuffer_width = frontbuffer_width;
-@@ -576,6 +582,36 @@ bool Presenter::RefreshGuestOutput(
+@@ -576,6 +587,36 @@ bool Presenter::RefreshGuestOutput(
      guest_output_active_last_refresh_ = false;
    }
  
@@ -13507,7 +13519,7 @@ index 7360ed9..252cc15 100644
    // Make the new image the next to present on the host (the "ready" one),
    // replacing the one already specified as the next (dropping it instead of
    // enqueueing the new image after it) to achieve the lowest latency (also,
-@@ -645,8 +681,6 @@ bool Presenter::RefreshGuestOutput(
+@@ -645,8 +686,6 @@ bool Presenter::RefreshGuestOutput(
        host_gpu_loss_callback_(false, false);
      }
    }
@@ -13516,6 +13528,88 @@ index 7360ed9..252cc15 100644
  }
  
  void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConfig& new_config) {
+@@ -895,17 +934,25 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+                    old_scale);
+   };
+ 
++  // A game-chosen display shape (present_aspect_x / _y, e.g. 4:3 with bars
++  // at the sides): shown whole, without overscan cropping.
++  const bool aspect_override = REXCVAR_GET(present_aspect_x) > 0 && REXCVAR_GET(present_aspect_y) > 0;
++  const uint32_t aspect_x =
++      aspect_override ? uint32_t(REXCVAR_GET(present_aspect_x)) : properties.display_aspect_ratio_x;
++  const uint32_t aspect_y =
++      aspect_override ? uint32_t(REXCVAR_GET(present_aspect_y)) : properties.display_aspect_ratio_y;
++
+   // Final output location and dimensions.
+   // All host location calculations are DPI-independent, conceptually depending
+   // only on the aspect ratios, not the absolute values.
+   uint32_t output_width, output_height;
+-  if (uint64_t(surface_width_in_paint_connection_) * properties.display_aspect_ratio_y >
+-      uint64_t(surface_height_in_paint_connection_) * properties.display_aspect_ratio_x) {
++  if (uint64_t(surface_width_in_paint_connection_) * aspect_y >
++      uint64_t(surface_height_in_paint_connection_) * aspect_x) {
+     // The window is wider that the source - crop along Y to preserve the aspect
+     // ratio while stretching throughout the entire surface's width, then limit
+     // the Y cropping via letterboxing or stretching along X.
+     uint32_t present_safe_area;
+-    if (config.GetAllowOverscanCutoff() && REXCVAR_GET(present_safe_area_y) > 0 &&
++    if (!aspect_override && config.GetAllowOverscanCutoff() && REXCVAR_GET(present_safe_area_y) > 0 &&
+         REXCVAR_GET(present_safe_area_y) < 100) {
+       present_safe_area = uint32_t(REXCVAR_GET(present_safe_area_y));
+     } else {
+@@ -914,8 +961,8 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     // Scale the desired width by the H:W aspect ratio (inverse of W:H) to get
+     // the height.
+     output_height =
+-        rescale_unsigned(surface_width_in_paint_connection_, properties.display_aspect_ratio_y,
+-                         properties.display_aspect_ratio_x);
++        rescale_unsigned(surface_width_in_paint_connection_, aspect_y,
++                         aspect_x);
+     bool letterbox = false;
+     if (output_height * present_safe_area > surface_height_in_paint_connection_ * 100) {
+       // Don't crop out more than the safe area margin - letterbox or stretch.
+@@ -924,8 +971,8 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     }
+     if (letterbox && REXCVAR_GET(present_letterbox)) {
+       output_width = rescale_unsigned(surface_height_in_paint_connection_ * 100,
+-                                      properties.display_aspect_ratio_x,
+-                                      properties.display_aspect_ratio_y * present_safe_area);
++                                      aspect_x,
++                                      aspect_y * present_safe_area);
+       // output_width might have been rounded up already by rescale_unsigned, so
+       // rounding down in this division.
+       flow.output_x = (int32_t(surface_width_in_paint_connection_) - int32_t(output_width)) / 2;
+@@ -941,7 +988,7 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     // aspect ratio while stretching throughout the entire surface's height,
+     // then limit the X cropping via letterboxing or stretching along Y.
+     uint32_t present_safe_area;
+-    if (config.GetAllowOverscanCutoff() && REXCVAR_GET(present_safe_area_x) > 0 &&
++    if (!aspect_override && config.GetAllowOverscanCutoff() && REXCVAR_GET(present_safe_area_x) > 0 &&
+         REXCVAR_GET(present_safe_area_x) < 100) {
+       present_safe_area = uint32_t(REXCVAR_GET(present_safe_area_x));
+     } else {
+@@ -949,8 +996,8 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     }
+     // Scale the desired height by the W:H aspect ratio to get the width.
+     output_width =
+-        rescale_unsigned(surface_height_in_paint_connection_, properties.display_aspect_ratio_x,
+-                         properties.display_aspect_ratio_y);
++        rescale_unsigned(surface_height_in_paint_connection_, aspect_x,
++                         aspect_y);
+     bool letterbox = false;
+     if (output_width * present_safe_area > surface_width_in_paint_connection_ * 100) {
+       // Don't crop out more than the safe area margin - letterbox or stretch.
+@@ -959,8 +1006,8 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     }
+     if (letterbox && REXCVAR_GET(present_letterbox)) {
+       output_height = rescale_unsigned(surface_width_in_paint_connection_ * 100,
+-                                       properties.display_aspect_ratio_y,
+-                                       properties.display_aspect_ratio_x * present_safe_area);
++                                       aspect_y,
++                                       aspect_x * present_safe_area);
+       // output_height might have been rounded up already by rescale_unsigned,
+       // so rounding down in this division.
+       flow.output_y = (int32_t(surface_height_in_paint_connection_) - int32_t(output_height)) / 2;
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
 index b94fe9e..78f8c14 100644
 --- a/src/ui/rex_app.cpp

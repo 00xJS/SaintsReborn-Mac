@@ -27,6 +27,7 @@
 
 #include "saintsrow_config.h"
 #include "saintsrow_init.h"
+#include "options_menu.h"
 
 #include <rex/logging.h>
 #include <rex/ppc/function.h>
@@ -236,11 +237,24 @@ PPC_FUNC(sub_82183008) {
     static const bool keep_tiling = FileExists("msaa_tiling");
     if (!keep_tiling) {
         // Config 0 is the normal 1x single-tile one; copy its full-screen rect.
-        const uint32_t x2 = Rd32(base, kRenderConfigs + 28);
-        const uint32_t y2 = Rd32(base, kRenderConfigs + 32);
+        uint32_t x2 = Rd32(base, kRenderConfigs + 28);
+        uint32_t y2 = Rd32(base, kRenderConfigs + 32);
+        // Another aspect ratio: the frame is narrower / wider than 1280, and
+        // config 0 (already 1x, one tile) gets the new width too.
+        const int aspect_width = sr::AspectFrameWidth();
+        const bool widen = aspect_width > 0 && x2 == 1280;
+        if (widen) {
+            x2 = uint32_t(aspect_width);
+            if (y2 == 720) y2 = uint32_t(sr::FrameHeight());
+        }
+        REXLOG_INFO("Render configs: full-screen tile {}x{}", x2, y2);
         for (uint32_t i = 0; i < kRenderConfigCount; ++i) {
             const uint32_t e = kRenderConfigs + i * kRenderConfigSize;
-            if (Rd32(base, e) == 0 && Rd32(base, e + 12) == 1) continue;
+            if (Rd32(base, e) == 0 && Rd32(base, e + 12) == 1) {
+                if (widen && Rd32(base, e + 28) == 1280) Wr32(base, e + 28, x2);
+                if (widen && Rd32(base, e + 32) == 720) Wr32(base, e + 32, y2);
+                continue;
+            }
             Wr32(base, e, 0);       // no MSAA
             Wr32(base, e + 12, 1);  // one tile
             Wr32(base, e + 20, 0);
@@ -250,6 +264,54 @@ PPC_FUNC(sub_82183008) {
         }
     }
     __imp__sub_82183008(ctx, base);
+}
+
+// 9. Aspect ratio (Display > Aspect Ratio, aspect.txt, read at start-up;
+//    options_menu.cpp). The game's render set-up (82184260) hard-codes a
+//    1280 x 720 frame and passes {+0 width, +4 height, +16 aspect} to
+//    8263D8D8, which sizes the frame buffers. Other ratios keep the 720 lines
+//    and change the width (4:3 = 960, 21:9 = 1680) and the aspect; the window
+//    shows the frame at that shape (black bars around it). The field of view
+//    follows: 8210A860 widens the camera's 4:3 FOV (0x827D9778 +188) for 16:9,
+//    2 atan(tan(fov / 2) * 4/3); here the factor is ratio / (4/3). Not when the
+//    game uses its 4:3 FOV as it is (byte 0x8370D991).
+extern "C" void __imp__sub_8263D8D8(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8263D8D8) {
+    const uint32_t s = ctx.r3.u32;
+    const uint32_t w = Rd32(base, s), h = Rd32(base, s + 4), a_bits = Rd32(base, s + 16);
+    float a;
+    std::memcpy(&a, &a_bits, 4);
+    const int width = sr::AspectFrameWidth();
+    if (width > 0 && h == 720) {
+        const float ratio = sr::AspectRatioValue();
+        uint32_t bits;
+        std::memcpy(&bits, &ratio, 4);
+        const int height = sr::FrameHeight();
+        Wr32(base, s, uint32_t(width));
+        Wr32(base, s + 4, uint32_t(height));
+        Wr32(base, s + 16, bits);
+        REXLOG_INFO("Aspect ratio: frame {}x{} (aspect {:.3f}) -> {}x{} (aspect {:.3f})", w, h, a, width, height, ratio);
+    } else {
+        REXLOG_INFO("Aspect ratio: frame {}x{} (aspect {:.3f}), unchanged", w, h, a);
+    }
+    __imp__sub_8263D8D8(ctx, base);
+}
+
+extern "C" void __imp__sub_8210A860(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8210A860) {
+    __imp__sub_8210A860(ctx, base);
+    if (sr::AspectFrameWidth() == 0 || base[0x8370D991] != 0) return;
+    const float ratio = sr::AspectRatioValue();
+    const float fov = RdF(base, 0x827D9778 + 188);
+    const float to_rad = RdF(base, 0x8208973C) * RdF(base, 0x8202073C);   // the game's own constants
+    const float from_rad = RdF(base, 0x8203B42C) * RdF(base, 0x820896B8);
+    const float wide = float(std::atan(std::tan(double(fov * to_rad)) * double(ratio * 0.75f))) * from_rad;
+    ctx.f1.f64 = double(wide);
+    static int logs = 0;
+    if (logs < 3) {
+        ++logs;
+        REXLOG_INFO("Aspect ratio: FOV {:.2f} -> {:.2f} for {:.3f}", fov, wide, ratio);
+    }
 }
 
 constexpr uint32_t kPvsGrid = 0x832AC0C8;      // pointer to the current chunk's PVS grid

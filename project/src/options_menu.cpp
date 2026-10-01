@@ -16,8 +16,8 @@
 //
 // Settings are saved next to the exe and read at start-up:
 //   res_scale.txt (1-3), start_windowed (file = windowed), vsync (file = on),
-//   fps_cap.txt, show_fps (file = shown), widescreen_off (file = off),
-//   mouse_sensitivity.txt.
+//   fps_cap.txt, show_fps (file = shown), aspect.txt (4:3 ... 21:9, read at
+//   start-up; the old widescreen_off file counts as 4:3), mouse_sensitivity.txt.
 
 #include "options_menu.h"
 
@@ -59,6 +59,23 @@ bool FileExists(const char* name) {
   }
   return false;
 }
+// Aspect ratio (Display > Aspect Ratio, aspect.txt). Read once at start-up:
+// the game makes its frame buffers when it starts, so a change applies after
+// a restart. The frame stays 720 lines tall and its width follows the ratio
+// (render_fixes.cpp); the window shows it at that shape (presenter cvars
+// present_aspect_x / present_aspect_y). Wider than 21:9 doesn't fit the
+// 10 MB of EDRAM in one pass.
+struct AspectChoice {
+  const char* name;
+  int x, y;
+};
+constexpr AspectChoice kAspects[] = {{"4:3", 4, 3},   {"5:4", 5, 4},   {"3:2", 3, 2},
+                                     {"16:10", 16, 10}, {"16:9", 16, 9}, {"21:9", 21, 9}};
+constexpr int kAspectCount = int(sizeof(kAspects) / sizeof(kAspects[0]));
+constexpr int kAspectDefault = 4;  // 16:9
+
+int ReadAspectChoice();
+
 void SetFileExists(const char* name, bool exists) {
   if (exists) {
     if (FILE* f = std::fopen(name, "wb")) std::fclose(f);
@@ -66,6 +83,44 @@ void SetFileExists(const char* name, bool exists) {
     std::remove(name);
   }
 }
+
+int ReadAspectChoice() {
+  if (FILE* f = std::fopen("aspect.txt", "rb")) {
+    char buf[16] = {};
+    const size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+    std::fclose(f);
+    std::string text(buf, n);
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
+    for (int i = 0; i < kAspectCount; ++i)
+      if (text == kAspects[i].name) return i;
+  }
+  if (FileExists("widescreen_off")) return 0;  // the old Widescreen: Off row
+  return kAspectDefault;
+}
+const int g_aspect_running = ReadAspectChoice();
+
+// Low resolutions (Display > Resolution, frame_size.txt, read at start-up): a
+// smaller 4:3 frame. 640 x 480 is the game's own SD (4:3 TV) mode.
+struct FrameChoice {
+  const char* name;
+  int w, h;
+};
+constexpr FrameChoice kFrames[] = {{"640x480", 640, 480}, {"800x600", 800, 600}};
+constexpr int kFrameCount = int(sizeof(kFrames) / sizeof(kFrames[0]));
+int ReadFrameChoice() {
+  if (FILE* f = std::fopen("frame_size.txt", "rb")) {
+    char buf[16] = {};
+    const size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+    std::fclose(f);
+    std::string text(buf, n);
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
+    for (int i = 0; i < kFrameCount; ++i)
+      if (text == kFrames[i].name) return i;
+  }
+  return -1;
+}
+const int g_frame_running = ReadFrameChoice();
+float AspectRatioOf(int i) { return float(kAspects[i].x) / float(kAspects[i].y); }
 
 int ReadScaleFile() {
   int scale = 2;
@@ -111,10 +166,25 @@ struct Row {
 
 std::vector<Row>& Rows() {
   static std::vector<Row> rows = {
-      {"Resolution", {"1280 x 720 (native)", "2560 x 1440 (2x)", "3840 x 2160 (3x)"},
-       [] { return g_running_scale - 1; },
+      {"Resolution",
+       {"640 x 480 (restart)", "800 x 600 (restart)", "1280 x 720 (native)", "2560 x 1440 (2x)",
+        "3840 x 2160 (3x)"},
+       [] {
+         const int frame = ReadFrameChoice();
+         return frame >= 0 ? frame : kFrameCount + g_running_scale - 1;
+       },
        [](int c) {
-         const int scale = c + 1;
+         if (c < kFrameCount) {
+           // A low resolution: a smaller frame after a restart, drawn at 1x.
+           if (FILE* f = std::fopen("frame_size.txt", "wb")) {
+             std::fprintf(f, "%s\n", kFrames[c].name);
+             std::fclose(f);
+           }
+           c = kFrameCount;
+         } else {
+           std::remove("frame_size.txt");
+         }
+         const int scale = c - kFrameCount + 1;
          if (FILE* f = std::fopen("res_scale.txt", "wb")) {
            std::fprintf(f, "%d\n", scale);
            std::fclose(f);
@@ -154,9 +224,16 @@ std::vector<Row>& Rows() {
          if (g_host.set_fps_counter) g_host.set_fps_counter(c == 1);
        },
        false},
-      {"Widescreen", {"On", "Off"},
-       [] { return FileExists("widescreen_off") ? 1 : 0; },
-       [](int c) { SetFileExists("widescreen_off", c == 1); }, false},
+      {"Aspect Ratio (restart)", {"4:3", "5:4", "3:2", "16:10", "16:9", "21:9"},
+       [] { return ReadAspectChoice(); },
+       [](int c) {
+         if (FILE* f = std::fopen("aspect.txt", "wb")) {
+           std::fprintf(f, "%s\n", kAspects[c].name);
+           std::fclose(f);
+         }
+         std::remove("widescreen_off");
+       },
+       false},
       // The game's own shadow setting (console variable r_shadows at
       // 0x827D6C90): 2 = shadow maps + CPU-built stencil shadows (the
       // default), 3 = shadow maps only, 1 = stencil only, 0 = none. Measured at
@@ -204,7 +281,8 @@ std::vector<Row>& Rows() {
 
 std::recursive_mutex g_mutex;
 bool g_built = false;        // guest memory set up
-bool g_widescreen_off = FileExists("widescreen_off");
+// The game's widescreen flag: off below 16:10, as on a 4:3 TV.
+bool g_widescreen_off = sr::AspectRatioValue() < 1.5f;
 
 uint8_t* Host(uint8_t* base, uint32_t a) { return base + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
 void W32(uint8_t* base, uint32_t a, uint32_t v) {
@@ -268,7 +346,6 @@ void ApplyRow(uint8_t* base, Row& row) {
   if (chosen < 0 || chosen >= int(row.choices.size())) return;
   row.apply(chosen);
   row.applied = chosen;
-  if (&row == &Rows()[5]) g_widescreen_off = chosen == 1;
   REXLOG_INFO("Options: {} = {}", row.label, row.choices[chosen]);
 }
 
@@ -292,6 +369,14 @@ void sr::ApplyStartupGraphics(bool weak_gpu) {
               shadows == 2 ? "High" : shadows == 3 ? "Low (shadow maps only)" : shadows == 1 ? "stencil only" : "Off",
               from_file ? "shadows.txt" : weak_gpu ? "default for weak GPUs" : "default");
 }
+
+int sr::AspectFrameWidth() {
+  if (g_frame_running >= 0) return kFrames[g_frame_running].w;
+  if (g_aspect_running == kAspectDefault) return 0;
+  return int(std::lround(720.0 * AspectRatioOf(g_aspect_running) / 16.0)) * 16;
+}
+float sr::AspectRatioValue() { return g_frame_running >= 0 ? 4.0f / 3.0f : AspectRatioOf(g_aspect_running); }
+int sr::FrameHeight() { return g_frame_running >= 0 ? kFrames[g_frame_running].h : 720; }
 
 void sr::SetDefaultResScale(int scale) {
   if (scale >= 1 && scale <= 3) g_running_scale = scale;
@@ -346,8 +431,19 @@ PPC_FUNC(sub_82347478) {
 
 void sr::OptionsMenuPoll(uint8_t* base) {
   std::lock_guard<std::recursive_mutex> lock(g_mutex);
+  // The window shows the frame at the chosen shape (once).
+  static bool presenter_set = false;
+  if (!presenter_set) {
+    presenter_set = true;
+    const bool own = g_aspect_running == kAspectDefault && g_frame_running < 0;
+    const bool four_three = g_frame_running >= 0;
+    rex::cvar::SetFlagByName("present_aspect_x",
+                             std::to_string(own ? 0 : four_three ? 4 : kAspects[g_aspect_running].x));
+    rex::cvar::SetFlagByName("present_aspect_y",
+                             std::to_string(own ? 0 : four_three ? 3 : kAspects[g_aspect_running].y));
+  }
   // Widescreen: the game sets the flag once at start-up from the video mode
-  // (1 for 16:9). Off forces 0; turning it back on restores the game's value.
+  // (1 for 16:9). Aspect ratios below 16:10 force 0.
   static int game_value = -1;  // what the game had set before we forced it
   uint8_t& flag = *Host(base, kWidescreenFlag);
   if (g_widescreen_off) {

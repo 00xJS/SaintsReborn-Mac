@@ -27,4 +27,13 @@ void ApplyStartupGraphics(bool weak_gpu);
 // and keeps the widescreen setting in the game's memory.
 void OptionsMenuPoll(uint8_t* base);
 
+// Aspect ratio chosen at start-up (aspect.txt; Display > Aspect Ratio, applies
+// after a restart): the frame width for the 720-line frame (0 = the game's own
+// 1280, i.e. 16:9) and the ratio itself.
+int AspectFrameWidth();
+float AspectRatioValue();
+// Frame height for the same: 720, or 480 / 600 for the low resolutions
+// (frame_size.txt; Display > Resolution, after a restart; always 4:3).
+int FrameHeight();
+
 }  // namespace sr
