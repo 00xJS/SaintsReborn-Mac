@@ -232,6 +232,7 @@ fn write_case_overlay(winsysroot: &Path) -> Result<PathBuf> {
 
 fn write_clang_config(llvm_bin: &Path, winsysroot: &Path) -> Result<()> {
     let root = winsysroot.to_string_lossy().replace('\\', "/");
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut cfg = format!(
         "-Xmicrosoft-windows-sys-root \"{root}\"\n-fuse-ld=lld\n-Wno-unused-command-line-argument\n"
     );
