@@ -2,6 +2,7 @@
 /dist/
 *.iso
 installer/out/
+installer/target/
 
 # Game data must never be committed
 *.vpp_xbox2

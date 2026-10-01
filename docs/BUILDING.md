@@ -1,6 +1,16 @@
 # Building
 
-`setup.bat` runs `scripts/setup.ps1`, which performs the steps below. Each step
+The easy way is **Setup** (`installer/`, see [installer/README.md](../installer/README.md)).
+It uses a portable toolchain (LLVM/clang, CMake, Ninja and Microsoft's C++
+headers and libraries through xwin), works on Windows and Linux, and runs the
+same steps as below:
+
+```
+SaintsReborn-Setup --cli --dir C:\SaintsReborn --iso "D:\Games\Saints Row.iso" --accept-license
+```
+
+`setup.bat` is the older developer path. It needs Visual Studio 2022 and runs
+`scripts/setup.ps1`, which performs the steps below. Each step
 records its completion in `build/stamps`, so running setup again continues
 where it stopped.
 

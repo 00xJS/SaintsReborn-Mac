@@ -1,0 +1,94 @@
+name: Setup app
+
+on:
+  push:
+    paths:
+      - "installer/**"
+      - "patches/**"
+      - ".github/workflows/setup-app.yml"
+  pull_request:
+    paths:
+      - "installer/**"
+      - "patches/**"
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            exe: SaintsReborn-Setup.exe
+            asset: SaintsReborn-Setup.exe
+          - name: Linux
+            os: ubuntu-22.04
+            exe: SaintsReborn-Setup
+            asset: SaintsReborn-Setup-linux-x64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+          cache-workspaces: installer
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --release --locked -- -D warnings
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Rename
+        shell: bash
+        run: cp "target/release/${{ matrix.exe }}" "${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: installer/${{ matrix.asset }}
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.asset }}" --clobber
+
+  # Builds the ReXGlue SDK for Windows on Linux (and the recompiler for Linux)
+  # with the same steps Setup runs for players. Needs no game files.
+  linux-sdk:
+    name: Linux build of the SDK
+    needs: build
+    if: github.event_name != 'release'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: SaintsReborn-Setup-linux-x64
+
+      - name: Use the larger disk for the toolchain
+        run: |
+          sudo mkdir -p /mnt/sr && sudo chown "$USER" /mnt/sr
+          echo "XDG_DATA_HOME=/mnt/sr" >> "$GITHUB_ENV"
+
+      - name: Toolchain, SDK and recompiler
+        run: |
+          chmod +x SaintsReborn-Setup-linux-x64
+          ./SaintsReborn-Setup-linux-x64 --sdk-only "$PWD" --accept-license
