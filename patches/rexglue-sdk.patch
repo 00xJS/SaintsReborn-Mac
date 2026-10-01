@@ -8580,10 +8580,10 @@ index 3f9422d..943eea5 100644
  
  void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
 diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
-index 2b222da..a6cdeb0 100644
+index 2b222da..44dedce 100644
 --- a/src/kernel/xam/apps/xgi_app.cpp
 +++ b/src/kernel/xam/apps/xgi_app.cpp
-@@ -10,9 +10,36 @@
+@@ -10,9 +10,38 @@
   */
  
  #include <rex/kernel/xam/apps/xgi_app.h>
@@ -8591,6 +8591,7 @@ index 2b222da..a6cdeb0 100644
 +#include <unordered_map>
 +
 +#include <rex/cvar.h>
++#include <rex/chrono/clock.h>
  #include <rex/logging.h>
  #include <rex/thread.h>
  
@@ -8610,6 +8611,7 @@ index 2b222da..a6cdeb0 100644
 +}
 +}  // namespace
 +
++#include <algorithm>
 +#include <atomic>
 +#include <cstdlib>
 +#include <map>
@@ -8620,7 +8622,7 @@ index 2b222da..a6cdeb0 100644
  namespace rex {
  namespace kernel {
  namespace xam {
-@@ -29,6 +56,12 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -29,6 +58,12 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                                        uint32_t buffer_length) {
    // NOTE: buffer_length may be zero or valid.
    auto buffer = memory_->TranslateVirtual(buffer_ptr);
@@ -8633,7 +8635,7 @@ index 2b222da..a6cdeb0 100644
    switch (message) {
      case 0x000B0006: {
        assert_true(!buffer_length || buffer_length == 24);
-@@ -40,6 +73,14 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -40,6 +75,14 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        uint32_t user_index = memory::load_and_swap<uint32_t>(buffer + 0);
        uint32_t context_id = memory::load_and_swap<uint32_t>(buffer + 16);
        uint32_t context_value = memory::load_and_swap<uint32_t>(buffer + 20);
@@ -8648,7 +8650,7 @@ index 2b222da..a6cdeb0 100644
        REXKRNL_DEBUG("XGIUserSetContextEx({:08X}, {:08X}, {:08X})", user_index, context_id,
                      context_value);
        return X_E_SUCCESS;
-@@ -49,6 +90,12 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -49,6 +92,12 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        uint32_t property_id = memory::load_and_swap<uint32_t>(buffer + 16);
        uint32_t value_size = memory::load_and_swap<uint32_t>(buffer + 20);
        uint32_t value_ptr = memory::load_and_swap<uint32_t>(buffer + 24);
@@ -8661,7 +8663,7 @@ index 2b222da..a6cdeb0 100644
        REXKRNL_DEBUG("XGIUserSetPropertyEx({:08X}, {:08X}, {}, {:08X})", user_index, property_id,
                      value_size, value_ptr);
        return X_E_SUCCESS;
-@@ -113,6 +160,46 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -113,6 +162,65 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            "{:08X})",
            session_ptr, flags, num_slots_public, num_slots_private, user_xuid, session_info_ptr,
            nonce_ptr);
@@ -8675,13 +8677,32 @@ index 2b222da..a6cdeb0 100644
 +      }
 +      // Live host: fill XSESSION_INFO like the console does (xam_net.cpp).
 +      const bool live_host = REXCVAR_GET(xam_signed_in_to_live) && (flags & 1) && (flags & 0xA) && session_info_ptr;
-+      if (REXCVAR_GET(xam_signed_in_to_live)) {
++      uint64_t nonce = 0;
++      {
 +        std::lock_guard<std::mutex> l(g_live.mutex);
-+        g_live.sessions.push_back(live_host);
++        if (!g_live.next_nonce) g_live.next_nonce = (uint64_t(rex::chrono::Clock::QueryHostTickCount()) << 16) | 1;
++        nonce = g_live.next_nonce++;
 +      }
++      // The console hands out a nonce per session; the game passes it back to
++      // XSessionStart / End / Delete, which is how the sessions are told apart.
++      if (nonce_ptr) memory::store_and_swap<uint64_t>(memory_->TranslateVirtual(nonce_ptr), nonce);
 +      if (live_host) {  // host + presence or matchmaking = a Live session (System Link sessions have neither)
 +        uint8_t* info = memory_->TranslateVirtual<uint8_t*>(session_info_ptr);
 +        rex::kernel::xam::LiveFillSessionInfo(info);
++      }
++      if (REXCVAR_GET(xam_signed_in_to_live)) {
++        std::lock_guard<std::mutex> l(g_live.mutex);
++        LiveState::Session entry;
++        entry.nonce = nonce;
++        entry.host = live_host;
++        entry.flags = flags;
++        entry.public_slots = num_slots_public;
++        entry.private_slots = num_slots_private;
++        if (live_host) std::memcpy(entry.info, memory_->TranslateVirtual<uint8_t*>(session_info_ptr), 60);
++        g_live.sessions.push_back(entry);
++      }
++      if (live_host) {
++        uint8_t* info = memory_->TranslateVirtual<uint8_t*>(session_info_ptr);
 +        {
 +          std::lock_guard<std::mutex> l(g_live.mutex);
 +          std::memcpy(g_live.info, info, 60);
@@ -8708,7 +8729,7 @@ index 2b222da..a6cdeb0 100644
        return X_E_SUCCESS;
      }
      case 0x000B0011: {
-@@ -123,7 +210,25 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -123,7 +231,45 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        uint64_t session_nonce = memory::load_and_swap<uint64_t>(buffer + 8);
  
        REXKRNL_DEBUG("XGISessionDelete({:08X}, {:08X}, {:016X})", obj_ptr, flags, session_nonce);
@@ -8718,24 +8739,44 @@ index 2b222da..a6cdeb0 100644
 +      if (REXCVAR_GET(xam_signed_in_to_live)) {
 +        std::lock_guard<std::mutex> l(g_live.mutex);
 +        if (!g_live.sessions.empty()) {
-+          const bool was_host = g_live.sessions.back();
-+          g_live.sessions.pop_back();
++          auto it = std::find_if(g_live.sessions.begin(), g_live.sessions.end(),
++                                 [&](const LiveState::Session& e) { return e.nonce == session_nonce; });
++          if (it == g_live.sessions.end()) it = g_live.sessions.end() - 1;  // unknown nonce: the newest
++          const bool was_host = it->host;
++          const uint32_t closed_flags = it->flags;
++          g_live.sessions.erase(it);
 +          if (g_live.sessions.empty()) {
 +            rex::system::eoslan::SetEnforceClean(false);
 +            rex::cvar::SetFlagByName("online_session", "");
 +            rex::system::eoslan::SetInviteSession(nullptr);  // left the lobby: no invites to it
 +          }
 +          if (was_host) {
-+            g_live.hosting = false;
-+            PublishAdvertLocked();
-+            REXLOG_INFO("LIVE XSessionDelete: hosted session closed, advert removed");
++            // Still hosting another session (the party lobby after a match):
++            // advertise that one again instead of nothing.
++            auto host = std::find_if(g_live.sessions.rbegin(), g_live.sessions.rend(),
++                                     [](const LiveState::Session& e) { return e.host; });
++            if (host != g_live.sessions.rend()) {
++              std::memcpy(g_live.info, host->info, 60);
++              g_live.flags = host->flags;
++              g_live.public_slots = host->public_slots;
++              g_live.private_slots = host->private_slots;
++              g_live.hosting = true;
++              rex::system::eoslan::SetInviteSession(host->info);
++              PublishAdvertLocked();
++              REXLOG_INFO("LIVE XSessionDelete: hosted session (flags {:X}) closed, still hosting the one with flags {:X}",
++                          closed_flags, host->flags);
++            } else {
++              g_live.hosting = false;
++              PublishAdvertLocked();
++              REXLOG_INFO("LIVE XSessionDelete: hosted session (flags {:X}) closed, advert removed", closed_flags);
++            }
 +          }
 +        }
 +      }
        return X_E_SUCCESS;
      }
      case 0x000B0012: {
-@@ -140,6 +245,18 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -140,6 +286,18 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                      user_count, xuid_array_ptr, user_index_array, private_slots_array);
        return X_E_SUCCESS;
      }
@@ -8754,7 +8795,7 @@ index 2b222da..a6cdeb0 100644
      case 0x000B0014: {
        assert_true(!buffer_length || buffer_length == 16);
  
-@@ -179,6 +296,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -179,6 +337,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        REXKRNL_DEBUG("XSessionSearch({}, {}, {}, {}, {}, {:08X}, {:08X}, {}, {:08X})", proc_index,
                      user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
                      results_buffer_size, search_results_ptr);
@@ -8764,7 +8805,7 @@ index 2b222da..a6cdeb0 100644
        return X_E_SUCCESS;
      }
      case 0x000B0018: {
-@@ -214,6 +334,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -214,6 +375,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                      proc_index, user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
                      results_buffer_size, search_results_ptr, num_users);
  
@@ -8774,7 +8815,7 @@ index 2b222da..a6cdeb0 100644
        return X_E_SUCCESS;
      }
      case 0x000B001D: {
-@@ -274,21 +397,26 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -274,21 +438,26 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        return X_E_SUCCESS;
      }
      case 0x000B001B: {
@@ -8816,7 +8857,7 @@ index 2b222da..a6cdeb0 100644
        return X_E_SUCCESS;
      }
      case 0x000B001F: {
-@@ -439,6 +567,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -439,6 +608,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            non_weighted_search_properties_ptr, non_weighted_search_contexts_ptr, results_buffer_size,
            search_results_ptr, num_users, weighted_search);
  
@@ -8829,10 +8870,10 @@ index 2b222da..a6cdeb0 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..d235b14
+index 0000000..3b45e7d
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
-@@ -0,0 +1,293 @@
+@@ -0,0 +1,303 @@
 +// Saints Reborn: Xbox Live sessions over Epic Online Services (included by
 +// xgi_app.cpp; only active with the cvar xam_signed_in_to_live).
 +//
@@ -8883,7 +8924,17 @@ index 0000000..d235b14
 +  std::mutex mutex;
 +  std::map<uint32_t, uint32_t> contexts;                  // XUserSetContext (user 0)
 +  std::map<uint32_t, std::vector<uint8_t>> properties;    // XUserSetProperty (user 0), big-endian bytes
-+  std::vector<bool> sessions;                             // created sessions, true = hosted Live session
++  // Created sessions (party, matchmaking, match ...), told apart by the nonce
++  // XSessionCreate hands out and XSessionDelete passes back; the game deletes
++  // them in any order. The newest hosted one is the one advertised.
++  struct Session {
++    uint64_t nonce = 0;
++    bool host = false;
++    uint8_t info[60] = {};
++    uint32_t flags = 0, public_slots = 0, private_slots = 0;
++  };
++  std::vector<Session> sessions;
++  uint64_t next_nonce = 0;
 +  bool hosting = false;
 +  uint32_t flags = 0;  // XSessionCreate flags of the hosted session
 +  uint8_t info[60] = {};
@@ -9567,7 +9618,7 @@ index 9dcab94..759fdc9 100644
  
  u32 XamGetPrivateEnumStructureFromHandle_entry(u32 handle, mapped_u32 out_object_ptr) {
 diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
-index 58e36a4..5f3996b 100644
+index 58e36a4..aa22e94 100644
 --- a/src/kernel/xam/xam_net.cpp
 +++ b/src/kernel/xam/xam_net.cpp
 @@ -12,7 +12,19 @@
@@ -9834,7 +9885,7 @@ index 58e36a4..5f3996b 100644
  }
  
  u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
-@@ -476,26 +618,114 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
+@@ -476,26 +618,118 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
    rex::string::copy_truncating(string_out, "666.666.666.666", string_size);
  }
  
@@ -9932,6 +9983,10 @@ index 58e36a4..5f3996b 100644
 +  uint8_t* a = info + 8;
 +  std::memset(a, 0, 36);
 +  a[0] = uint8_t(ip >> 24); a[1] = uint8_t(ip >> 16); a[2] = uint8_t(ip >> 8); a[3] = uint8_t(ip);
++  // inaOnline exactly as XNetGetTitleXnAddr reports it: after a match the
++  // game compares its own XNADDR with the party session's host address (all
++  // 36 bytes, sub_8237FD48) to decide whether it hosts the lobby again.
++  if (REXCVAR_GET(xam_signed_in_to_live)) { a[4] = a[0]; a[5] = a[1]; a[6] = a[2]; a[7] = a[3]; }
 +  const uint8_t mac[6] = {0x00, 0x22, uint8_t(ip >> 24), uint8_t(ip >> 16), uint8_t(ip >> 8), uint8_t(ip)};
 +  std::memcpy(a + 10, mac, 6);
 +  for (int i = 0; i < 16; ++i) info[44 + i] = uint8_t((v * 2654435761u) >> (i * 3));
@@ -9958,7 +10013,7 @@ index 58e36a4..5f3996b 100644
  // https://github.com/ILOVEPIE/Cxbx-Reloaded/blob/master/src/CxbxKrnl/EmuXOnline.h#L39
  struct XEthernetStatus {
    static const uint32_t XNET_ETHERNET_LINK_ACTIVE = 0x01;
-@@ -506,7 +736,9 @@ struct XEthernetStatus {
+@@ -506,7 +740,9 @@ struct XEthernetStatus {
  };
  
  u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
@@ -9969,7 +10024,7 @@ index 58e36a4..5f3996b 100644
  }
  
  u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
-@@ -559,7 +791,106 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
+@@ -559,7 +795,106 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
  
  u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
                                 u32 flags) {
@@ -10077,7 +10132,7 @@ index 58e36a4..5f3996b 100644
  }
  
  u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
-@@ -591,7 +922,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
+@@ -591,7 +926,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
      XThread::SetLastError(error);
      return -1;
    }
@@ -10087,7 +10142,7 @@ index 58e36a4..5f3996b 100644
    return socket->handle();
  }
  
-@@ -605,6 +937,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+@@ -605,6 +941,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
  
    // TODO: Absolutely delete this object. It is no longer valid after calling
    // closesocket.
@@ -10095,7 +10150,7 @@ index 58e36a4..5f3996b 100644
    socket->Close();
    socket->ReleaseHandle();
    return 0;
-@@ -652,6 +985,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
+@@ -652,6 +989,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
    }
  
    X_STATUS status = socket->IOControl(cmd, arg_ptr);
@@ -10104,7 +10159,7 @@ index 58e36a4..5f3996b 100644
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
      return -1;
-@@ -670,6 +1005,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
+@@ -670,6 +1009,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
    }
  
    N_XSOCKADDR_IN native_name(name);
@@ -10113,7 +10168,7 @@ index 58e36a4..5f3996b 100644
    X_STATUS status = socket->Bind(&native_name, namelen);
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
-@@ -795,9 +1132,71 @@ struct host_set {
+@@ -795,9 +1136,71 @@ struct host_set {
    }
  };
  
@@ -10185,7 +10240,7 @@ index 58e36a4..5f3996b 100644
    host_set host_readfds = {};
    fd_set native_readfds = {};
    if (readfds) {
-@@ -825,8 +1224,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+@@ -825,8 +1228,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
                                               reinterpret_cast<int32_t*>(&timeout.tv_usec));
      timeout_in = &timeout;
    }
@@ -10255,7 +10310,7 @@ index 58e36a4..5f3996b 100644
    if (readfds) {
      host_readfds.UpdateFrom(&native_readfds);
      host_readfds.Store(readfds);
-@@ -852,7 +1310,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
+@@ -852,7 +1314,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
      return -1;
    }
  
@@ -10270,7 +10325,7 @@ index 58e36a4..5f3996b 100644
  }
  
  u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
-@@ -871,6 +1335,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
+@@ -871,6 +1339,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
    uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
    int ret =
        socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
@@ -10290,7 +10345,7 @@ index 58e36a4..5f3996b 100644
  
    if (from_ptr) {
      from_ptr->sin_family = native_from.sin_family;
-@@ -916,9 +1393,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
+@@ -916,9 +1397,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
    }
  
    N_XSOCKADDR_IN native_to(to_ptr);
@@ -10340,7 +10395,7 @@ index 58e36a4..5f3996b 100644
  u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
    const uint8_t max_fd_count = std::min((uint32_t)fd_set->fd_count, uint32_t(64));
    for (uint8_t i = 0; i < max_fd_count; i++) {
-@@ -1030,25 +1547,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
+@@ -1030,25 +1551,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
  REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
  REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
  REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
@@ -10374,7 +10429,7 @@ index 58e36a4..5f3996b 100644
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
-@@ -1098,5 +1615,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
+@@ -1098,5 +1619,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
  REX_EXPORT_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
  REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
  REX_EXPORT_STUB(__imp__NetDll_getpeername);
