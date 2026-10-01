@@ -47,6 +47,15 @@ std::atomic<std::thread::id> g_main_thread{};
 std::atomic<uint64_t> g_counters[kPerfCounterCount];
 std::mutex g_wait_mutex;
 std::map<uint32_t, std::pair<uint64_t, uint64_t>> g_waits;  // caller -> (count, us)
+// Waits on every game thread: (host thread id, wait function, guest caller) -> (count, us).
+struct ThreadWaitKey {
+  DWORD tid;
+  uint32_t function, caller;
+  bool operator<(const ThreadWaitKey& o) const {
+    return tid != o.tid ? tid < o.tid : function != o.function ? function < o.function : caller < o.caller;
+  }
+};
+std::map<ThreadWaitKey, std::pair<uint64_t, uint64_t>> g_thread_waits;
 Clock::time_point g_last_frame;
 Clock::time_point g_present_start;
 bool g_have_last = false;
@@ -185,6 +194,32 @@ void MonitorLoop() {
                     (unsigned long)busy[i].tid, busy[i].pct);
       text += part;
     }
+    {
+      // Waits per thread (>= 0.5 ms/frame), longest first.
+      std::vector<std::pair<uint64_t, ThreadWaitKey>> tw;
+      std::unordered_map<DWORD, uint64_t> per_thread;
+      {
+        std::lock_guard<std::mutex> lock(g_wait_mutex);
+        for (auto& [k, v] : g_thread_waits) {
+          tw.emplace_back(v.second, k);
+          per_thread[k.tid] += v.second;
+        }
+        g_thread_waits.clear();
+      }
+      std::sort(tw.begin(), tw.end(), [](auto& a, auto& b) { return a.first > b.first; });
+      text += " | THREAD WAITS:";
+      int shown = 0;
+      for (auto& [us, k] : tw) {
+        const double ms_f = frames ? us / 1000.0 / frames : 0.0;
+        if (ms_f < 0.5 || shown >= 14) break;
+        auto it = threads.find(k.tid);
+        const char* name = (it != threads.end() && !it->second.name.empty()) ? it->second.name.c_str() : "?";
+        std::snprintf(part, sizeof(part), " [%s#%lu %08X<-%08X %.1fms/f]", name, (unsigned long)k.tid, k.function,
+                      k.caller, ms_f);
+        text += part;
+        ++shown;
+      }
+    }
     prev_threads = std::move(threads);
     PROCESS_MEMORY_COUNTERS_EX memory{};
     if (K32GetProcessMemoryInfo(GetCurrentProcess(),
@@ -245,6 +280,17 @@ void PerfCount(PerfCounter counter) {
 bool PerfTrackWaits() {
   return g_enabled.load(std::memory_order_relaxed) &&
          g_main_thread.load(std::memory_order_relaxed) == std::this_thread::get_id();
+}
+
+bool PerfWaitsOn() { return g_enabled.load(std::memory_order_relaxed); }
+
+extern "C" void sr_timeline_wait(uint32_t fn, uint32_t caller, uint64_t microseconds);
+void PerfRecordThreadWait(uint32_t wait_function, uint32_t guest_caller, uint64_t microseconds) {
+  sr_timeline_wait(wait_function, guest_caller, microseconds);
+  std::lock_guard<std::mutex> lock(g_wait_mutex);
+  auto& v = g_thread_waits[ThreadWaitKey{GetCurrentThreadId(), wait_function, guest_caller}];
+  v.first++;
+  v.second += microseconds;
 }
 
 void PerfRecordWait(uint32_t guest_caller, uint64_t microseconds) {
@@ -336,7 +382,7 @@ namespace sr {
 std::atomic<int> g_fps_cap{60};
 
 namespace {
-// 0 = no cap.
+// 0 = no cap (for measuring; the game may run too fast in places).
 constexpr int kFpsCaps[] = {30, 60, 90, 120, 0};
 
 std::filesystem::path FpsCapFile() {
@@ -365,6 +411,18 @@ void LoadFpsCap() {
     std::fclose(f);
   }
   ApplyFpsCap(cap);
+}
+
+void SetFpsCap(int cap) {
+  bool known = false;
+  for (int c : kFpsCaps) known |= c == cap;
+  if (!known) return;
+  ApplyFpsCap(cap);
+  if (FILE* f = std::fopen(FpsCapFile().string().c_str(), "w")) {
+    std::fprintf(f, "%d\n", cap);
+    std::fclose(f);
+  }
+  REXLOG_INFO("FPS cap: {}", cap ? std::to_string(cap) : std::string("off"));
 }
 
 int CycleFpsCap() {

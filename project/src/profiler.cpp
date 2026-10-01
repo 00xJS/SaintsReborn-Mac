@@ -284,7 +284,9 @@ void Loop() {
     return names.emplace(a, Resolve(a)).first->second;
   };
   while (g_running.load()) {
-    Sleep(1);
+    // 100 samples a second per thread: suspending every guest thread 1000
+    // times a second cost the game noticeable fps while profiling.
+    Sleep(10);
     if (targets.size() < 2) {
       for (auto& t : targets) CloseHandle(t.handle);
       targets.clear();

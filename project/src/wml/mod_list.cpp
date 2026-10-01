@@ -81,6 +81,12 @@ bool ReadMod(const fs::path& folder, ModInfo& mod) {
   mod.author = Get(ini, "mod.author", Get(ini, "author", ""));
   mod.version = Get(ini, "mod.version", Get(ini, "version", ""));
   mod.description = Get(ini, "mod.description", Get(ini, "description", ""));
+  // "enabled_by_default = true": on when it isn't in modlist.ini yet (a mod
+  // that came with an update); the player's own +/- choice always wins.
+  {
+    const std::string on = Lower(Get(ini, "mod.enabled_by_default", Get(ini, "enabled_by_default", "")));
+    mod.enabled = on == "true" || on == "1" || on == "yes";
+  }
   for (const auto& kv : ini) {
     if (kv.first.rfind("settings.", 0) == 0) mod.settings.emplace_back(kv.first.substr(9), kv.second);
   }

@@ -32,12 +32,20 @@
 // Player creation only
 //   Mouse           rotate / zoom       LMB        A / select
 //   Wheel           zoom                Q / E      LT / RT tabs
+// Front end (main menu and its screens)
+//   Q / E           LT / RT tabs        X / Y      X / Y
+// Multiplayer (System Link lobby / match) with a menu open: as the pause menu
+//   (Enter / LMB select, Esc / Backspace back, W/S + arrows, Q / E tabs, X / Y)
 
+#include "chat.h"
 #include "saintsrow_config.h"
 #include "saintsrow_init.h"
 
 #include "kbm.h"
 #include "glyphs.h"
+#include "options_menu.h"
+#include "coop_menu.h"
+#include "world_studio_bridge.h"
 #include "wml/mod_loader.h"
 
 #include <algorithm>
@@ -63,6 +71,12 @@ extern uint32_t XamInputGetState_entry(uint32_t user_index, uint32_t flags,
                                        ppc_ptr_t<rex::input::X_INPUT_STATE> input_state);
 }
 
+namespace sr {
+// Character creator or pause menu open (read by the World Studio bridge,
+// which then leaves the camera and HUD to the game).
+std::atomic<bool> g_studio_menu_active{false};
+}  // namespace sr
+
 namespace {
 
 using namespace rex::input;
@@ -73,7 +87,20 @@ bool GameHasFocus() {
   if (!foreground) return false;
   DWORD pid = 0;
   GetWindowThreadProcessId(foreground, &pid);
-  return pid == GetCurrentProcessId();
+  if (pid == GetCurrentProcessId()) return true;
+  // World Studio editor host: the game window lives inside the Studio window,
+  // which is the foreground window. Keys count while the mouse is over the
+  // game view (so typing in Studio fields does not reach the game).
+  if (!sr::world_studio::EditorHostEnabled()) return false;
+  POINT cursor{};
+  GetCursorPos(&cursor);
+  HWND under = WindowFromPoint(cursor);
+  if (!under) return false;
+  DWORD under_pid = 0;
+  GetWindowThreadProcessId(under, &under_pid);
+  if (under_pid != GetCurrentProcessId()) return false;
+  const HWND root = GetAncestor(under, GA_ROOT);
+  return root == foreground || GetWindow(root, GW_OWNER) == foreground;
 }
 
 // GetAsyncKeyState is a system call and the game polls the controller many
@@ -140,6 +167,12 @@ void ReleaseMouseLocked() {
 // middle of the game window. Returns the movement in pixels.
 void PollMouseLocked(double& dx, double& dy) {
   dx = dy = 0;
+  // The Studio owns the mouse (Unity-style camera in world_studio_bridge),
+  // except while playing as the player (hold V).
+  if (sr::world_studio::EditorHostEnabled() && !sr::world_studio::PlayMode()) {
+    ReleaseMouseLocked();
+    return;
+  }
   HWND window = GetForegroundWindow();
   RECT client;
   if (!window || !GetClientRect(window, &client)) {
@@ -271,10 +304,15 @@ Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation) {
   };
 
   // Everywhere.
-  press(Down(VK_ESCAPE) || Down('M'), X_INPUT_GAMEPAD_START);
+  // Menus before the player exists (main menu, the multiplayer menus,
+  // matchmaking...) show the keyboard glyph set where B is ESC (glyphs.cpp,
+  // GlyphContext::kMenu), so Esc is B there like in the pause menu - not
+  // Start. M is Start everywhere.
+  const bool front_end = PPC_LOAD_U32(0x8309ABECu) == 0;
+  press((Down(VK_ESCAPE) && !front_end) || Down('M'), X_INPUT_GAMEPAD_START);
   press(Down(VK_TAB), X_INPUT_GAMEPAD_BACK);
   press(Down(VK_RETURN), X_INPUT_GAMEPAD_A);
-  press(Down(VK_BACK), X_INPUT_GAMEPAD_B);
+  press(Down(VK_BACK) || (Down(VK_ESCAPE) && front_end), X_INPUT_GAMEPAD_B);
   press(Down(VK_UP), X_INPUT_GAMEPAD_DPAD_UP);
   press(Down(VK_DOWN), X_INPUT_GAMEPAD_DPAD_DOWN);
   press(Down(VK_LEFT), X_INPUT_GAMEPAD_DPAD_LEFT);
@@ -282,9 +320,13 @@ Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation) {
 
   // Front end (no player yet): X and Y keys for the menus' X / Y actions
   // (e.g. Select Device), matching the keyboard glyphs shown there.
-  if (PPC_LOAD_U32(0x8309ABECu) == 0) {
+  if (front_end) {
     press(Down('X'), X_INPUT_GAMEPAD_X);
     press(Down('Y'), X_INPUT_GAMEPAD_Y);
+    // Q / E: the tabs at the top of front-end screens (LT / RT, as in the
+    // pause menu and player creation), not Back / Y.
+    if (Down('Q')) p.lt = 0xFF;
+    if (Down('E')) p.rt = 0xFF;
   }
 
   const int left = Down('A') ? 1 : 0, right = Down('D') ? 1 : 0;
@@ -332,8 +374,10 @@ Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation) {
     return p;
   }
 
-  press(Down('Q'), X_INPUT_GAMEPAD_B);
-  press(Down('E'), X_INPUT_GAMEPAD_Y);
+  if (!front_end) {
+    press(Down('Q'), X_INPUT_GAMEPAD_B);
+    press(Down('E'), X_INPUT_GAMEPAD_Y);
+  }
   if (Down(VK_LBUTTON)) p.rt = 0xFF;
   press(Down(VK_MBUTTON) || Down('V'), X_INPUT_GAMEPAD_RIGHT_THUMB);
 
@@ -361,6 +405,8 @@ Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation) {
 
 }  // namespace
 
+double sr::GetMouseSensitivity() { return g_sensitivity.load(std::memory_order_relaxed); }
+
 void sr::SetMouseSensitivity(double sensitivity) {
   g_sensitivity.store(sensitivity, std::memory_order_relaxed);
 }
@@ -379,6 +425,9 @@ void sr::AddMouseWheel(int delta) {
 }
 
 // Adds the keyboard and mouse to the controller state the game reads.
+// Unattended benchmark (file "autobench", see AutoBench below): button presses it needs.
+static uint16_t AutoBenchButtons(uint8_t* base);
+
 PPC_FUNC_IMPL(__imp__XamInputGetState) {
   const uint32_t user_index = ctx.r3.u32;
   const uint32_t state_addr = ctx.r5.u32;
@@ -392,13 +441,86 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
   const uint32_t result = ctx.r3.u32;
   if (!state_addr || result != 0) return;
   if ((user_index & 0xFF) != 0 && (user_index & 0xFF) != 0xFF) return;
+  constexpr uint32_t kPlayerPointer = 0x8309ABECu;
+  const uint32_t player = PPC_LOAD_U32(kPlayerPointer);
+  auto* state = reinterpret_cast<X_INPUT_STATE*>(base + state_addr);
+  if (sr::world_studio::EditorHostEnabled() && player == 0) {
+    // The editor host should pass through the normal startup movies, then
+    // activate the front end's default Continue path without user input.
+    // A few separated A-button edges cover both "press start" and Continue;
+    // injection stops immediately when the front-end screen changes.
+    static std::chrono::steady_clock::time_point main_menu_seen{};
+    const bool main_menu = PPC_LOAD_U32(0x839E0DF8u) == 0x82FFB6C0u;
+    if (!main_menu) {
+      main_menu_seen = {};
+    } else {
+      const auto now = std::chrono::steady_clock::now();
+      if (main_menu_seen.time_since_epoch().count() == 0) main_menu_seen = now;
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - main_menu_seen).count();
+      const bool auto_accept = (elapsed >= 700 && elapsed < 850) ||
+                               (elapsed >= 1700 && elapsed < 1850) ||
+                               (elapsed >= 2700 && elapsed < 2850);
+      // Disabled: the first main-menu item is NEW GAME (MAINMENU_NEW, then
+      // MAINMENU_LOAD), so pressing A started a new game and the character
+      // creator. Skipping the menu needs the load-save path (see HANDOFF).
+      (void)auto_accept;
+    }
+  }
+  if (sr::world_studio::EditorHostEnabled()) {
+    sr::g_studio_menu_active.store(CharacterCreationInputActive(base) ||
+                                   PPC_LOAD_U32(0x839E0DF8u) == 0x82FFB84Cu);
+    // Screen changes, to learn the front-end flow (title, main menu, creator).
+    static uint32_t last_screen = 0xFFFFFFFFu;
+    const uint32_t screen = PPC_LOAD_U32(0x839E0DF8u);
+    if (screen != last_screen) {
+      static int lines = 0;
+      if (lines++ < 200)
+        REXLOG_INFO("World Studio: screen {:08X} player {:08X} creator {}", screen, player,
+                    CharacterCreationInputActive(base));
+      last_screen = screen;
+    }
+  }
+  if (sr::world_studio::EditorHostEnabled() && player != 0 && !sr::world_studio::PlayMode() &&
+      PPC_LOAD_U32(player + 72) == 1 && !CharacterCreationInputActive(base)) {
+    state->gamepad = {};
+    // The game opens its pause menu after loading when its window never had
+    // focus (it lives inside the Studio). Close it with short Start presses.
+    static std::chrono::steady_clock::time_point pause_seen{};
+    if (PPC_LOAD_U32(0x839E0DF8u) == 0x82FFB84Cu) {
+      const auto now = std::chrono::steady_clock::now();
+      if (pause_seen.time_since_epoch().count() == 0) pause_seen = now;
+      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - pause_seen).count();
+      if (ms >= 400 && (ms % 1000) < 120) state->gamepad.buttons = X_INPUT_GAMEPAD_START;
+    } else {
+      pause_seen = {};
+    }
+    return;
+  }
+  sr::CoopMenuPoll(base);
+  sr::ChatPoll();
+  if (const uint16_t auto_buttons = AutoBenchButtons(base)) {
+    state->gamepad = {};
+    state->gamepad.buttons = auto_buttons;
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_mouse_mutex);
   if (!GameHasFocus()) {
     ReleaseMouseLocked();
     return;
   }
+  if (sr::CoopDialogOpen() || sr::ChatTyping()) {
+    // The Join Co-op code box (coop_menu.cpp) reads the keyboard itself; the
+    // menus behind it get nothing.
+    state->gamepad = {};
+    return;
+  }
+  if (sr::CoopResumePulse()) {
+    state->gamepad = {};
+    state->gamepad.buttons = X_INPUT_GAMEPAD_START;
+    return;
+  }
+  sr::OptionsMenuPoll(base);
   RefreshKeys();
-  auto* state = reinterpret_cast<X_INPUT_STATE*>(base + state_addr);
   auto& pad = state->gamepad;
   bool pause_menu = UpdatePauseMenuState(base, uint16_t(pad.buttons));
   const bool player_creation = CharacterCreationInputActive(base);
@@ -417,6 +539,60 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
       if (const uint32_t pl = PPC_LOAD_U32(0x8309ABECu)) REXLOG_INFO("KBM state: tagging spot {:08X}", PPC_LOAD_U32(pl + 3700));
     }
   }
+  // Multiplayer (top-level game mode 0x827D578C: 6 = System Link lobby, above = matches).
+  // The player exists there, so the keys would follow the on-foot layout even
+  // with a menu on screen. 0x839E0DF8 (the active menu screen) is 0 whenever no
+  // menu is open, so in multiplayer any open menu (lobby menu, match pause,
+  // results) gets the pause menu layout and menu button pictures; walking
+  // around the lobby or playing a match stays on foot. Single player unchanged.
+  // Switching lobby tabs replaces the menu screen, so the active screen is 0
+  // for a moment: the menu layout is kept until no menu has been open for
+  // 400 ms (otherwise the pictures flickered and Q, which is Back on foot,
+  // closed the menu). A Q / E held from the menu does nothing on foot until
+  // it is released.
+  // "A menu is up" is the game's own test (sub_82287F30), not just
+  // 0x839E0DF8: menus live in two slots (0x839E0DF8 and 0x839E0FB0, 440
+  // bytes each; sub_8228B9D0 opens a screen in whichever is free), plus the
+  // two words at 0x82FFE434 / 0x82FFE43C. Lobby screens opened while slot A
+  // was busy sit in slot B, which left slot A at 0 for seconds and dropped
+  // the lobby to the on-foot keys and pictures.
+  const auto any_menu_up = [base] {
+    return PPC_LOAD_U32(0x839E0DF8u) != 0 || PPC_LOAD_U32(0x839E0FB0u) != 0 ||
+           PPC_LOAD_U32(0x82FFE434u) != 0 || PPC_LOAD_U32(0x82FFE43Cu) != 0;
+  };
+  // Top-level modes (research/multiplayer-gamemode-restoration.md): 4 free roam, 5 mission, 6 the System
+  // Link lobby, and the matches run in the modes after it (a Gangsta Brawl match logged 13), so the match
+  // pause menu needs the same menu layout / pictures as the lobby.
+  const int32_t top_mode = int32_t(PPC_LOAD_U32(0x827D578Cu));
+  const bool multiplayer = top_mode >= 6 && top_mode <= 31 && PPC_LOAD_U32(0x8309ABECu) != 0;
+  static std::chrono::steady_clock::time_point mp_menu_seen{};
+  static bool mp_block_q = false, mp_block_e = false;
+  bool mp_menu = false;
+  if (multiplayer && !player_creation) {
+    const auto t = std::chrono::steady_clock::now();
+    if (any_menu_up()) mp_menu_seen = t;
+    mp_menu = mp_menu_seen.time_since_epoch().count() != 0 && t - mp_menu_seen < std::chrono::milliseconds(400);
+  }
+  {
+    static bool logged_mp_menu = false;
+    if (multiplayer && mp_menu != logged_mp_menu) {
+      logged_mp_menu = mp_menu;
+      REXLOG_INFO("KBM multiplayer: {} | slot A {:08X} slot B {:08X} E434 {:08X} E43C {:08X}",
+                  mp_menu ? "menu keys" : "on-foot keys", PPC_LOAD_U32(0x839E0DF8u), PPC_LOAD_U32(0x839E0FB0u),
+                  PPC_LOAD_U32(0x82FFE434u), PPC_LOAD_U32(0x82FFE43Cu));
+    }
+  }
+  if (mp_menu) {
+    mp_block_q = Down('Q');
+    mp_block_e = Down('E');
+  } else {
+    if (!Down('Q')) mp_block_q = false;
+    if (!Down('E')) mp_block_e = false;
+  }
+  if (multiplayer) {
+    pause_menu = mp_menu;
+    g_pause_menu_active = mp_menu;
+  }
   if (player_creation) pause_menu = false;  // Esc in the creator is its own back key
   // In a cutscene the gameplay camera doesn't run, so a pause toggled there
   // (Esc to skip, or a stray Start edge) never got cleared and the mouse
@@ -428,6 +604,11 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
     g_pause_menu_active = false;
   }
   Pad k = ReadKeyboard(base, pause_menu, player_creation);
+  if (!pause_menu) {
+    // Q / E still held from a multiplayer menu (see above): no Back / Y / radial.
+    if (mp_block_q && !Down(VK_BACK)) k.buttons &= uint16_t(~X_INPUT_GAMEPAD_B);
+    if (mp_block_e) k.buttons &= uint16_t(~X_INPUT_GAMEPAD_Y);
+  }
 
   auto now = std::chrono::steady_clock::now();
   double poll_dt = std::chrono::duration<double>(now - g_mouse.last_poll).count();
@@ -452,7 +633,7 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
   }
 
   int rx = 0, ry = 0;
-  const bool radial = Down('Q') && !pause_menu && !player_creation;
+  const bool radial = Down('Q') && !pause_menu && !player_creation && !mp_block_q;
   if (radial) {
     // Radial menu: point at an item with the mouse, like Saints Row 2.
     if (!g_mouse.radial_open) {
@@ -472,6 +653,11 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
       k.ly = int(-g_mouse.radial_y / std::max(len, 1.0) * 32767.0);
     }
     g_mouse.dx = g_mouse.dy = 0;  // the camera stays still meanwhile
+  } else if (mp_menu) {
+    // Multiplayer menus are lists without a map: the mouse would only move
+    // the selection around, so menus there are keys only (W/S, arrows).
+    g_mouse.wheel_y = 0;
+    g_mouse.dx = g_mouse.dy = 0;
   } else if (pause_menu) {
     // The pause map normally pans with the left stick (and therefore WASD).
     // Feed mouse motion into those same axes; held WASD wins on either axis.
@@ -570,6 +756,12 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
 // movement of this frame.
 extern "C" void __imp__sub_8210D518(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_8210D518) {
+  // World Studio free camera: the game's own camera update would move the
+  // camera back every frame (the view flickered between both cameras).
+  if (sr::world_studio::OwnsCamera()) {
+    sr::world_studio::WriteEditorCamera(base);
+    return;
+  }
   constexpr uint32_t kCamera = 0x827D9778;
   constexpr uint32_t kSlowPanH = 0x827D9348, kSlowPanV = 0x827D934C;
   constexpr uint32_t kFastPanThreshold = 0x827D9350;
@@ -683,4 +875,153 @@ PPC_FUNC(sub_8210D518) {
   StoreF32(base, kSlowPanH, slow_h);
   StoreF32(base, kSlowPanV, slow_v);
   StoreF32(base, kFastPanThreshold, threshold);
+}
+
+// World Studio editor host: skip the main menu by loading the newest save.
+// The main menu's update (sub_822861F0, from its screen table at 0x8205EC8C)
+// runs every frame while it is shown. Its LOAD GAME item (jump table entry 1)
+// only sets mode 0x827AF780 = 0, 0x8300FD3C/40 = 4 and front-end state 44;
+// the load list's A press (sub_822BCDD8, mode 0) then sets 0x8370DDA0 = 1,
+// calls sub_822BF470(1) (load_save_file_to_memory + apply, entry index at
+// 0x8300FD38) and sub_82284600 (leave the front end, start loading).
+// sub_822BB4E0 fills the list: count 0x836FE1DC, entries 0x8300FFD0 (312
+// bytes: XCONTENT_DATA + corrupt flags +308/+309), sorted newest first.
+extern "C" void __imp__sub_822861F0(PPCContext& ctx, uint8_t* base);
+extern "C" void sub_822BB4E0(PPCContext& ctx, uint8_t* base);
+extern "C" void sub_822BF470(PPCContext& ctx, uint8_t* base);
+extern "C" void sub_82284600(PPCContext& ctx, uint8_t* base);
+// Newest good save in the load list, or -1.
+static int32_t NewestSave(uint8_t* base) {
+  const int32_t count = int32_t(PPC_LOAD_U32(0x836FE1DCu));
+  for (int32_t i = 0; i < count && i < 24; ++i) {
+    const uint32_t e = 0x8300FFD0u + uint32_t(i) * 312u;
+    if (PPC_LOAD_U8(e + 308) == 0 && PPC_LOAD_U8(e + 309) == 0) return i;
+  }
+  return -1;
+}
+
+// Loads entry `pick` the way the load list's A press does from the main menu.
+static bool LoadSave(PPCContext& ctx, uint8_t* base, int32_t pick) {
+  PPC_STORE_U32(0x827AF780u, 0);
+  PPC_STORE_U32(0x8300FD38u, uint32_t(pick));
+  PPC_STORE_U8(0x8370DDA0u, 1);
+  ctx.r3.u64 = 1;
+  sub_822BF470(ctx, base);
+  const bool loaded = (ctx.r3.u32 & 0xFF) != 0;
+  REXLOG_INFO("World Studio: save {} load {}", pick, loaded ? "started" : "failed");
+  if (loaded) sub_82284600(ctx, base);
+  return loaded;
+}
+
+// Unattended benchmark: a file named "autobench" next to the exe loads the
+// newest save like the World Studio host does; the Benchmark mod then runs by
+// itself (modding/mods/Benchmark).
+static bool AutoBench() {
+  static int on = -1;
+  if (on < 0) {
+    FILE* f = std::fopen("autobench", "rb");
+    on = f ? 1 : 0;
+    if (f) std::fclose(f);
+  }
+  return on == 1;
+}
+
+static bool g_auto_load_pending = false;  // the load screen was opened for us
+static std::chrono::steady_clock::time_point g_auto_load_since{};
+
+// On the load screen the save device isn't chosen yet ("You must select a
+// storage device"): press X (SELECT DEVICE) once a second until it is. In the
+// world: close a pause menu the game opens by itself (window without focus)
+// with short Start presses.
+static uint16_t AutoBenchButtons(uint8_t* base) {
+  if (!AutoBench()) return 0;
+  const auto now = std::chrono::steady_clock::now();
+  // Load screen: X until a device is chosen, then A on the list (newest save
+  // first) until the screen changes, for at most 60 s.
+  static uint32_t load_screen = 0;
+  static bool load_done = false;
+  static std::chrono::steady_clock::time_point device_at{};
+  if (!load_done && g_auto_load_since.time_since_epoch().count() != 0 && PPC_LOAD_U32(0x8309ABECu) == 0) {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_auto_load_since).count();
+    if (ms > 60000) {
+      load_done = true;
+      return 0;
+    }
+    const uint32_t screen = PPC_LOAD_U32(0x839E0DF8u);
+    if (PPC_LOAD_U32(0x827AE154u) == 0xFFFFFFFFu) {
+      load_screen = screen;
+      return (ms >= 800 && (ms % 1000) < 120) ? uint16_t(0x4000) /* X */ : uint16_t(0);
+    }
+    if (device_at.time_since_epoch().count() == 0) {
+      device_at = now;
+      REXLOG_INFO("Autobench: save device {:08X} chosen, screen {:08X}", PPC_LOAD_U32(0x827AE154u), screen);
+    }
+    if (load_screen && screen != load_screen) {
+      load_done = true;
+      REXLOG_INFO("Autobench: load screen left (screen {:08X})", screen);
+      return 0;
+    }
+    const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - device_at).count();
+    return (since >= 2500 && (since % 1500) < 120) ? uint16_t(0x1000) /* A */ : uint16_t(0);
+  }
+  static std::chrono::steady_clock::time_point pause_seen{};
+  if (PPC_LOAD_U32(0x8309ABECu) != 0 && PPC_LOAD_U32(0x839E0DF8u) == 0x82FFB84Cu) {
+    if (pause_seen.time_since_epoch().count() == 0) pause_seen = now;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - pause_seen).count();
+    return (ms >= 1500 && (ms % 1000) < 120) ? uint16_t(0x0010) /* Start */ : uint16_t(0);
+  }
+  pause_seen = {};
+  return 0;
+}
+
+PPC_FUNC(sub_822861F0) {
+  // At the main menu the save device isn't chosen yet (the list comes back
+  // empty), so open the LOAD GAME screen the way its menu item does (jump
+  // table entry 1: mode 0x827AF780 = 0, 0x8300FD3C/40 = 4, front-end state
+  // 0x8370DDB0 = 44) and load the newest save from there (sub_822BCDD8).
+  static bool done = false;
+  static std::chrono::steady_clock::time_point first{};
+  if (!done && (sr::world_studio::EditorHostEnabled() || AutoBench())) {
+    const auto now = std::chrono::steady_clock::now();
+    if (first.time_since_epoch().count() == 0) first = now;
+    static bool logged = false;
+    if (!logged) { logged = true; REXLOG_INFO("World Studio: main menu seen, user {}", PPC_LOAD_U8(0x827ADEC2u)); }
+    if (now - first >= std::chrono::milliseconds(300) && PPC_LOAD_U8(0x827ADEC2u) != 0xFF) {
+      done = true;
+      PPC_STORE_U32(0x827AF780u, 0);
+      PPC_STORE_U32(0x8300FD3Cu, 4);
+      PPC_STORE_U32(0x8300FD40u, 4);
+      PPC_STORE_U32(0x8370DDB0u, 44);
+      g_auto_load_pending = true;
+      g_auto_load_since = now;
+      REXLOG_INFO("World Studio: main menu -> load screen (user {}, device {:08X})",
+                  PPC_LOAD_U8(0x827ADEC2u), PPC_LOAD_U32(0x827AE154u));
+      ctx.r3.u64 = 1;
+      return;
+    }
+    if (now - first > std::chrono::seconds(20)) done = true;
+  }
+  // Join Co-op row (coop_menu.cpp).
+  if (sr::CoopMainMenuPre(ctx, base)) return;
+  __imp__sub_822861F0(ctx, base);
+  sr::CoopMainMenuPost(ctx, base);
+}
+
+// Load list screen update (A press handler etc.). Loads the newest save once
+// the list has been filled after the editor host opened this screen.
+extern "C" void __imp__sub_822BCDD8(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_822BCDD8) {
+  if (g_auto_load_pending) {
+    const auto waited = std::chrono::steady_clock::now() - g_auto_load_since;
+    const int32_t pick = NewestSave(base);
+    if (pick >= 0 && waited > std::chrono::milliseconds(300)) {
+      g_auto_load_pending = false;
+      REXLOG_INFO("World Studio: load screen has {} saves, loading entry {}", PPC_LOAD_U32(0x836FE1DCu), pick);
+      if (LoadSave(ctx, base, pick)) return;
+    } else if (waited > std::chrono::seconds(AutoBench() ? 40 : 15)) {
+      g_auto_load_pending = false;
+      REXLOG_INFO("World Studio: load screen still has no saves after 15 s, left to the user");
+    }
+  }
+  __imp__sub_822BCDD8(ctx, base);
 }

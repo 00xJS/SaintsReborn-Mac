@@ -10,6 +10,7 @@
 #include "fps_overlay.h"
 #include "perf_monitor.h"
 #include "wml/mod_loader.h"
+#include "world_studio_bridge.h"
 
 #include <rex/graphics/graphics_system.h>
 #include <rex/ppc/function.h>
@@ -126,10 +127,21 @@ PPC_FUNC(sub_825E54A8) {
         // Cutscenes: above 60 fps the player model falls behind (the camera,
         // dialogue and other actors run on real time, the player on frame
         // steps that stop adding up past 60). Hold cutscenes at 60 at most.
-        if ((PPC_LOAD_U8(0x8370D991u) || PPC_LOAD_U8(0x8370D990u)) && (cap == 0 || cap > 60)) cap = 60;
-        // Only when another copy of the game runs on this PC: otherwise a
-        // window in the background keeps its normal frame rate (limiting it
-        // made frame times go past the game's own step limit).
+        // With the Havok step fix (HavokStepFix) the player keeps up, so the
+        // hold only applies without it or with the file "cutscene_hold_60".
+        static const bool hold60 = [] {
+            FILE* f = std::fopen("cutscene_hold_60", "rb");
+            if (f) std::fclose(f);
+            return f != nullptr;
+        }();
+        extern bool g_havok_step_fix;
+        if ((hold60 || !g_havok_step_fix) && (PPC_LOAD_U8(0x8370D991u) || PPC_LOAD_U8(0x8370D990u)) &&
+            (cap == 0 || cap > 60))
+            cap = 60;
+        // Only when another copy runs on this PC: in a real co-op session the
+        // host tabbing out slowed its whole world (frame times past the
+        // game's own step limit), and the other player's copies of its people
+        // and cars tried to keep walking and jittered.
         static bool other_copy = false;
         if ((focus_check & 511) == 1) {
             int copies = 0;
@@ -146,9 +158,23 @@ PPC_FUNC(sub_825E54A8) {
         if (background && other_copy && (cap > 30 || cap == 0)) cap = 30;
         sr::LimitFrameRate(double(cap));
     }
+    // Visibility sets (PVS) off everywhere, only with the file "pvs_off" next to
+    // the exe (costs ~20-30 fps at street level). By default PVS stays on at
+    // street level, where its data is right, and render_fixes.cpp turns it
+    // fully off when the camera is high above the street. Use-PVS byte
+    // 0x827D9227 (1 = on), the same switch as RenderLab Numpad 7.
+    {
+        static const bool pvs_off = [] {
+            FILE* f = std::fopen("pvs_off", "rb");
+            if (f) std::fclose(f);
+            return f != nullptr;
+        }();
+        if (pvs_off && PPC_LOAD_U8(0x827D9227u) != 0) PPC_STORE_U8(0x827D9227u, 0);
+    }
     sr::g_game_frames.fetch_add(1, std::memory_order_relaxed);
     sr::PerfFrameBegin();
     wml::OnFrame();
+    sr::world_studio::OnPresent(ctx, base);
     __imp__sub_825E54A8(ctx, base);
     // Command buffers run on the GPU thread while the game carries on; keep
     // at most one frame of them queued.
@@ -159,15 +185,99 @@ PPC_FUNC(sub_825E54A8) {
 // WaitForSingleObjectEx (guest wrapper): timed for the performance log.
 extern "C" void __imp__sub_8271C2E8(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_8271C2E8) {
-    if (!sr::PerfTrackWaits()) {
+    if (!sr::PerfWaitsOn()) {
         __imp__sub_8271C2E8(ctx, base);
         return;
     }
+    const bool main = sr::PerfTrackWaits();
     const uint32_t caller = uint32_t(ctx.lr);
     const auto t0 = std::chrono::steady_clock::now();
     __imp__sub_8271C2E8(ctx, base);
-    sr::PerfRecordWait(caller, uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
-                                            std::chrono::steady_clock::now() - t0).count()));
+    const uint64_t us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now() - t0).count());
+    if (main) sr::PerfRecordWait(caller, us);
+    sr::PerfRecordThreadWait(0x8271C2E8u, caller, us);
+}
+
+// The game's other wait wrappers (NtWaitForSingleObjectEx 82717030,
+// KeWaitForSingleObject in the D3D layer 825E28E0 / 825DF548,
+// KeWaitForMultipleObjects 8260D180, NtWaitForMultipleObjectsEx 8275AFC0):
+// timed per thread and caller for the PERF "THREAD WAITS" list (perf_log).
+#define SR_TIMED_WAIT_HOOK(addr)                                                                  \
+    extern "C" void __imp__sub_##addr(PPCContext& ctx, uint8_t* base);                           \
+    PPC_FUNC(sub_##addr) {                                                                       \
+        if (!sr::PerfWaitsOn()) {                                                                \
+            __imp__sub_##addr(ctx, base);                                                        \
+            return;                                                                              \
+        }                                                                                        \
+        const uint32_t caller = uint32_t(ctx.lr);                                                \
+        const auto t0 = std::chrono::steady_clock::now();                                        \
+        __imp__sub_##addr(ctx, base);                                                            \
+        sr::PerfRecordThreadWait(0x##addr##u, caller,                                            \
+                                 uint64_t(std::chrono::duration_cast<std::chrono::microseconds>( \
+                                              std::chrono::steady_clock::now() - t0)             \
+                                              .count()));                                        \
+    }
+SR_TIMED_WAIT_HOOK(82717030)
+SR_TIMED_WAIT_HOOK(825E28E0)
+SR_TIMED_WAIT_HOOK(8260D180)
+SR_TIMED_WAIT_HOOK(8275AFC0)
+
+// Havok physics step follows the frame rate (port of the Havok physics FPS
+// fix from the Saints Row 2 Juiced Patch / xenia-canary TU1 patch by
+// Clippy95, Tervel and uzis - MIT, Kobraworks Modding Group). Physics runs in
+// fixed steps of Havok_step_time (float 0x8370DC9C, console var; 82255FD0
+// works out how many whole steps fit in the frame). At high frame rates less
+// than one step fits into a frame, so physics objects (cutscene props, the
+// player in cutscenes, doors) only move every other frame and fall out of
+// step with the animation. Here the step is set every frame from the real
+// frame time: one step per frame at 60 fps and above (step = frame time),
+// two per frame between 30 and 60 (frame time / 2, as the original patch),
+// the game's own value below 30. File "havok_step_original" = off.
+bool g_havok_step_fix = false;
+static void HavokStepFix(uint8_t* base) {
+    static const bool off = [] {
+        FILE* f = std::fopen("havok_step_original", "rb");
+        if (f) std::fclose(f);
+        return f != nullptr;
+    }();
+    constexpr uint32_t kStep = 0x8370DC9Cu;
+    static float original = 0.0f;
+    static bool have_original = false;
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    const double dt = std::chrono::duration<double>(now - last).count();
+    last = now;
+    uint32_t bits = PPC_LOAD_U32(kStep);
+    float cur;
+    std::memcpy(&cur, &bits, 4);
+    if (!have_original) {
+        if (!(cur > 0.001f && cur < 0.1f)) return;  // not set up yet
+        original = cur;
+        have_original = true;
+        REXLOG_INFO("Havok step: game value {:.5f} s ({:.1f} Hz), fix {}", original, 1.0 / original,
+                    off ? "OFF (havok_step_original)" : "on");
+    }
+    g_havok_step_fix = !off;
+    if (off) return;
+    float step = original;
+    if (dt > 1.0 / 400.0 && dt <= 1.0 / 60.0 + 0.0005) step = float(dt);
+    else if (dt > 1.0 / 60.0 && dt <= 1.0 / 30.0 + 0.001) step = float(dt * 0.5);
+    std::memcpy(&bits, &step, 4);
+    PPC_STORE_U32(kStep, bits);
+    static auto next_log = now + std::chrono::seconds(10);
+    static double sum = 0;
+    static int n = 0;
+    sum += step;
+    ++n;
+    if (now >= next_log) {
+        static int lines = 0;
+        if (lines++ < 100)
+            REXLOG_INFO("Havok step: average {:.5f} s over {} frames (game value {:.5f})", sum / n, n, original);
+        sum = 0;
+        n = 0;
+        next_log = now + std::chrono::seconds(10);
+    }
 }
 
 // Per-frame render entry (GL2_Render). The flags at 0x8370E9DF/0x8370E9F6
@@ -180,6 +290,8 @@ PPC_FUNC(sub_8262FFE0) {
         PPC_STORE_U8(0x8370E9F6, 0);
     }
     __imp__sub_8262FFE0(ctx, base);
+    sr::world_studio::AfterFrameTimer(base);
+    HavokStepFix(base);
     ForceFrameFlags(base, 0x40001E00);
 }
 
@@ -193,6 +305,8 @@ PPC_FUNC(sub_82185498) {
     // work driven by the original loop.  Calling them from Present happened
     // after world simulation, so transforms written by mods were overwritten before the
     // next visible frame.
+    if (!sr::world_studio::BeforeGameFrame(base)) return;
+    wml::OnGameFrame();
     __imp__sub_82185498(ctx, base);
 }
 
@@ -248,8 +362,17 @@ PPC_FUNC(sub_825D4748) {
     ctx.r3.u64 = 0;  // S_OK
 }
 
-// Physics update: skipped (returns 0).
+// System-link network tick (was stubbed out as "physics update" during bring-up).
+// It reads received packets, runs the host/client logic and the host's load step that
+// switches the game to the multiplayer mode (6). Runs only while the game's network is
+// active ([0x8370E9F6] == 1: System Link Start Game / Find Game); otherwise returns 0
+// as before, so single player is unchanged.
+extern "C" void __imp__sub_8234C1C0(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_8234C1C0) {
+    if (*GuestPtr(base, 0x8370E9F6u) == 1) {
+        __imp__sub_8234C1C0(ctx, base);
+        return;
+    }
     ctx.r3.u64 = 0;
 }
 
@@ -452,7 +575,14 @@ PPC_FUNC(sub_825DF708) {
 extern "C" void __imp__sub_825DF548(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_825DF548) {
     g_exec_end_wait.fetch_add(1);
+    const bool timed = sr::PerfWaitsOn();
+    const uint32_t caller = uint32_t(ctx.lr);
+    const auto t0 = std::chrono::steady_clock::now();
     __imp__sub_825DF548(ctx, base);
+    if (timed)
+        sr::PerfRecordThreadWait(0x825DF548u, caller,
+                                 uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                              std::chrono::steady_clock::now() - t0).count()));
     g_exec_end_wait.fetch_sub(1);
 }
 
@@ -846,4 +976,61 @@ PPC_FUNC(sub_82702DD0) {
 PPC_FUNC(sub_82702900) {
     if (ctx.r5.u32 && ctx.r3.u32 != ctx.r4.u32)
         std::memmove(GuestPtr(base, ctx.r3.u32), GuestPtr(base, ctx.r4.u32), ctx.r5.u32);
+}
+
+// Guest Sleep (82716020: r3 = milliseconds, -> KeDelayExecutionThread). Every
+// 10 s: per caller, how often it sleeps, the milliseconds it asked for and the
+// time it really took (a 1 ms sleep took up to 15.6 ms before the 1 ms timer
+// resolution in main.cpp). Diagnostic, only with the file "sleep_stats".
+namespace {
+struct SleepStat {
+    uint32_t lr = 0;
+    uint64_t calls = 0, asked_ms = 0, took_us = 0, zero_calls = 0;
+};
+std::mutex g_sleep_mutex;
+SleepStat g_sleep_stats[24];
+}  // namespace
+extern "C" void __imp__sub_82716020(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_82716020) {
+    static const bool on = [] {
+        FILE* f = std::fopen("sleep_stats", "rb");
+        if (f) std::fclose(f);
+        return f != nullptr;
+    }();
+    if (!on) {
+        __imp__sub_82716020(ctx, base);
+        return;
+    }
+    const uint32_t lr = uint32_t(ctx.lr), ms = ctx.r3.u32;
+    const auto t0 = std::chrono::steady_clock::now();
+    __imp__sub_82716020(ctx, base);
+    const auto t1 = std::chrono::steady_clock::now();
+    const uint64_t us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+    static auto next = t1 + std::chrono::seconds(10);
+    std::lock_guard lock(g_sleep_mutex);
+    SleepStat* s = nullptr;
+    for (auto& e : g_sleep_stats)
+        if (e.lr == lr || e.lr == 0) { s = &e; break; }
+    if (s) {
+        s->lr = lr;
+        ++s->calls;
+        s->asked_ms += ms;
+        s->took_us += us;
+        if (ms == 0) ++s->zero_calls;
+    }
+    if (t1 >= next) {
+        next = t1 + std::chrono::seconds(10);
+        std::string line;
+        for (auto& e : g_sleep_stats) {
+            if (!e.lr) continue;
+            char b[160];
+            std::snprintf(b, sizeof(b), " [%08X: %llu calls (%llu of 0 ms), asked %llu ms, took %.1f ms]", e.lr,
+                          (unsigned long long)e.calls, (unsigned long long)e.zero_calls,
+                          (unsigned long long)e.asked_ms, e.took_us / 1000.0);
+            line += b;
+            e = SleepStat{};
+        }
+        static int lines = 0;
+        if (lines++ < 200) REXLOG_INFO("GUEST SLEEPS 10 s:{}", line);
+    }
 }

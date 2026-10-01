@@ -1,7 +1,7 @@
 # Whompays Trainer
 
 Enable **Whompays Trainer** in Whompays Mod Loader and launch the game.
-Press **F4** to show or hide the white-text menu over the game. Press **1–4**
+Press **F4** to show or hide the white-text menu over the game. Press **1–5**
 (top row or numpad) to activate an option while the menu is open. The game keeps
 focus and mouse control; there is no separate window or cursor to fight.
 
@@ -11,6 +11,9 @@ focus and mouse control; there is no separate window or cursor to fight.
   in the same slot. This does not expand the weapon wheel or unlock a new storage menu.
 - **3 — Money:** adds $100,000 each press, capped at the game's cash limit.
 - **4 — God Mode:** toggles the player's invulnerability flag. Starts off each run.
+- **5 — No Clip:** fly through walls and floors. W/S move where the camera looks,
+  A/D sideways, Space up, C down, Shift faster. Not in cars. Switching it off
+  in the air drops you without fall damage.
 
 Use in single-player gameplay, after loading a save. Money, respect and weapons
 can persist if you save. God Mode does not prevent scripted mission failures.

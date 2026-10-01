@@ -26,10 +26,16 @@ class FpsOverlay {
                   rex::ui::Presenter* presenter);
   // Shows or hides the counter. UI thread only.
   void Toggle();
+  // True while the counter is shown. UI thread only.
+  bool IsVisible() const;
   // Briefly shows "FPS cap: N". UI thread only.
   void ShowNotice(int cap);
   // Shows or hides text from native mods (WML overlay_text). UI thread only.
   void SetModTextVisible(bool visible);
+  // World Studio editor host: move gizmo / paused label. UI thread only.
+  void SetStudioGizmoVisible(bool visible);
+  // Shows or hides beams from native mods (WML overlay_beams). UI thread only.
+  void SetBeamsVisible(bool visible);
   // Call on the UI thread before the presenter goes away.
   void Shutdown();
 

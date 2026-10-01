@@ -11,7 +11,11 @@
 param(
     [string]$Iso = "",
     [switch]$Clean,
-    [switch]$NoPause
+    [switch]$NoPause,
+    # Optional: Epic Online Services folder (SDK\ + eos.ini) for online play
+    # through Epic. Not part of the repository; without it online play uses
+    # System Link on a real LAN / VPN and co-op joins by IP.
+    [string]$Eos = $env:SR_EOS
 )
 
 # Native tools report failure through exit codes, checked by Run below.
@@ -23,6 +27,9 @@ $GameDir = Join-Path $Dist "game"
 $SdkSrc = Join-Path $Build "rexglue-sdk"
 $SdkInstall = Join-Path $Build "sdk"
 $GameBuild = Join-Path $Build "game"
+
+$EosOn = $Eos -and (Test-Path (Join-Path $Eos "SDK\Include\eos_sdk.h"))
+if ($EosOn) { $Eos = (Resolve-Path $Eos).Path }
 
 $SdkRepo = "https://github.com/rexglue/rexglue-sdk.git"
 $SdkCommit = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518"   # ReXGlue SDK v0.10.0
@@ -56,6 +63,20 @@ function Done($name, $key) {
 }
 function MarkDone($name, $key) { Set-Content -Path (Join-Path $Stamps $name) -Value $key }
 function FileHash($path) { (Get-FileHash -Algorithm SHA1 $path).Hash }
+
+# Parallel compile jobs: one per logical CPU, but at most one per ~2 GB of RAM.
+# The recompiled game files are huge; on an 8 GB laptop one job per thread
+# runs out of memory (the build then crawls or clang crashes).
+$LogicalCpus = [Environment]::ProcessorCount
+$RamGB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+$BuildJobs = [math]::Max(1, [math]::Min($LogicalCpus, [math]::Floor($RamGB / 2)))
+Write-Host "Build: $BuildJobs parallel jobs ($LogicalCpus CPU threads, $RamGB GB RAM)"
+
+# Profile-guided optimization profiles recorded from real play (pgo\): the
+# build uses them when present (a clearly faster game, same behaviour).
+$PgoDir = Join-Path $Root "pgo"
+$GamePgo = Join-Path $PgoDir "saintsrow.profdata"
+$GpuPgo = Join-Path $PgoDir "rexgpu.profdata"
 
 # ---------------------------------------------------------------------------
 # 1. Toolchain: Visual Studio 2022 (with its Clang, CMake and Ninja) + Git
@@ -132,6 +153,7 @@ if ($xexHash -ne $knownXex) {
 # 3. ReXGlue SDK (runtime + recompiler), patched for Saints Row
 # ---------------------------------------------------------------------------
 $sdkKey = "$SdkCommit " + (FileHash (Join-Path $Root "patches\rexglue-sdk.patch"))
+if (Test-Path $GpuPgo) { $sdkKey += " " + (FileHash $GpuPgo) }
 if (-not (Done "sdk" $sdkKey)) {
     if (-not (Test-Path (Join-Path $SdkSrc ".git"))) {
         Step "Downloading the ReXGlue SDK"
@@ -142,9 +164,9 @@ if (-not (Done "sdk" $sdkKey)) {
     try {
         Step "Checking out ReXGlue SDK $($SdkCommit.Substring(0, 7)) and its dependencies"
         Run "git" @("-c", "advice.detachedHead=false", "checkout", "--force", $SdkCommit)
-        # Files an older version of the patch added are not tracked by the SDK,
-        # so the checkout leaves them behind and the new patch would not apply.
-        Run "git" @("clean", "-fdq", "--", "src", "include", "resources", "cmake")
+        # Files an older version of the patch added (checkout --force leaves
+        # them), or the new patch can't create them again.
+        & git clean -fdq -- include src resources cmake
         # Shallow submodules save several GB; fall back to full history if a
         # server refuses to serve a pinned commit shallowly.
         & git submodule update --init --recursive --force --depth 1
@@ -177,8 +199,11 @@ if (-not (Done "sdk" $sdkKey)) {
         }
 
         Step "Building the ReXGlue SDK (this takes a while)"
-        Run "cmake" @("--preset", "win-amd64", "-DCMAKE_INSTALL_PREFIX=$SdkInstall")
-        Run "cmake" @("--build", "out/build/win-amd64", "--target", "install", "--config", "Release")
+        $sdkArgs = @("--preset", "win-amd64", "-DCMAKE_INSTALL_PREFIX=$SdkInstall")
+        if (Test-Path $GpuPgo) { $sdkArgs += @("-DREX_GPU_PGO=use", "-DREX_GPU_PGO_PROFILE=$GpuPgo") }
+        if ($EosOn) { $sdkArgs += "-DREX_EOS_SDK_INCLUDE=$(Join-Path $Eos 'SDK\Include')" }
+        Run "cmake" $sdkArgs
+        Run "cmake" @("--build", "out/build/win-amd64", "--target", "install", "--config", "Release", "-j", "$BuildJobs")
     } finally {
         Pop-Location
     }
@@ -205,10 +230,15 @@ if (-not (Done "codegen" $codegenKey)) {
 # ---------------------------------------------------------------------------
 Step "Building Saints Reborn (compiles ~34,000 functions; expect 15-60 minutes)"
 $env:REXSDK = $SdkInstall
-Run "cmake" @("-S", (Join-Path $Root "project"), "-B", $GameBuild, "-G", "Ninja",
+$gameArgs = @("-S", (Join-Path $Root "project"), "-B", $GameBuild, "-G", "Ninja",
     "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
     "-DSR_GENERATED_DIR=$(Join-Path $Build 'generated')")
-Run "cmake" @("--build", $GameBuild)
+# SR_CPU_LEVEL=auto (the default): built for this PC's CPU, so older CPUs
+# (no AVX2, e.g. 2012 laptops) get a build that runs on them.
+if (Test-Path $GamePgo) { $gameArgs += @("-DSR_PGO=use", "-DSR_PGO_PROFILE=$GamePgo") }
+if ($EosOn) { $gameArgs += "-DSR_EOS=$Eos" }
+Run "cmake" $gameArgs
+Run "cmake" @("--build", $GameBuild, "-j", "$BuildJobs")
 
 Step "Copying the game to dist"
 try {
@@ -229,12 +259,26 @@ try {
     Copy-Item -Force -ErrorAction Stop (Join-Path $GameBuild "ExampleNative.dll") (Join-Path $ModsDir "ExampleNative")
     Copy-Item -Force -ErrorAction Stop (Join-Path $GameBuild "WhompaysTrainer.dll") (Join-Path $ModsDir "WhompaysTrainer")
 
-    # Built-in parts (the Saints Reborn logo): always on, not in the mod list.
+    # Built-in parts (the Saints Reborn logo, first person, co-op, multiplayer): always on, not in the mod list.
     $CoreDir = Join-Path $Dist "core"
     foreach ($part in Get-ChildItem -Directory (Join-Path $Root "core")) {
         $target = Join-Path $CoreDir $part.Name
         New-Item -ItemType Directory -Force -Path $target | Out-Null
-        Copy-Item -Recurse -Force -ErrorAction Stop -Exclude "*.png","*.py" (Join-Path $part.FullName "*") $target
+        Copy-Item -Recurse -Force -ErrorAction Stop -Exclude "*.png","*.py","*.c","*.cpp","*.h","*.ps1","*.bak*","join_ip.txt" (Join-Path $part.FullName "*") $target
+    }
+    # Co-op: the DLL, join_ip.txt (kept when it's there) and, when set up, Epic.
+    $CoopDir = Join-Path $CoreDir "WhompaysCoop"
+    Copy-Item -Force -ErrorAction Stop (Join-Path $GameBuild "WhompaysCoop.dll") $CoopDir
+    if (-not (Test-Path (Join-Path $CoopDir "join_ip.txt"))) {
+        # Co-op was a mod before it was built in: keep an older install's join code / IP.
+        $oldJoin = Join-Path $ModsDir "WhompaysCoop\join_ip.txt"
+        if (Test-Path $oldJoin) { Copy-Item -ErrorAction Stop $oldJoin $CoopDir }
+        else { Copy-Item -ErrorAction Stop (Join-Path $Root "core\WhompaysCoop\join_ip.txt") $CoopDir }
+    }
+    if ($EosOn) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $CoopDir "eos") | Out-Null
+        Copy-Item -Force -ErrorAction Stop (Join-Path $Eos "SDK\Bin\EOSSDK-Win64-Shipping.dll") (Join-Path $CoopDir "eos")
+        if (Test-Path (Join-Path $Eos "eos.ini")) { Copy-Item -Force -ErrorAction Stop (Join-Path $Eos "eos.ini") $CoopDir }
     }
 } catch {
     Fail "Could not copy the game to dist ($($_.Exception.Message)). If Saints Reborn is running, close it and run setup again."

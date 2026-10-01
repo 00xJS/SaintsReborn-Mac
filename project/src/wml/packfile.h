@@ -32,6 +32,8 @@ class Packfile {
     uint64_t stored_offset;  // offset of the stored data in the file
   };
   int Find(const std::string& name) const;
+  bool SaveCondensed(const std::filesystem::path& path, const std::map<std::string, std::string>& replacements,
+                     std::string* error) const;
 
   std::vector<uint8_t> data_;
   std::vector<Entry> entries_;
@@ -39,6 +41,10 @@ class Packfile {
   uint32_t names_size_ = 0;
   uint32_t data_offset_ = 0;
   bool compressed_ = false;
+  // Condensed packfiles (flag bit 1, e.g. preload.vpp_xbox2) store all files
+  // back to back (64-byte aligned) in one zlib stream; blob_ is that data.
+  bool condensed_ = false;
+  std::vector<uint8_t> blob_;
 };
 
 }  // namespace wml

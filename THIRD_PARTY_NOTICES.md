@@ -1,6 +1,7 @@
 # Third-party notices
 
-This repository does not bundle any third-party code or binaries. During the
+Apart from the libraries listed under "Map tools" below, this repository does
+not bundle any third-party code or binaries. During the
 build, `scripts/setup.ps1` downloads the ReXGlue SDK and its dependencies (git
 submodules) and compiles them on your machine. The resulting files in `build`
 and `dist` are covered by the licenses below. If you redistribute any built
@@ -83,3 +84,29 @@ project's full license text is in its folder there.
 
 The list reflects the SDK version pinned in `scripts/setup.ps1`; the SDK's own
 repository is authoritative.
+
+## Map tools (`tools/mapconv`)
+
+The map converter and map editor include these libraries as source. Each file
+(or the LICENSE file next to it) carries its full license text.
+
+| Project | Files | License |
+|---|---|---|
+| [Dear ImGui](https://github.com/ocornut/imgui) 1.91.9 | `editor/third_party/imgui/` | MIT (`LICENSE.txt`) |
+| [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) | `editor/third_party/imguizmo/` | MIT (`LICENSE`) |
+| [nlohmann/json](https://github.com/nlohmann/json) | `editor/third_party/json.hpp` | MIT |
+| [stb_image, stb_image_write, stb_dxt](https://github.com/nothings/stb) | `third_party/`, `editor/third_party/` | MIT or public domain |
+| [cgltf](https://github.com/jkuhlmann/cgltf) | `third_party/cgltf.h` | MIT |
+| puff (from [zlib](https://zlib.net), Mark Adler) | `third_party/puff.c`, `puff.h` | zlib |
+
+The map editor reads game models and textures by running the Saints Row Asset
+Viewer (`SaintsRowAssetViewer.exe --serve`), a separate program under the
+Mozilla Public License 2.0. It is not compiled into the editor; if you ship
+its executable next to the editor, ship (or link to) its source as the MPL
+requires.
+
+## Game data
+
+Nothing in this repository comes from the game. The map tools read the files of
+the player's own copy at run time; map files (`.srmap`) only store the names of
+game models and textures, never their contents.

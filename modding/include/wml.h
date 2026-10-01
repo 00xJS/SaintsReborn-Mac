@@ -101,6 +101,22 @@ typedef struct WmlApi {
      the frame is built. New functions are only ever added at the end, so
      mods built against an older wml.h keep working. */
   void (*on_game_frame)(WmlFrameCallback callback, void* user);
+
+  /* Optional tail extension: glowing lines in the 3D world, drawn over the
+     game (no depth test), e.g. beams. data holds count beams of 10 floats:
+     start x y z, end x y z (world), width in pixels at 1080p, red, green, blue
+     (0-1). Replaces the beams sent before; count 0 clears them. Beams not
+     sent again for 150 ms disappear. Copies the data. */
+  void (*overlay_beams)(const float* data, int count);
+
+  /* Optional tail extension: the finished picture's look (the Modern Look
+     mod). data holds count floats: sharpen (0-1), bloom strength, bloom
+     threshold (0-1), exposure (stops), contrast (1 = unchanged), saturation
+     (1 = unchanged), vibrance, filmic curve (0-1), temperature (-1..1, +warm),
+     tint (-1..1, +magenta), vignette (0-1), black level (0-0.2), FXAA (0/1),
+     anisotropic filtering (1, 2, 4, 8 or 16; 0 = the game's). count 0 (or
+     data NULL) switches the look off: the original picture. */
+  void (*set_look)(const float* data, int count);
 } WmlApi;
 
 typedef int (*WmlModInitFunction)(const WmlApi* api, const WmlMod* mod);

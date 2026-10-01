@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace rex::filesystem {
 class VirtualFileSystem;
@@ -32,6 +33,22 @@ void OnGameFrame();
 bool KeyTaken(int virtual_key);
 // Text native mods asked to show over the game (empty = nothing).
 std::string OverlayText();
+// The game's own text over the view (e.g. online notices), shown with it.
+void SetHostOverlayText(const std::string& text);
+// In-game chat (chat.cpp): keep the overlay drawn while chat shows; mute the
+// mods' keys while the player types.
+void SetChatVisible(bool visible);
+void SetKeysSuppressed(bool suppressed);
+// Ids (folder names) of the enabled mods, without the built-in core parts.
+std::vector<std::string> EnabledModIds();
+// Beams mods draw over the game (overlay_beams): copied into out (10 floats
+// each); false when there are none or they are stale.
+bool OverlayBeams(std::vector<float>& out);
+// The game camera: position, right / up / forward rows and vertical field of
+// view in degrees.
+bool GameCamera(float eye[3], float right[3], float up[3], float forward[3], float& fov);
+// Called (on the game thread) when mod beams appear or disappear.
+void SetOverlayBeamsListener(std::function<void(bool)> listener);
 // Called (on the game thread) when mod text appears or disappears.
 void SetOverlayTextListener(std::function<void(bool)> listener);
 // True while a mod holds a key down for the keyboard controls (wml.force_key).

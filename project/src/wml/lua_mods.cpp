@@ -333,6 +333,23 @@ int LTakeKey(lua_State* L) {
 }
 int LForceKey(lua_State* L) { ForceKey(CheckKey(L, 1), lua_toboolean(L, 2) != 0); return 0; }
 int LTurnCamera(lua_State* L) { TurnCamera(luaL_checknumber(L, 1)); return 0; }
+// wml.set_look({sharpen, bloom, ...}) - see wml.h set_look; wml.set_look() = original picture.
+int LSetLook(lua_State* L) {
+  if (!lua_istable(L, 1)) {
+    SetLook(nullptr, 0);
+    return 0;
+  }
+  float v[32];
+  int n = 0;
+  for (; n < 32; ++n) {
+    lua_rawgeti(L, 1, n + 1);
+    if (!lua_isnumber(L, -1)) { lua_pop(L, 1); break; }
+    v[n] = float(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+  }
+  SetLook(v, n);
+  return 0;
+}
 // wml.mouse_look() -> yaw, pitch: radians the mouse / right stick would have
 // turned the camera since the last call (positive = right / up).
 int LMouseLook(lua_State* L) {
@@ -401,7 +418,7 @@ void OpenWmlLibrary(LuaMod* mod, const ModInfo& info) {
       {"on_frame", LOnFrame},     {"hook", LHook},
       {"setting", LSetting},      {"take_key", LTakeKey},
       {"force_key", LForceKey},   {"turn_camera", LTurnCamera}, {"limit_camera", LLimitCamera},
-      {"mouse_look", LMouseLook},
+      {"mouse_look", LMouseLook}, {"set_look", LSetLook},
       {nullptr, nullptr}};
   lua_newtable(L);
   lua_pushlightuserdata(L, mod);

@@ -62,6 +62,7 @@ and a global `wml` table:
 | `wml.force_key(key, down)` | Holds a key down (or lets go of it) for the built-in keyboard controls, as if the player pressed it. |
 | `wml.turn_camera(radians)` | Turns the camera, like moving the mouse (positive turns right). |
 | `wml.limit_camera(yaw, pitch, yaw_limit, pitch_up, pitch_down)` | Stops mouse turning past the given limits (all in radians; `yaw` and `pitch` are where the view points now). Call it every frame while it should apply; `wml.limit_camera()` turns it off. |
+| `wml.set_look({sharpen, bloom, bloom_threshold, exposure, contrast, saturation, vibrance, filmic, temperature, tint, vignette, black_level, fxaa, anisotropic_filtering})` | Changes the finished picture (see the Modern Look mod for what each value does). `wml.set_look()` restores the original picture. Native mods: `set_look` in `wml.h`. |
 | `wml.mouse_look()` | Returns how far the mouse (or the controller's right stick) would have turned the camera since the last call, as `yaw, pitch` in radians (positive = right / up). For mods that steer a view themselves. |
 | `wml.on_frame(function)` | Calls the function once every frame. |
 | `wml.hook(addr, function(ctx) ... end)` | Replaces the game function at `addr`. |
@@ -185,9 +186,11 @@ DLL, compile it as a 64-bit Windows DLL with any compiler and add
   you (main.lua). Tune it in its `mod.ini`.
 - **60 FPS** raises the game's frame rate limit from 30 to 60. With it on, F10
   cycles the cap between 30, 60, 90 and 120.
-- **First Person** adds a first-person view, toggled with V. It works on foot,
-  swimming and in vehicles (including leaning out to shoot), and switches back
-  to the normal camera in shops, cutscenes and scripted scenes. Settings are in
+- **Modern Look** gives the picture a cleaner, more modern look: sharper image,
+  a soft glow around bright lights, richer colours and contrast, smoother edges
+  (FXAA) and sharper textures at a distance (16x anisotropic filtering). It is
+  off by default; turn it on in the mod manager, and press F3 in game to
+  compare with the original look. Every effect can be tuned or switched off in
   its `mod.ini`.
 - **Whompays Trainer** (F4) gives respect, all guns, money and god mode.
 

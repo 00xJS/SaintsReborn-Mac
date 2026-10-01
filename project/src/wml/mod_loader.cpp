@@ -18,6 +18,7 @@
 
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/vfs.h>
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/func.h>
@@ -43,6 +44,7 @@ namespace fs = std::filesystem;
 
 fs::path g_mods_dir;
 std::vector<ModInfo> g_mods;  // enabled mods, in load order
+std::vector<std::string> g_core_ids;  // built-in parts (core folder), also in g_mods
 std::mutex g_log_mutex;
 std::ofstream g_log_file;
 
@@ -80,6 +82,8 @@ std::array<uint8_t, 256> g_keys_prev{};
 // Keys some mod has asked about. GetAsyncKeyState is a system call; polling
 // all 255 keys every frame cost the game thread about a tenth of its time.
 std::array<std::atomic<uint8_t>, 256> g_keys_watched{};
+// While the in-game chat takes typing (chat.cpp), mods see no keys.
+std::atomic<bool> g_keys_suppressed{false};
 
 bool GameWindowFocused() {
 #ifdef _WIN32
@@ -95,7 +99,7 @@ bool GameWindowFocused() {
 
 void UpdateKeys() {
   g_keys_prev = g_keys_now;
-  bool focused = GameWindowFocused();
+  bool focused = GameWindowFocused() && !g_keys_suppressed.load(std::memory_order_relaxed);
   for (int vk = 1; vk < 256; ++vk) {
     if (!g_keys_watched[vk].load(std::memory_order_relaxed)) continue;
 #ifdef _WIN32
@@ -196,12 +200,100 @@ void ApiOverlayText(const char* text) {
   }
 }
 
+// Beams (overlay_beams): one list, drawn by the game's overlay.
+std::mutex g_beam_mutex;
+std::vector<float> g_beams;
+std::chrono::steady_clock::time_point g_beam_time{};
+std::function<void(bool)> g_beam_listener;
+bool g_beams_shown = false;
+
+// The GPU backend draws beams inside the 3D scene (depth-tested) when it has
+// RexWorldBeamsCamera; the flat overlay is only the fallback. The beams go in
+// camera space (x = up x forward, y = up, z = forward) from the camera read
+// right now, the same moment the mod worked out the beam ends.
+typedef void (*RexWorldBeamsFunction)(const float* data, int count);
+RexWorldBeamsFunction WorldBeamsFunction() {
+  static RexWorldBeamsFunction fn = [] {
+    HMODULE gpu = GetModuleHandleW(L"rexgpu-xenos.dll");
+    auto f = gpu ? reinterpret_cast<RexWorldBeamsFunction>(GetProcAddress(gpu, "RexWorldBeamsCamera")) : nullptr;
+    Log("WML", f ? "Beams: drawn in the 3D scene" : "Beams: drawn as an overlay");
+    return f;
+  }();
+  return fn;
+}
+
+void ApiOverlayBeams(const float* data, int count) {
+  if (RexWorldBeamsFunction world = WorldBeamsFunction()) {
+    float eye[3], R[3], U[3], F[3], fov;
+    if (!data || count <= 0 || count > 64 || !GameCamera(eye, R, U, F, fov)) {
+      world(nullptr, 0);
+      return;
+    }
+    const float X[3] = {U[1] * F[2] - U[2] * F[1], U[2] * F[0] - U[0] * F[2], U[0] * F[1] - U[1] * F[0]};
+    std::vector<float> out(data, data + size_t(count) * 10);
+    for (int i = 0; i < count; ++i) {
+      for (int e = 0; e < 2; ++e) {
+        float* p = &out[size_t(i) * 10 + size_t(e) * 3];
+        const float d[3] = {p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]};
+        p[0] = d[0] * X[0] + d[1] * X[1] + d[2] * X[2];
+        p[1] = d[0] * U[0] + d[1] * U[1] + d[2] * U[2];
+        p[2] = d[0] * F[0] + d[1] * F[1] + d[2] * F[2];
+      }
+    }
+    world(out.data(), count);
+    return;
+  }
+  bool changed = false, shown = false;
+  {
+    std::lock_guard<std::mutex> lock(g_beam_mutex);
+    if (count > 0 && data && count < 256) g_beams.assign(data, data + size_t(count) * 10);
+    else g_beams.clear();
+    g_beam_time = std::chrono::steady_clock::now();
+    shown = !g_beams.empty();
+    // Shown once beams appear; hidden only when a mod clears them.
+    if (shown && !g_beams_shown) { g_beams_shown = true; changed = true; }
+    else if (!shown && g_beams_shown && count == 0) { g_beams_shown = false; changed = true; }
+  }
+  if (changed && g_beam_listener) g_beam_listener(shown);
+}
+
+// Picture look (set_look): the GPU backend applies it at swap time
+// (RexLookSettings); anisotropic filtering is the texture cache's override.
+typedef void (*RexLookSettingsFunction)(const float* data, int count);
+void ApiSetLook(const float* data, int count) {
+  static RexLookSettingsFunction fn = nullptr;
+  if (!fn) {
+    HMODULE gpu = GetModuleHandleW(L"rexgpu-xenos.dll");
+    fn = gpu ? reinterpret_cast<RexLookSettingsFunction>(GetProcAddress(gpu, "RexLookSettings")) : nullptr;
+    if (!fn) {
+      static bool logged = false;
+      if (!logged) Log("WML", "Look: the GPU backend has no RexLookSettings (update rexgpu-xenos.dll)");
+      logged = true;
+    }
+  }
+  const bool on = data && count >= 13;
+  if (fn) fn(on ? data : nullptr, on ? count : 0);
+  static bool aniso_set = false;
+  static std::string aniso_before;
+  const float aniso = on && count >= 14 ? data[13] : 0.0f;
+  if (aniso >= 1.0f) {
+    if (!aniso_set) aniso_before = rex::cvar::GetFlagByName("anisotropic_override");
+    aniso_set = true;
+    // override values: 1 = 1x, 2 = 2x, 3 = 4x, 4 = 8x, 5 = 16x
+    const int level = aniso >= 16 ? 5 : aniso >= 8 ? 4 : aniso >= 4 ? 3 : aniso >= 2 ? 2 : 1;
+    rex::cvar::SetFlagByName("anisotropic_override", std::to_string(level));
+  } else if (aniso_set) {
+    rex::cvar::SetFlagByName("anisotropic_override", aniso_before);
+    aniso_set = false;
+  }
+}
+
 const WmlApi kApi = {
     WML_API_VERSION, sizeof(WmlApi), ApiLog,  ReadU8,  ReadU16,         ReadU32,
     ReadF32,         WriteU8,        WriteU16, WriteU32, WriteF32,      ApiGuestPointer,
     ApiHook,         ApiCall,        ApiGetR,  ApiSetR,  ApiGetF,       ApiSetF,
     ApiGetLr,        ApiOnFrame,     ApiKeyDown, ApiKeyPressed,
-    ApiOverlayText,  ApiOnGameFrame,
+    ApiOverlayText,  ApiOnGameFrame, ApiOverlayBeams, ApiSetLook,
 };
 
 // Native mods keep their WmlMod strings alive here.
@@ -249,6 +341,8 @@ void StartNativeMod(const ModInfo& mod) {
 }
 
 }  // namespace
+
+void SetLook(const float* data, int count) { ApiSetLook(data, count); }
 
 // ---------------------------------------------------------------------------
 // Internals shared with lua_mods.cpp
@@ -356,11 +450,87 @@ void TurnCamera(double radians) {
 void SetOverlayTextListener(std::function<void(bool)> listener) {
   g_overlay_listener = std::move(listener);
 }
+bool OverlayBeams(std::vector<float>& out) {
+  std::lock_guard<std::mutex> lock(g_beam_mutex);
+  if (g_beams.empty() || std::chrono::steady_clock::now() - g_beam_time > std::chrono::milliseconds(150)) return false;
+  out = g_beams;
+  return true;
+}
+bool GameCamera(float eye[3], float right[3], float up[3], float forward[3], float& fov) {
+  if (!g_guest_base) return false;
+  constexpr uint32_t kCamera = 0x827D9778;
+  for (int i = 0; i < 3; ++i) {
+    eye[i] = ReadF32(kCamera + 44 + i * 4);
+    right[i] = ReadF32(kCamera + 80 + i * 4);
+    up[i] = ReadF32(kCamera + 92 + i * 4);
+    forward[i] = ReadF32(kCamera + 104 + i * 4);
+  }
+  fov = ReadF32(kCamera + 188);
+  if (!(fov >= 10.0f && fov <= 170.0f)) fov = 60.0f;
+  return true;
+}
+void SetOverlayBeamsListener(std::function<void(bool)> listener) { g_beam_listener = std::move(listener); }
+
+// The game's own text over the view (online notices); shown with the mods'.
+void SetHostOverlayText(const std::string& text) {
+  static int host_owner;
+  bool changed_visibility;
+  bool shown;
+  {
+    std::lock_guard<std::mutex> lock(g_overlay_mutex);
+    const bool before = AnyOverlayTextLocked();
+    bool found = false;
+    for (auto& t : g_overlay_texts) {
+      if (t.first == &host_owner) {
+        t.second = text;
+        found = true;
+        break;
+      }
+    }
+    if (!found) g_overlay_texts.emplace_back(&host_owner, text);
+    shown = AnyOverlayTextLocked();
+    changed_visibility = before != shown;
+  }
+  if (changed_visibility && g_overlay_listener) g_overlay_listener(shown);
+}
+
+std::vector<std::string> EnabledModIds() {
+  std::vector<std::string> ids;
+  for (const auto& mod : g_mods)
+    if (std::find(g_core_ids.begin(), g_core_ids.end(), mod.id) == g_core_ids.end()) ids.push_back(mod.id);
+  return ids;
+}
+
+// Chat (chat.cpp) keeps the overlay drawer alive while it shows; its entry
+// ("\x01") is not text.
+void SetChatVisible(bool visible) {
+  static int chat_owner;
+  bool changed_visibility;
+  bool shown;
+  {
+    std::lock_guard<std::mutex> lock(g_overlay_mutex);
+    const bool before = AnyOverlayTextLocked();
+    bool found = false;
+    for (auto& t : g_overlay_texts) {
+      if (t.first == &chat_owner) {
+        t.second = visible ? "\x01" : "";
+        found = true;
+        break;
+      }
+    }
+    if (!found) g_overlay_texts.emplace_back(&chat_owner, visible ? "\x01" : "");
+    shown = AnyOverlayTextLocked();
+    changed_visibility = before != shown;
+  }
+  if (changed_visibility && g_overlay_listener) g_overlay_listener(shown);
+}
+void SetKeysSuppressed(bool suppressed) { g_keys_suppressed.store(suppressed, std::memory_order_relaxed); }
+
 std::string OverlayText() {
   std::lock_guard<std::mutex> lock(g_overlay_mutex);
   std::string all;
   for (const auto& t : g_overlay_texts) {
-    if (t.second.empty()) continue;
+    if (t.second.empty() || t.second[0] == '\x01') continue;
     if (!all.empty()) all += "\n\n";
     all += t.second;
   }
@@ -463,15 +633,24 @@ void Initialize(const fs::path& exe_dir, const fs::path& game_dir,
   g_log_file.open(g_mods_dir / "wml.log", std::ios::trunc);
   Log("WML", "Whompay's Mod Loader");
 
-  // Built-in parts of the port (core folder next to the exe, e.g. the
-  // Saints Reborn logo): always on, loaded first, and not listed in the mod
+  // Built-in parts of the port (core folder next to the exe: the Saints
+  // Reborn logo and the first person view): always on, loaded first, and not listed in the mod
   // manager. Like mods, they only change the player's own game files while
   // the game runs; no game files are shipped.
+  std::vector<std::string> core_ids;
   for (auto& mod : LoadMods(exe_dir / "core")) {
     mod.enabled = true;
+    core_ids.push_back(mod.id);
+    g_core_ids.push_back(mod.id);
     g_mods.push_back(std::move(mod));
   }
   for (auto& mod : LoadMods(g_mods_dir)) {
+    // A mod that is now built in (e.g. First Person) may still sit in mods\
+    // from an older install: the built-in part replaces it.
+    if (std::find(core_ids.begin(), core_ids.end(), mod.id) != core_ids.end()) {
+      if (mod.enabled) Log("WML", mod.id + " is built in now; the copy in mods is not loaded");
+      continue;
+    }
     if (mod.enabled) g_mods.push_back(std::move(mod));
   }
   if (g_mods.empty()) {

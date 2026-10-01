@@ -447,8 +447,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int show) {
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
   wc.lpszClassName = L"WhompaysModLoader";
-  wc.hIcon = ExtractIconW(instance, (g_app.exe_dir / kGameExe).c_str(), 0);
-  if (reinterpret_cast<UINT_PTR>(wc.hIcon) <= 1) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));  // own icon (res/modloader.rc)
+  if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   RegisterClassExW(&wc);
 
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, kTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,

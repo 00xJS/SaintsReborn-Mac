@@ -67,15 +67,24 @@ set(SAINTSROW_SOURCES
     src/fps_overlay.cpp
     src/perf_monitor.cpp
     src/kbm.cpp
+    src/options_menu.cpp
+    src/hw_profile.cpp
+    src/shadow_probe.cpp
+    src/coop_menu.cpp
+    src/online_integrity.cpp
+    src/online_players.cpp
+    src/chat.cpp
     src/glyphs.cpp
     src/profiler.cpp
     src/render_fixes.cpp
+    src/world_studio_bridge.cpp
     src/wml/mod_list.cpp
     src/wml/mod_loader.cpp
     src/wml/lua_mods.cpp
     src/wml/packfile.cpp
     src/wml/patch_phase.cpp
     ${REXGLUE_SHARE_DIR}/rex_app.cpp
+    res/saintsreborn.rc
 )
 if(EXISTS "${REXGLUE_SHARE_DIR}/windowed_app_main_sdl.cpp")
     list(APPEND SAINTSROW_SOURCES ${REXGLUE_SHARE_DIR}/windowed_app_main_sdl.cpp)
@@ -117,17 +126,66 @@ target_compile_options(saintsrow PRIVATE
     $<$<CONFIG:Release>:-DNDEBUG>
 )
 if(NOT MSVC)
-    # SR_CPU_LEVEL=v3 builds the recompiled code for x86-64-v3 (Haswell / Zen
-    # and newer: AVX2, BMI2, LZCNT, MOVBE; MOVBE makes the big-endian guest
-    # loads/stores one instruction). The default runs on any SSE4.1 CPU.
-    set(SR_CPU_LEVEL "sse41" CACHE STRING "Recompiled code CPU level: sse41 or v3")
-    if(SR_CPU_LEVEL STREQUAL "v3")
+    # x86-64-v3 (Haswell / Zen and newer: AVX2, BMI2, LZCNT, MOVBE). MOVBE lets
+    # the big-endian guest loads/stores of the recompiled code be one
+    # instruction instead of load + byte swap.
+    # auto (default) = what the CPU doing the build supports: players build the
+    # game on their own PC (scripts/setup.ps1), so an old laptop gets v2.
+    set(SR_CPU_LEVEL "auto" CACHE STRING "Recompiled code CPU level: auto, v3, v2 or sse41")
+    set(SR_CPU_LEVEL_USED "${SR_CPU_LEVEL}")
+    if(SR_CPU_LEVEL STREQUAL "auto")
+        try_run(SR_CPU_PROBE_RUN SR_CPU_PROBE_COMPILED
+            ${CMAKE_BINARY_DIR}/cpu_level_probe
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cpu_level_probe.c
+            COMPILE_DEFINITIONS -mxsave
+            RUN_OUTPUT_VARIABLE SR_CPU_PROBE_OUT)
+        if(SR_CPU_PROBE_COMPILED AND SR_CPU_PROBE_OUT STREQUAL "v2")
+            set(SR_CPU_LEVEL_USED "v2")
+        else()
+            set(SR_CPU_LEVEL_USED "v3")
+        endif()
+        message(STATUS "Recompiled code CPU level (auto): ${SR_CPU_LEVEL_USED}")
+    endif()
+    if(SR_CPU_LEVEL_USED STREQUAL "v3")
         target_compile_options(saintsrow PRIVATE -march=x86-64-v3)
+        # The process starts in cpu_gate.cpp (plain x86-64): on a CPU without
+        # the v3 features it runs saintsrow_compat.exe (SR_CPU_LEVEL=v2)
+        # instead of crashing on the first AVX2/BMI/MOVBE instruction.
+        target_sources(saintsrow PRIVATE src/cpu_gate.cpp)
+        set_source_files_properties(src/cpu_gate.cpp PROPERTIES COMPILE_OPTIONS "-march=x86-64;-mtune=generic")
+        target_link_options(saintsrow PRIVATE "LINKER:/ENTRY:sr_cpu_gate_entry")
+    elseif(SR_CPU_LEVEL_USED STREQUAL "v2")
+        # For older CPUs (SSE4.2 + POPCNT: Nehalem / Bulldozer and newer, i.e.
+        # everything from ~2009 on). Built as saintsrow_compat.exe.
+        target_compile_options(saintsrow PRIVATE -march=x86-64-v2)
+        # Asked for explicitly = the extra exe for old CPUs next to a v3 one.
+        # (auto on an old CPU builds a plain saintsrow.exe.)
+        if(SR_CPU_LEVEL STREQUAL "v2")
+            set_target_properties(saintsrow PROPERTIES OUTPUT_NAME saintsrow_compat)
+        endif()
     else()
         target_compile_options(saintsrow PRIVATE -msse4.1)
     endif()
     # saintsrow.map lets the built-in profiler name functions.
     target_link_options(saintsrow PRIVATE "LINKER:/MAP:saintsrow.map")
+endif()
+
+# Profile-guided optimization of the recompiled code (clang PGO):
+#   SR_PGO=gen -> instrumented exe, writes pgo_saintsrow.profraw next to where
+#                 it runs (every 30 s and on close) - play a few minutes.
+#   SR_PGO=use -> optimized with SR_PGO_PROFILE (llvm-profdata merge output).
+# Separate build folders (build/game_pgo_gen, build/game_pgo_use) keep the
+# normal build untouched.
+set(SR_PGO "off" CACHE STRING "Profile-guided optimization: off, gen or use")
+set(SR_PGO_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/../pgo/saintsrow.profdata" CACHE FILEPATH "Merged PGO profile")
+if(SR_PGO STREQUAL "gen")
+    target_compile_options(saintsrow PRIVATE -fprofile-generate)
+    target_link_options(saintsrow PRIVATE -fprofile-generate)
+    target_compile_definitions(saintsrow PRIVATE SR_PGO_GEN=1)
+elseif(SR_PGO STREQUAL "use")
+    target_compile_options(saintsrow PRIVATE "-fprofile-use=${SR_PGO_PROFILE}"
+        -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-profile-instr-missing
+        -Wno-backend-plugin)
 endif()
 
 # /force:multiple lets stubs.cpp override the SDK's kernel export implementations.
@@ -144,11 +202,12 @@ add_custom_command(TARGET saintsrow POST_BUILD
 # ---------------------------------------------------------------------------
 add_executable(WhompaysModLoader WIN32
     launcher/launcher.cpp
-    src/wml/mod_list.cpp)
+    src/wml/mod_list.cpp
+    res/modloader.rc)
 target_include_directories(WhompaysModLoader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(WhompaysModLoader PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 target_compile_options(WhompaysModLoader PRIVATE -fno-char8_t)
-target_link_libraries(WhompaysModLoader PRIVATE comctl32 shell32 ole32 uxtheme)
+target_link_libraries(WhompaysModLoader PRIVATE user32 gdi32 comctl32 shell32 ole32 uxtheme)
 
 # Example native mod (built so the examples folder has a ready-to-use DLL).
 add_library(example_native_mod SHARED ../modding/examples/ExampleNative/example_native.c)
@@ -160,6 +219,21 @@ target_include_directories(whompays_trainer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/
 target_link_libraries(whompays_trainer PRIVATE rex::runtime user32 gdi32)
 target_compile_options(whompays_trainer PRIVATE -msse4.1)
 set_target_properties(whompays_trainer PROPERTIES OUTPUT_NAME "WhompaysTrainer" PREFIX "")
+
+# Co-op (built in: dist/core/WhompaysCoop). Online co-op by join code needs the
+# Epic Online Services SDK (SR_EOS = folder with SDK\ and eos.ini, kept out of
+# the repository); without it co-op works by direct IP only.
+add_library(whompays_coop SHARED ../core/WhompaysCoop/coop.cpp)
+target_include_directories(whompays_coop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../modding/include)
+target_compile_definitions(whompays_coop PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(whompays_coop PRIVATE rex::runtime ws2_32 user32)
+target_compile_options(whompays_coop PRIVATE -msse4.1)
+set(SR_EOS "" CACHE PATH "Epic Online Services folder (SDK\\ + eos.ini), optional")
+if(SR_EOS AND EXISTS "${SR_EOS}/SDK/Include/eos_sdk.h")
+    target_compile_definitions(whompays_coop PRIVATE WHOMPAYS_EOS)
+    target_include_directories(whompays_coop PRIVATE ${SR_EOS}/SDK/Include)
+endif()
+set_target_properties(whompays_coop PROPERTIES OUTPUT_NAME "WhompaysCoop" PREFIX "")
 
 # Keyboard/mouse button pictures: setup runs glyphgen on the player's own game
 # files to make dist/kbm_ui.bin (see tools/glyphgen/README.md).

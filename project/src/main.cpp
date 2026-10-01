@@ -1,11 +1,16 @@
 // Saints Row (Xbox 360, 2006) - ReXGlue recompiled project.
 // Bootstraps the runtime, creates the window and launches the XEX module.
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include "world_studio_bridge.h"
+#include "online_integrity.h"
 #include "saintsrow_config.h"
 #include "saintsrow_init.h"
 #include "fps_overlay.h"
+#include "options_menu.h"
+#include "hw_profile.h"
 #include "kbm.h"
 #include "perf_monitor.h"
 #include "profiler.h"
@@ -28,10 +33,30 @@
 #include <rex/ui/window_listener.h>
 #include <rex/ui/windowed_app.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <string>
 #include <thread>
+
+#ifdef SR_PGO_GEN
+// Instrumented (PGO "gen") build: the profile is written every 30 s and on
+// close (the shutdown watchdog may end the process before atexit runs).
+extern "C" int __llvm_profile_write_file(void);
+extern "C" void __llvm_profile_set_filename(const char*);
+namespace {
+void StartPgoWriter() {
+    __llvm_profile_set_filename("pgo_saintsrow.profraw");
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            __llvm_profile_write_file();
+        }
+    }).detach();
+    REXLOG_INFO("PGO: instrumented build, profile -> pgo_saintsrow.profraw every 30 s");
+}
+}  // namespace
+#endif
 
 REXCVAR_DECLARE(bool, mnk_mode);
 REXCVAR_DECLARE(std::string, input_backend);
@@ -39,6 +64,13 @@ REXCVAR_DECLARE(std::string, input_backend);
 #ifdef _WIN32
 #include <windows.h>
 #include "wml_pagequery.h"
+// Hybrid laptops (iGPU + NVIDIA / AMD dGPU): ask the drivers for the fast GPU.
+// These only count when the EXE exports them (the SDK's copies live in the
+// GPU plugin DLL, which the drivers don't look at).
+extern "C" {
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 
 // ============================================================================
 // Guest memory safety net
@@ -419,10 +451,12 @@ public:
     void OnKeyDown(rex::ui::KeyEvent& e) override {
         if (e.virtual_key() == rex::ui::VirtualKey::kF11 && !e.prev_state() && window_) {
             window_->SetFullscreen(!window_->IsFullscreen());
+            fullscreen_ = window_->IsFullscreen();
             e.set_handled(true);
         }
         if (e.virtual_key() == rex::ui::VirtualKey::kF1 && !e.prev_state()) {
             fps_overlay_.Toggle();
+            fps_shown_ = fps_overlay_.IsVisible();
             e.set_handled(true);
         }
         if (e.virtual_key() == rex::ui::VirtualKey::kF10 && !e.prev_state()) {
@@ -432,11 +466,13 @@ public:
     }
     void OnMouseWheel(rex::ui::MouseEvent& e) override {
         sr::AddMouseWheel(e.scroll_y());
+        sr::world_studio::AddMouseWheel(float(e.scroll_y()) / float(rex::ui::MouseEvent::kScrollPerDetent));
     }
     // The cursor is hidden while the game has focus (the mouse moves the camera).
     void OnGotFocus(rex::ui::UISetupEvent& e) override {
         (void)e;
-        if (window_) window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+        if (window_ && !sr::world_studio::EditorHostEnabled())
+            window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
     }
     void OnLostFocus(rex::ui::UISetupEvent& e) override {
         (void)e;
@@ -452,6 +488,9 @@ public:
     }
 
     bool OnInitialize() override {
+#ifdef SR_PGO_GEN
+        StartPgoWriter();
+#endif
         auto exe_dir = rex::filesystem::GetExecutableFolder();
 
         // Game data: the command-line argument if given, otherwise a "game"
@@ -483,6 +522,28 @@ public:
         rex::RegisterLogLevelCallback();
         REXLOG_INFO("Saints Row starting");
         REXLOG_INFO("  Game directory: {}", game_dir.string());
+        {
+            // What this PC has (weak laptops get lighter defaults, see hw_profile.h).
+            const sr::HwProfile& hw = sr::GetHwProfile();
+            REXLOG_INFO("Hardware: CPU {} cores / {} threads, RAM {} MB | GPU '{}' (vendor {:04X}), {} MB VRAM, "
+                        "{} MB shared{} | {} Direct3D 12 adapter(s)",
+                        hw.physical_cores, hw.logical_cpus, hw.total_ram_mb, hw.adapter_name, hw.vendor_id,
+                        hw.dedicated_vram_mb, hw.shared_mem_mb, hw.integrated ? " (integrated)" : "",
+                        hw.adapter_count);
+            // Two GPUs (hybrid laptop): render on the one with the most VRAM,
+            // not simply the first one DXGI lists (usually the integrated one).
+            // "gpu_adapter.txt" next to the exe (a DXGI adapter index) overrides.
+            int adapter = hw.adapter_count > 1 ? hw.adapter_index : -1;
+            if (FILE* af = std::fopen("gpu_adapter.txt", "rb")) {
+                int v = -1;
+                if (std::fscanf(af, "%d", &v) == 1 && v >= -1 && v < 16) adapter = v;
+                std::fclose(af);
+            }
+            if (adapter >= 0) {
+                rex::cvar::SetFlagByName("d3d12_adapter", std::to_string(adapter));
+                REXLOG_INFO("GPU adapter {} chosen", adapter);
+            }
+        }
         sr::StartPerfMonitor();
         sr::LoadFpsCap();
         sr::StartProfiler();
@@ -500,15 +561,21 @@ public:
         window_->AddListener(this);
         window_->AddInputListener(this, 0);
         window_->Open();
-        window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+        // The World Studio editor host is shown inside the Studio window
+        // (it becomes a child window there), so it stays windowed and keeps
+        // the cursor: a fullscreen window keeps snapping back over the monitor.
+        const bool studio_host = sr::world_studio::EditorHostEnabled();
+        window_->SetCursorVisibility(studio_host ? rex::ui::Window::CursorVisibility::kVisible
+                                                 : rex::ui::Window::CursorVisibility::kHidden);
         // Start fullscreen unless a file named "start_windowed" exists next to the exe.
         {
             FILE* sw = std::fopen("start_windowed", "rb");
             if (sw) {
                 std::fclose(sw);
-            } else {
+            } else if (!studio_host) {
                 window_->SetFullscreen(true);
             }
+            fullscreen_ = window_->IsFullscreen();
         }
         runtime_->set_display_window(window_.get());
 
@@ -550,15 +617,49 @@ public:
             }
             sr::SetMouseSensitivity(sensitivity);
         }
+        // Online layer (in progress): a file named "xbox_live" next to the exe
+        // reports the profile as signed in to Xbox Live, so the game's Xbox
+        // Live menus (Quick / Custom Match, leaderboards) open. Research only
+        // until the Live calls are backed by Epic Online Services.
+        if (FILE* lf = std::fopen("xbox_live", "rb")) {
+            std::fclose(lf);
+            rex::cvar::SetFlagByName("xam_signed_in_to_live", "true");
+            REXLOG_INFO("Xbox Live sign-in: on (xbox_live)");
+        }
+        // Player name (CO-OP tab > Player Name): player_name.txt next to the exe.
+        if (FILE* nf = std::fopen("player_name.txt", "rb")) {
+            char nb[64] = {};
+            const size_t n = std::fread(nb, 1, sizeof(nb) - 1, nf);
+            std::fclose(nf);
+            std::string name(nb, n);
+            while (!name.empty() && (name.back() == '\n' || name.back() == '\r' || name.back() == ' ')) name.pop_back();
+            if (!name.empty()) {
+                rex::cvar::SetFlagByName("xam_player_name", name.substr(0, 15));
+                REXLOG_INFO("Player name: {}", name.substr(0, 15));
+            }
+        }
+        // V-Sync from the options menu: a file named "vsync" next to the exe.
+        if (FILE* vf = std::fopen("vsync", "rb")) {
+            std::fclose(vf);
+            rex::cvar::SetFlagByName("present_vsync", "true");
+        }
         {
             // Internal resolution scale (1-3, default 2), read from
             // "res_scale.txt" next to the exe.
-            int scale = 2;
+            // Without the file: 1x on weak GPUs (less than 3 GB VRAM or
+            // integrated), 2x otherwise.
+            const sr::HwProfile& hw = sr::GetHwProfile();
+            int scale = hw.weak_gpu() ? 1 : 2;
+            bool scale_from_file = false;
             if (FILE* rf = std::fopen("res_scale.txt", "rb")) {
                 int v = 0;
-                if (std::fscanf(rf, "%d", &v) == 1 && v >= 1 && v <= 3) scale = v;
+                if (std::fscanf(rf, "%d", &v) == 1 && v >= 1 && v <= 3) {
+                    scale = v;
+                    scale_from_file = true;
+                }
                 std::fclose(rf);
             }
+            if (!scale_from_file) sr::SetDefaultResScale(scale);
             const std::string sv = std::to_string(scale);
             // The port hands the GPU every command buffer separately; ending a
             // host GPU submission after each one costs far more than it saves.
@@ -568,8 +669,19 @@ public:
             // defaults (384/768 MB) instead of deleting and re-creating them,
             // and allocate the GPU copy of guest memory up front rather than
             // mapping it piece by piece (each mapping waits for the GPU).
-            rex::cvar::SetFlagByName("texture_cache_memory_limit_soft", "2048");
-            rex::cvar::SetFlagByName("texture_cache_memory_limit_hard", "4096");
+            // Scaled to the GPU's memory: on a 1-2 GB laptop GPU these limits
+            // would push textures out into system RAM over the PCIe bus.
+            {
+                const uint64_t budget = hw.gpu_budget_mb();
+                uint64_t soft = 2048, hard = 4096;
+                if (budget > 0) {
+                    soft = std::clamp<uint64_t>(budget * 35 / 100, 384, 2048);
+                    hard = std::clamp<uint64_t>(budget * 60 / 100, 768, 4096);
+                }
+                rex::cvar::SetFlagByName("texture_cache_memory_limit_soft", std::to_string(soft));
+                rex::cvar::SetFlagByName("texture_cache_memory_limit_hard", std::to_string(hard));
+                REXLOG_INFO("Texture cache limits: {} / {} MB (GPU budget {} MB)", soft, hard, budget);
+            }
             rex::cvar::SetFlagByName("d3d12_tiled_shared_memory", "false");
             // Host RAM cache for repeated immutable packfile reads. Grow on
             // demand, keeping the Xbox guest address space and GPU budgets intact.
@@ -595,29 +707,29 @@ public:
                 if (ram_cache_mb > available_budget) ram_cache_mb = available_budget;
             }
 #endif
+            // World Studio editor host: cutscene packs are rebuilt while the game
+            // runs; a cached copy would play the old version.
+            if (sr::world_studio::EditorHostEnabled()) ram_cache_mb = 0;
             rex::cvar::SetFlagByName("host_read_cache_mb", std::to_string(ram_cache_mb));
             REXLOG_INFO("Packfile RAM read cache budget: {} MiB (fills on demand)", ram_cache_mb);
             // Let the game prepare the next command buffers while the GPU thread
-            // executes earlier ones (queue depth 32, about a frame of command
-            // buffers; each queued buffer carries copies of the command memory it
-            // uses). The GPU thread may also run at most 12 ms behind: on PCs where
-            // it couldn't keep up it fell a frame or more behind, and the game
-            // reused memory the queued work still needed (garbled graphics, then a
-            // crash). The time limit, not the depth, is what keeps that from
-            // happening; 4 ms made the game wait for the GPU thread almost every
-            // frame while driving.
+            // executes earlier ones (queue depth 4; each queued buffer carries
+            // copies of the command memory it uses). The GPU thread may also run
+            // at most 4 ms behind: on PCs where it couldn't keep up it fell a
+            // frame or more behind with 8 queued, and the game reused memory the
+            // queued work still needed (garbled graphics, then a crash).
             // "gpu_queue.txt" next to the exe sets another depth,
             // "gpu_max_lag.txt" another lag in microseconds (0 = no limit); a file
             // named "sync_gpu" turns queueing off (wait for every buffer).
             {
-                int max_lag_us = 12000;
+                int max_lag_us = 4000;
                 if (FILE* lf = std::fopen("gpu_max_lag.txt", "rb")) {
                     int v = 0;
                     if (std::fscanf(lf, "%d", &v) == 1 && v >= 0 && v <= 1000000) max_lag_us = v;
                     std::fclose(lf);
                 }
                 rex::cvar::SetFlagByName("gpu_async_max_lag_us", std::to_string(max_lag_us));
-                int depth = 32;
+                int depth = 4;
                 if (FILE* qf = std::fopen("gpu_queue.txt", "rb")) {
                     int v = 0;
                     if (std::fscanf(qf, "%d", &v) == 1 && v >= 0 && v <= 64) depth = v;
@@ -699,6 +811,7 @@ public:
                 REXLOG_INFO("Tiling scenario: no_aa");
             }
         }
+        sr::ApplyStartupGraphics(sr::GetHwProfile().weak_gpu());
 
 #ifdef _WIN32
         // Commit the zero region before installing the handler, so near-null
@@ -711,6 +824,8 @@ public:
 #endif
         // Code and script mods start once the executable is in memory.
         wml::Start(runtime_->memory()->virtual_membase());
+        // Online fair play: modded or not, cheat-tool watch, online notices.
+        sr::StartOnlineIntegrity(exe_dir);
 
         spdlog::default_logger()->flush();
 
@@ -724,13 +839,83 @@ public:
             wml::SetOverlayTextListener([this](bool shown) {
                 app_context().CallInUIThread([this, shown]() { fps_overlay_.SetModTextVisible(shown); });
             });
+            wml::SetOverlayBeamsListener([this](bool shown) {
+                app_context().CallInUIThread([this, shown]() { fps_overlay_.SetBeamsVisible(shown); });
+            });
             window_->SetPresenter(gs->presenter());
+            // PC settings rows in the game's options menu (options_menu.cpp).
+            sr::OptionsHost host;
+            host.is_fullscreen = [this]() { return fullscreen_.load(); };
+            host.set_fullscreen = [this](bool fs) {
+                app_context().CallInUIThread([this, fs]() {
+                    if (!window_) return;
+                    window_->SetFullscreen(fs);
+                    fullscreen_ = window_->IsFullscreen();
+                });
+            };
+            host.fps_counter_shown = [this]() { return fps_shown_.load(); };
+            host.set_fps_counter = [this](bool on) {
+                app_context().CallInUIThread([this, on]() {
+                    if (fps_overlay_.IsVisible() != on) fps_overlay_.Toggle();
+                    fps_shown_ = fps_overlay_.IsVisible();
+                });
+            };
+            sr::SetOptionsHost(std::move(host));
+            // FPS counter from the options menu: a file named "show_fps".
+            if (FILE* ff = std::fopen("show_fps", "rb")) {
+                std::fclose(ff);
+                app_context().CallInUIThread([this]() {
+                    if (!fps_overlay_.IsVisible()) fps_overlay_.Toggle();
+                    fps_shown_ = fps_overlay_.IsVisible();
+                });
+            }
+            if (sr::world_studio::EditorHostEnabled()) {
+                app_context().CallInUIThread([this]() { fps_overlay_.SetStudioGizmoVisible(true); });
+            }
         } else {
             REXLOG_ERROR("No presenter available to connect to window");
         }
 
         app_context().CallInUIThreadDeferred([this]() {
-            auto main_thread = runtime_->LaunchModule();
+            // 1 ms Windows timer resolution (as most PC games do). The game's
+            // own Sleep calls (guest 82716020 -> KeDelayExecutionThread ->
+            // ::Sleep) otherwise round up to the default 15.6 ms tick since
+            // Windows 10 2004 (per-process resolution); only the sampling
+            // profiler raised it before. Same idea as the SR2 Juiced Patch's
+            // "wait properly" fix. File "timer_resolution_default" = off.
+            {
+                FILE* f = std::fopen("timer_resolution_default", "rb");
+                if (f) {
+                    std::fclose(f);
+                    REXLOG_INFO("Timer resolution: Windows default (timer_resolution_default)");
+                } else {
+                    using TimeBeginPeriod = unsigned(__stdcall*)(unsigned);
+                    HMODULE winmm = LoadLibraryW(L"winmm.dll");
+                    auto tbp = winmm ? reinterpret_cast<TimeBeginPeriod>(GetProcAddress(winmm, "timeBeginPeriod")) : nullptr;
+                    const unsigned r = tbp ? tbp(1) : 1u;
+                    REXLOG_INFO("Timer resolution: 1 ms {}", r == 0 ? "set" : "NOT set");
+                }
+            }
+            auto main_thread = runtime_->PrepareModuleLaunch();
+            // Persistent shader / pipeline cache (dist\cache\shaders): pipelines
+            // compiled in earlier sessions are created at startup instead of
+            // the first time something new is drawn (missing surfaces for a
+            // few frames and hitches while flying into new areas). The first
+            // start with it only records them. File "shader_cache.off" = off.
+            if (main_thread) {
+                auto* gs = runtime_->graphics_system();
+                FILE* off = std::fopen("shader_cache.off", "rb");
+                if (off) std::fclose(off);
+                if (gs && !off) {
+                    const auto cache_dir = rex::filesystem::GetExecutableFolder() / "cache";
+                    const auto t0 = std::chrono::steady_clock::now();
+                    gs->InitializeShaderStorage(cache_dir, 0x545107D1u, true);
+                    REXLOG_INFO("Shader cache: {} (loaded in {:.0f} ms)", cache_dir.string(),
+                                std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - t0).count());
+                }
+                main_thread->Resume();
+            }
             if (!main_thread) {
                 REXLOG_ERROR("Failed to launch module");
                 app_context().QuitFromUIThread();
@@ -754,7 +939,21 @@ public:
     void OnClosing(rex::ui::UIEvent& e) override {
         (void)e;
         REXLOG_INFO("Window closing, shutting down...");
+#ifdef SR_PGO_GEN
+        __llvm_profile_write_file();
+        REXLOG_INFO("PGO: profile written");
+#endif
         shutting_down_.store(true, std::memory_order_release);
+        // Shutdown watchdog: closing waits for the game's main thread to end;
+        // when a game or mod thread is stuck in a wait it never does, and the
+        // process lived on in the background without a window. After 5 s the
+        // process is ended for good.
+        std::thread([] {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            REXLOG_WARN("Shutdown still not finished after 5 s - ending the process");
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            TerminateProcess(GetCurrentProcess(), 0);
+        }).detach();
         if (runtime_ && runtime_->kernel_state()) {
             runtime_->kernel_state()->TerminateTitle();
         }
@@ -765,6 +964,7 @@ public:
         sr::StopPerfMonitor();
         sr::StopProfiler();
         wml::SetOverlayTextListener(nullptr);
+        wml::SetOverlayBeamsListener(nullptr);
         fps_overlay_.Shutdown();
         if (window_) {
             window_->SetPresenter(nullptr);
@@ -783,6 +983,8 @@ private:
     std::unique_ptr<rex::Runtime> runtime_;
     std::unique_ptr<rex::ui::Window> window_;
     sr::FpsOverlay fps_overlay_;
+    std::atomic<bool> fullscreen_{false};
+    std::atomic<bool> fps_shown_{false};
     std::thread module_thread_;
     std::atomic<bool> shutting_down_{false};
 };

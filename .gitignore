@@ -2,3 +2,19 @@
 /dist/
 *.iso
 installer/out/
+
+# Game data must never be committed
+*.vpp_xbox2
+*.peg_xbox2
+*.g_peg_xbox2
+*.smesh_xbox2
+*.cmesh_xbox2
+*.car_xbox2
+*.bbchunk_xbox2
+*.xex
+# Map editor settings and cache
+SaintsRebornMapEditor.ini
+SaintsRebornMapEditor_layout.ini
+
+# PGO raw profiles (only the merged .profdata files are kept)
+pgo/*.profraw

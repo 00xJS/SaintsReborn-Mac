@@ -17,16 +17,23 @@ on your own PC, from your own disc.
 
 ## Status
 
-Playable. The intro videos, character creator, missions and free roam all work,
-with sound. The game runs at its original 30 FPS, or at 60 and above with the
-bundled 60 FPS mod, and renders at 2x its original resolution by default.
-Keyboard and mouse are fully supported, and the on-screen button prompts switch
-between controller and keyboard pictures to match what you use.
+Fully playable from start to finish. The intro videos, character creator, the
+whole story, side missions and free roam all work, with sound. Co-op is built
+in: play the story or free roam together over LAN, by direct IP, or online with
+a join code. The game runs at 60 FPS and above with the bundled 60 FPS mod (or
+at its original 30), renders at 2x its original resolution by default, and has
+its own Pause > Options menu for resolution scale, shadows and mouse
+sensitivity. Keyboard and mouse are fully supported, the on-screen button
+prompts switch between controller and keyboard pictures to match what you use,
+and there is a first-person view (V). Older PCs are covered too: CPUs without
+AVX2 automatically get a compatible build, and laptops with two graphics chips
+use the faster one.
 
 ### Known issues
 
 - Some textures on the character flicker slightly while rotating them in the
   character creator.
+- Green bars can appear at the edges of the "Welcome to Stilwater" splash.
 - After "Begin Game" the loading screen can sit for a few extra seconds.
 - Only the disc version this port was made with is supported. Setup warns if
   your `default.xex` is different.
@@ -97,6 +104,7 @@ arrows show.
 | F11 | Fullscreen / window |
 | F10 | Frame rate cap: 30, 60, 90, 120 or off (above 30 needs the 60 FPS mod) |
 | F1 | Frame rate counter |
+| V | First person view on foot, swimming and in vehicles (switches back by itself in shops, cutscenes and scripted scenes). Settings: `dist\core\FirstPerson\mod.ini` |
 
 Input is ignored while the game window is not focused. Saves and profile data
 are stored in `dist\game`. Setup makes the keyboard button pictures from your
@@ -112,8 +120,8 @@ Options, set by creating a file next to `saintsrow.exe`:
 | `mouse_sensitivity.txt` | Mouse sensitivity, `1.0` by default. |
 | `fps_cap.txt` | Frame rate cap. F10 writes it for you. |
 | `ram_cache_mb.txt` | Memory for caching reads from the game's packfiles, in MB (`0` turns it off). The default depends on your RAM. |
-| `gpu_queue.txt` | How many GPU command buffers may be queued, `32` by default. `0` waits for every buffer (slower, for troubleshooting). |
-| `gpu_max_lag.txt` | How far the GPU thread may fall behind the game, in microseconds, `12000` by default. `0` means no limit. |
+| `gpu_queue.txt` | How many GPU command buffers may be queued, `4` by default. `0` waits for every buffer (slower, for troubleshooting). |
+| `gpu_max_lag.txt` | How far the GPU thread may fall behind the game, in microseconds, `4000` by default. `0` means no limit. |
 | `gpu_timing` | An empty file with this name logs the GPU time per frame by kind of work (draws, render target copies, texture loads, resolves, uploads) every 2 seconds. |
 | `replay_thread.off`, `upload_batching.off`, `upload_check.off`, `bg_verify.off`, `direct_resolve_off`, `direct_resolve_skip_memory.off`, `rt_fast.off`, `texture_lookup_cache.off`, `keep_cross_transfers`, `msaa_tiling` | Troubleshooting: each empty file turns one performance optimization off. Only useful when looking for the cause of a graphics problem. |
 

@@ -20,6 +20,8 @@ void PerfFrameEnd();
 // should be timed, and the result keyed by the guest caller address.
 bool PerfTrackWaits();
 void PerfRecordWait(uint32_t guest_caller, uint64_t microseconds);
+bool PerfWaitsOn();
+void PerfRecordThreadWait(uint32_t wait_function, uint32_t guest_caller, uint64_t microseconds);
 
 // Counters shown in the performance log (per second).
 enum PerfCounter { kPerfTilingExecutor, kPerfTilingReplay, kPerfCommandBuffers, kPerfCounterCount };
@@ -38,5 +40,7 @@ void LimitFrameRate(double fps);
 extern std::atomic<int> g_fps_cap;
 void LoadFpsCap();
 int CycleFpsCap();
+// Options menu: set (and save) a cap from 30/60/90/120/0 (0 = unlimited).
+void SetFpsCap(int cap);
 
 }  // namespace sr
