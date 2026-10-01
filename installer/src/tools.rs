@@ -179,11 +179,68 @@ fn ensure_winsysroot(r: &Reporter, xwin: &Path, accept_license: bool) -> Result<
 /// headers/libraries are and that lld does the linking. On Windows clang.cfg
 /// and clang++.cfg apply to every call; the triple-named files also cover
 /// llvm-rc's preprocessor and the cross build on Linux.
+/// Linux: Microsoft's headers and libraries assume a file system that ignores
+/// case (the SDK includes <ObjBase.h>, the file is objbase.h). clang and
+/// lld-link read this overlay, which lists every file and ignores case.
+#[cfg(not(windows))]
+fn write_case_overlay(winsysroot: &Path) -> Result<PathBuf> {
+    fn esc(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+    fn walk(dir: &Path, out: &mut String) -> Result<()> {
+        let mut first = true;
+        for e in fs::read_dir(dir)? {
+            let e = e?;
+            let meta = fs::symlink_metadata(e.path())?;
+            if meta.file_type().is_symlink() {
+                continue; // xwin's case symlinks; the overlay replaces them
+            }
+            let name = esc(&e.file_name().to_string_lossy());
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            if meta.is_dir() {
+                out.push_str(&format!(
+                    "{{\"name\":\"{name}\",\"type\":\"directory\",\"contents\":["
+                ));
+                walk(&e.path(), out)?;
+                out.push_str("]}");
+            } else {
+                let full = esc(&e.path().to_string_lossy());
+                out.push_str(&format!(
+                    "{{\"name\":\"{name}\",\"type\":\"file\",\"external-contents\":\"{full}\"}}"
+                ));
+            }
+        }
+        Ok(())
+    }
+    let root = esc(&winsysroot.to_string_lossy());
+    let mut s = format!(
+        "{{\"version\":0,\"case-sensitive\":\"false\",\"roots\":[{{\"name\":\"{root}\",\"type\":\"directory\",\"contents\":["
+    );
+    walk(winsysroot, &mut s)?;
+    s.push_str("]}]}");
+    let name = format!(
+        "{}.vfs.json",
+        winsysroot.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let path = winsysroot.parent().unwrap_or(winsysroot).join(name);
+    fsx::write_text(&path, &s)?;
+    Ok(path)
+}
+
 fn write_clang_config(llvm_bin: &Path, winsysroot: &Path) -> Result<()> {
     let root = winsysroot.to_string_lossy().replace('\\', "/");
-    let cfg = format!(
+    let mut cfg = format!(
         "-Xmicrosoft-windows-sys-root \"{root}\"\n-fuse-ld=lld\n-Wno-unused-command-line-argument\n"
     );
+    #[cfg(not(windows))]
+    {
+        let overlay = write_case_overlay(winsysroot)?;
+        let o = overlay.to_string_lossy();
+        cfg += &format!("-ivfsoverlay \"{o}\"\n-Xlinker \"/vfsoverlay:{o}\"\n");
+    }
     let mut names = vec![
         "x86_64-pc-windows-msvc.cfg",
         "x86_64-pc-windows-msvc-clang.cfg",
