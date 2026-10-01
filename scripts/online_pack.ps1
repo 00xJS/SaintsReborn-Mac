@@ -33,27 +33,38 @@ try {
     }
     $packUrl = "https://github.com/whompay/SaintsReborn/releases/download/online-pack/SaintsReborn-Online.zip"
     $packZip = Join-Path $env:TEMP "SaintsReborn-Online.zip"
-    $packDir = Join-Path $env:TEMP "SaintsReborn-Online"
     Remove-Item -Force -ErrorAction SilentlyContinue $packZip
     & curl.exe -sSfL --retry 3 -o $packZip $packUrl 2>$null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $packZip)) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -UseBasicParsing -Uri $packUrl -OutFile $packZip
     }
-    if (Test-Path $packDir) { Remove-Item -Recurse -Force $packDir }
-    Expand-Archive -Force $packZip $packDir
-    $have = (Get-Content -Raw (Join-Path $packDir "stamp.txt")).Trim()
-    if ($have -ne $Wanted) {
-        Write-Host "Online play: the online pack is for another version of the source, so online play stays off for now (System Link on a LAN and co-op by IP still work)." -ForegroundColor Yellow
-        exit 2
-    }
-    Get-ChildItem -Recurse -File $packDir | Where-Object { $_.Name -ne "stamp.txt" } | ForEach-Object {
-        $dest = Join-Path $Dist $_.FullName.Substring($packDir.Length + 1)
-        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-        Copy-Item -Force $_.FullName $dest
-    }
+    # Straight from the zip to dist (no temp folder: on some PCs TEMP is a short
+    # 8.3 path such as C:\Users\ADMINI~1\..., which broke relative paths).
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($packZip)
+    try {
+        $stampEntry = $zip.Entries | Where-Object { $_.FullName -eq "stamp.txt" } | Select-Object -First 1
+        if (-not $stampEntry) { throw "the online pack has no stamp.txt" }
+        $reader = New-Object IO.StreamReader($stampEntry.Open())
+        $have = $reader.ReadToEnd().Trim(); $reader.Close()
+        if ($have -ne $Wanted) {
+            Write-Host "Online play: the online pack is for another version of the source, so online play stays off for now (System Link on a LAN and co-op by IP still work)." -ForegroundColor Yellow
+            exit 2
+        }
+        $distFull = [IO.Path]::GetFullPath($Dist)
+        foreach ($entry in $zip.Entries) {
+            $rel = $entry.FullName.Replace('/', '\')
+            if (-not $entry.Name -or $rel -eq "stamp.txt") { continue }
+            $dest = [IO.Path]::GetFullPath((Join-Path $distFull $rel))
+            if (-not $dest.StartsWith($distFull + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "bad path in the online pack: $rel" }
+            New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+        }
+    } finally { $zip.Dispose() }
+    if (-not (Test-Path (Join-Path $Dist "core\WhompaysCoop\eos\EOSSDK-Win64-Shipping.dll"))) { throw "the Epic DLL is missing after installing" }
     Set-Content -NoNewline -Encoding ascii -Path $installedFile -Value $Wanted
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $packDir, $packZip
+    Remove-Item -Force -ErrorAction SilentlyContinue $packZip
     Write-Host "Online play: on (online pack installed)."
     exit 0
 } catch {
