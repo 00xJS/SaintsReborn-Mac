@@ -726,7 +726,25 @@ fn host_rexglue(
     ]);
     c.arg("-DCMAKE_LINKER_TYPE=LLD");
     c.arg(format!("-DCMAKE_MAKE_PROGRAM={}", cm(&ninja_path(tc))));
-    run(r, c, "Configuring the recompiler", |_| {}).context(LINUX_DEPS)?;
+    // Only the recompiler is built here: SDL needs no window or sound
+    // system, so no X11 / Wayland / ALSA development packages are needed.
+    c.args([
+        "-DSDL_UNIX_CONSOLE_BUILD=ON",
+        "-DSDL_X11=OFF",
+        "-DSDL_WAYLAND=OFF",
+        "-DSDL_KMSDRM=OFF",
+        "-DSDL_OPENGL=OFF",
+        "-DSDL_OPENGLES=OFF",
+        "-DSDL_ALSA=OFF",
+        "-DSDL_JACK=OFF",
+        "-DSDL_PIPEWIRE=OFF",
+        "-DSDL_PULSEAUDIO=OFF",
+        "-DSDL_SNDIO=OFF",
+        "-DSDL_DBUS=OFF",
+        "-DSDL_IBUS=OFF",
+        "-DSDL_HIDAPI_LIBUSB=OFF",
+    ]);
+    run(r, c, "Configuring the recompiler", |_| {})?;
     let mut c = tc.env.command(&tc.cmake);
     c.arg("--build")
         .arg(&host)
