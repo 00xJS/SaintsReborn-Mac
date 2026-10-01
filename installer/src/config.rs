@@ -17,14 +17,17 @@ pub const ONLINE_PACK_URL: &str =
 
 /// Changes whenever the compiler or the Microsoft libraries change, so old
 /// build folders (made with another toolchain) are rebuilt from scratch.
-pub const TOOLCHAIN_ID: &str = "llvm-19.1.5+msvc-14.44.17.14+sdk-10.0.26100";
+pub const TOOLCHAIN_ID: &str = "llvm-19.1.5+msvc-14.44.17.14+sdk-10.0.26100+r2";
 
 /// Needs to match the clang that recorded the profiles in pgo\.
 pub const LLVM_VERSION: &str = "19.1.5";
 pub const XWIN_CRT_VERSION: &str = "14.44.17.14";
 pub const XWIN_SDK_VERSION: &str = "10.0.26100";
 
-pub const NEEDED_FREE_GB: u64 = 25;
+/// A first install: build tools (about 2.5 GB) and the build.
+pub const NEEDED_FREE_GB: u64 = 20;
+/// Below this Setup stops before downloading anything.
+pub const MIN_FREE_GB: u64 = 6;
 
 #[derive(Clone, Copy)]
 pub enum Archive {
@@ -43,6 +46,8 @@ pub struct Download {
     pub archive: Archive,
     /// Folder under the tools folder it is unpacked to.
     pub dir: &'static str,
+    /// Unpack only what the build uses (LLVM: about 0.7 of 2.8 GB).
+    pub trim: bool,
 }
 
 #[cfg(windows)]
@@ -54,6 +59,7 @@ pub const TOOLS: &[Download] = &[
         size: 845_193_092,
         archive: Archive::Tar { strip: true },
         dir: "llvm-19.1.5",
+        trim: true,
     },
     Download {
         name: "CMake 3.31.6",
@@ -62,6 +68,7 @@ pub const TOOLS: &[Download] = &[
         size: 46_473_549,
         archive: Archive::Zip { strip: true },
         dir: "cmake-3.31.6",
+        trim: false,
     },
     Download {
         name: "Ninja 1.13.2",
@@ -70,6 +77,7 @@ pub const TOOLS: &[Download] = &[
         size: 291_570,
         archive: Archive::Zip { strip: false },
         dir: "ninja-1.13.2",
+        trim: false,
     },
     Download {
         name: "xwin 0.10.0",
@@ -78,6 +86,7 @@ pub const TOOLS: &[Download] = &[
         size: 3_074_443,
         archive: Archive::Tar { strip: true },
         dir: "xwin-0.10.0",
+        trim: false,
     },
 ];
 
@@ -89,6 +98,7 @@ pub const MINGIT: Download = Download {
     size: 47_241_394,
     archive: Archive::Zip { strip: false },
     dir: "git-2.47.1",
+    trim: false,
 };
 
 #[cfg(windows)]
@@ -103,6 +113,7 @@ pub const TOOLS: &[Download] = &[
         size: 1_652_713_376,
         archive: Archive::Tar { strip: true },
         dir: "llvm-19.1.5",
+        trim: true,
     },
     Download {
         name: "CMake 3.31.6",
@@ -111,6 +122,7 @@ pub const TOOLS: &[Download] = &[
         size: 55_010_959,
         archive: Archive::Tar { strip: true },
         dir: "cmake-3.31.6",
+        trim: false,
     },
     Download {
         name: "Ninja 1.13.2",
@@ -119,6 +131,7 @@ pub const TOOLS: &[Download] = &[
         size: 134_040,
         archive: Archive::Zip { strip: false },
         dir: "ninja-1.13.2",
+        trim: false,
     },
     Download {
         name: "xwin 0.10.0",
@@ -127,6 +140,7 @@ pub const TOOLS: &[Download] = &[
         size: 3_416_863,
         archive: Archive::Tar { strip: true },
         dir: "xwin-0.10.0",
+        trim: false,
     },
 ];
 

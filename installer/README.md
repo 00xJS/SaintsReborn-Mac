@@ -6,15 +6,15 @@ folder. Neither the program nor the release contains game code.
 
 What it does:
 
-1. Downloads a portable build toolchain into one folder shared by all installs
-   (`%LOCALAPPDATA%\SaintsReborn\tools` on Windows,
-   `~/.local/share/SaintsReborn/tools` on Linux): LLVM/clang 19.1.5, CMake,
-   Ninja, and Microsoft's C++ headers and libraries through
-   [xwin](https://github.com/Jake-Shadle/xwin). The player accepts Microsoft's
-   license for those in the window. Every download is checked against a
-   SHA-256 hash in `src/config.rs`. Nothing is installed system-wide, and
-   Visual Studio is not needed. On Windows, portable Git is downloaded when
-   Git is missing.
+1. Downloads a portable build toolchain into the install folder
+   (`build/toolchain`, on the same drive as the game): LLVM/clang 19.1.5 (only
+   the parts the build uses, about 0.7 GB), CMake, Ninja, and Microsoft's C++
+   headers and libraries through [xwin](https://github.com/Jake-Shadle/xwin).
+   The player accepts Microsoft's license for those in the window. Every
+   download is checked against a SHA-256 hash in `src/config.rs` and unpacked
+   by Setup itself. Nothing is installed system-wide, and Visual Studio is not
+   needed. On Windows, portable Git is downloaded when Git is missing. Setup
+   stops early when the drive has less than 6 GB free.
 2. Downloads this repository (a shallow git clone) or updates it.
 3. Extracts the disc image, or copies a folder with the game files, to
    `dist/game`.

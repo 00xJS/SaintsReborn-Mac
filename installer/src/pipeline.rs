@@ -119,18 +119,27 @@ pub fn run_all(r: &Reporter, o: &Options) -> Result<String> {
         config::APP_VERSION,
         dir.display()
     ));
-    if let Some(free) = platform::free_gb(&dir)
-        && free < config::NEEDED_FREE_GB
-    {
-        r.log(format!(
-            "Warning: only {free} GB free; the build needs about {} GB.",
-            config::NEEDED_FREE_GB
-        ));
+    if let Some(free) = platform::free_gb(&dir) {
+        r.log(format!("Free space on the install drive: {free} GB"));
+        if free < config::MIN_FREE_GB {
+            bail!(
+                "Not enough free space on the drive of {}: {free} GB free. Setup needs about {} GB \
+                 (build tools and the build). Free some space, or choose a folder on another drive.",
+                dir.display(),
+                config::NEEDED_FREE_GB
+            );
+        }
+        if free < config::NEEDED_FREE_GB {
+            r.log(format!(
+                "Warning: only {free} GB free; a first build needs about {} GB.",
+                config::NEEDED_FREE_GB
+            ));
+        }
     }
     r.progress(None);
 
-    let tc = tools::ensure_all(r, o.accept_license)?;
-    let downloads = platform::data_dir().join("tools").join("downloads");
+    let tc = tools::ensure_all(r, o.accept_license, &dir)?;
+    let downloads = tools::root_for(&dir).join("downloads");
     fs::create_dir_all(&downloads)?;
     #[cfg(windows)]
     platform::ensure_vc_runtime(r, &downloads)?;
@@ -163,7 +172,7 @@ pub fn run_all(r: &Reporter, o: &Options) -> Result<String> {
 /// For CI: the toolchain, the SDK and the recompiler only (no game files
 /// needed). `root` is a Saints Reborn source folder.
 pub fn sdk_only(r: &Reporter, root: &Path, accept_license: bool) -> Result<String> {
-    let tc = tools::ensure_all(r, accept_license)?;
+    let tc = tools::ensure_all(r, accept_license, root)?;
     let build = root.join("build");
     let stamps = Stamps(build.join("stamps"));
     fs::create_dir_all(&stamps.0)?;

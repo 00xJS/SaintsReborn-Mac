@@ -29,8 +29,67 @@ impl Toolchain {
     }
 }
 
+/// The toolchain lives in the install folder (build/toolchain), on the same
+/// drive as the game: the old shared folder under %LOCALAPPDATA% filled up
+/// small C: drives.
+static ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 fn tools_root() -> PathBuf {
-    platform::data_dir().join("tools")
+    ROOT.lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| platform::data_dir().join("tools"))
+}
+pub fn root_for(install_dir: &Path) -> PathBuf {
+    install_dir.join("build").join("toolchain")
+}
+
+/// The files of LLVM the build uses (the rest is 2 GB of tools like clangd,
+/// lldb and clang-tidy).
+fn llvm_keep(rel: &Path) -> bool {
+    const BIN: &[&str] = &[
+        "clang",
+        "clang++",
+        "clang-cl",
+        "clang-cpp",
+        "clang-scan-deps",
+        "lld",
+        "lld-link",
+        "ld.lld",
+        "llvm-rc",
+        "llvm-ar",
+        "llvm-lib",
+        "llvm-ranlib",
+        "llvm-mt",
+        "llvm-profdata",
+        "llvm-nm",
+        "llvm-objcopy",
+        "llvm-strip",
+        "llvm-dlltool",
+        "llvm-readobj",
+        "llvm-readelf",
+        "llvm-objdump",
+        "llvm-cvtres",
+        "llvm-symbolizer",
+    ];
+    let s = rel.to_string_lossy().replace('\\', "/");
+    if s == "bin" || s == "lib" || s == "lib/clang" || s.starts_with("lib/clang/") {
+        return true;
+    }
+    if let Some(name) = s.strip_prefix("bin/") {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".dll") {
+            return !matches!(lower.as_str(), "liblldb.dll" | "libclang.dll" | "lldb.dll");
+        }
+        let base = name.strip_suffix(".exe").unwrap_or(name);
+        // clang-19 is the real binary on Linux (clang / clang++ link to it).
+        return BIN.contains(&base)
+            || (base.starts_with("clang-") && base[6..].chars().all(|c| c.is_ascii_digit()));
+    }
+    // Linux: shared libraries next to the tools.
+    if let Some(name) = s.strip_prefix("lib/") {
+        return !name.contains('/') && name.contains(".so") && !name.contains("lldb");
+    }
+    false
 }
 
 /// Downloads and unpacks one tool unless it is already there.
@@ -38,7 +97,8 @@ fn ensure(r: &Reporter, d: &Download) -> Result<PathBuf> {
     let root = tools_root();
     let dir = root.join(d.dir);
     let marker = dir.join(".saintsreborn-complete");
-    if fsx::read_text(&marker).as_deref() == Some(d.sha256) {
+    let key = format!("{}{}", d.sha256, if d.trim { " trim1" } else { "" });
+    if fsx::read_text(&marker).as_deref() == Some(key.as_str()) {
         return Ok(dir);
     }
     let downloads = root.join("downloads");
@@ -53,10 +113,13 @@ fn ensure(r: &Reporter, d: &Download) -> Result<PathBuf> {
     r.status(format!("Unpacking {}", d.name));
     fsx::remove_dir(&dir)?;
     match d.archive {
-        Archive::Tar { strip } => fsx::untar(r, &file, &dir, strip)?,
+        Archive::Tar { strip } => {
+            let keep: &dyn Fn(&Path) -> bool = if d.trim { &llvm_keep } else { &|_| true };
+            fsx::untar(r, &file, &dir, strip, keep)?
+        }
         Archive::Zip { strip } => fsx::unzip(&file, &dir, strip)?,
     }
-    fsx::write_text(&marker, d.sha256)?;
+    fsx::write_text(&marker, &key)?;
     let _ = fs::remove_file(&file);
     Ok(dir)
 }
@@ -280,7 +343,11 @@ fn write_cross_file(llvm_bin: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn ensure_all(r: &Reporter, accept_license: bool) -> Result<Toolchain> {
+pub fn ensure_all(r: &Reporter, accept_license: bool, install_dir: &Path) -> Result<Toolchain> {
+    let root = root_for(install_dir);
+    fs::create_dir_all(&root)?;
+    *ROOT.lock().unwrap() = Some(root.clone());
+    r.log(format!("Build tools folder: {}", root.display()));
     let git = find_git(r)?;
     r.log(format!("Git: {}", git.display()));
     let mut dirs = Vec::new();
@@ -329,6 +396,18 @@ pub fn ensure_all(r: &Reporter, accept_license: bool) -> Result<Toolchain> {
             "The downloaded clang does not run ({}).",
             tc.clang().display()
         );
+    }
+    // The old shared toolchain folder (%LOCALAPPDATA%\SaintsReborn\tools)
+    // is no longer used: free its space.
+    let old = platform::data_dir().join("tools");
+    if old.exists() && old != root {
+        match fsx::remove_dir(&old) {
+            Ok(()) => r.log(format!(
+                "Removed the old build tools folder {}",
+                old.display()
+            )),
+            Err(e) => r.log(format!("Could not remove the old build tools folder: {e}")),
+        }
     }
     Ok(tc)
 }

@@ -47,7 +47,7 @@ impl SetupApp {
             .or_else(here_install_dir)
             .unwrap_or_else(platform::default_install_dir);
         let existing = pipeline::is_install_folder(&dir);
-        let licensed = platform::data_dir().join("tools").read_dir().map(|rd| {
+        let licensed = crate::tools::root_for(&dir).read_dir().map(|rd| {
             rd.flatten()
                 .any(|e| e.file_name().to_string_lossy().starts_with("winsysroot-"))
         });

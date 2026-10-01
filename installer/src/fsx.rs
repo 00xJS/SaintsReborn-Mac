@@ -1,6 +1,6 @@
 //! File helpers: unpacking archives and copying folders.
 
-use crate::report::{Env, Reporter, run};
+use crate::report::Reporter;
 use anyhow::{Context, Result, bail};
 use std::fs::{self, File};
 use std::io;
@@ -50,16 +50,103 @@ pub fn unzip(archive: &Path, dest: &Path, strip: bool) -> Result<()> {
     Ok(())
 }
 
-/// Unpacks a .tar.xz / .tar.gz with the system's tar (Windows 10+ ships one
-/// that reads both; on Linux it is always there).
-pub fn untar(r: &Reporter, archive: &Path, dest: &Path, strip: bool) -> Result<()> {
-    fs::create_dir_all(dest)?;
-    let mut cmd = Env::default().command(if cfg!(windows) { "tar.exe" } else { "tar" });
-    cmd.arg("-xf").arg(archive).arg("-C").arg(dest);
-    if strip {
-        cmd.arg("--strip-components=1");
+/// Unpacks a .tar.xz / .tar.gz here (no external tar: the one in some
+/// Windows versions can't read .xz). With `strip`, the archive's top folder is
+/// dropped; `keep` chooses which (stripped) paths are written.
+pub fn untar(
+    r: &Reporter,
+    archive: &Path,
+    dest: &Path,
+    strip: bool,
+    keep: &dyn Fn(&Path) -> bool,
+) -> Result<()> {
+    struct Counting<R> {
+        inner: R,
+        read: u64,
+        total: u64,
+        last: u64,
+        r: Reporter,
     }
-    run(r, cmd, &format!("Unpacking {}", archive.display()), |_| {})
+    impl<R: io::Read> io::Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += n as u64;
+            if self.total > 0 && self.read - self.last > (8 << 20) {
+                self.last = self.read;
+                self.r.progress(Some(self.read as f32 / self.total as f32));
+            }
+            Ok(n)
+        }
+    }
+    fs::create_dir_all(dest)?;
+    let total = fs::metadata(archive)?.len();
+    let file = Counting {
+        inner: io::BufReader::with_capacity(1 << 20, File::open(archive)?),
+        read: 0,
+        total,
+        last: 0,
+        r: r.clone(),
+    };
+    let name = archive.to_string_lossy().to_ascii_lowercase();
+    let reader: Box<dyn io::Read> = if name.ends_with(".xz") {
+        Box::new(xz2::read::XzDecoder::new_multi_decoder(file))
+    } else if name.ends_with(".gz") || name.ends_with(".tgz") {
+        Box::new(flate2::read::GzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
+    let mut tar = tar::Archive::new(reader);
+    tar.set_preserve_permissions(true);
+    let mut links: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for entry in tar
+        .entries()
+        .with_context(|| format!("{} is not a valid archive", archive.display()))?
+    {
+        r.check()?;
+        let mut entry = entry.with_context(|| format!("{} is damaged", archive.display()))?;
+        let path = entry.path()?.into_owned();
+        let rel: PathBuf = if strip {
+            path.components().skip(1).collect()
+        } else {
+            path
+        };
+        if rel.as_os_str().is_empty()
+            || safe_relative(&rel.to_string_lossy()).is_none()
+            || !keep(&rel)
+        {
+            continue;
+        }
+        let out = dest.join(&rel);
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            fs::create_dir_all(&out)?;
+            continue;
+        }
+        if let Some(p) = out.parent() {
+            fs::create_dir_all(p)?;
+        }
+        if kind.is_hard_link() {
+            // Hard links name the target by its path inside the archive.
+            if let Some(target) = entry.link_name()? {
+                let t: PathBuf = if strip {
+                    target.components().skip(1).collect()
+                } else {
+                    target.into_owned()
+                };
+                links.push((dest.join(t), out));
+            }
+            continue;
+        }
+        entry
+            .unpack(&out)
+            .with_context(|| format!("could not write {} (is the disk full?)", out.display()))?;
+    }
+    for (target, out) in links {
+        if target.exists() {
+            fs::copy(&target, &out)?;
+        }
+    }
+    Ok(())
 }
 
 /// Deletes a folder, also when files in it are read-only (git objects).

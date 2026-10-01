@@ -18,6 +18,9 @@ rfd = "0.17.2"
 ureq = "2.12"
 sha1 = "0.10"
 sha2 = "0.10"
+tar = "0.4"
+xz2 = { version = "0.1", features = ["static"] }
+flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
