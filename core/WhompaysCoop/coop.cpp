@@ -2258,6 +2258,7 @@ struct Follower {
   bool moving=false;
   uint32_t failures=0;
   int delay=50;   // ms behind the newest snapshot (more for people sent at a lower rate)
+  unsigned airborne_placed=0;  // updates placed on the path while in the air (log)
 
   int base_delay=-1; // the configured delay; the working one grows with network jitter
   // One position far off the path (the other player's hit reaction sent
@@ -2365,9 +2366,10 @@ struct Follower {
     }
     if(tag && now>=next_gap_log) {
       if(gap_count) {
-        char line[160];
-        std::snprintf(line,sizeof(line),"%s follow gap: avg %.2f m, max %.2f m, newest packet %lld ms old, shown %d ms behind",tag,gap_sum/gap_count,gap_max,
-                      (long long)(int64_t(now)-offset-int64_t(snaps[count-1].time)),delay);
+        char line[220];
+        std::snprintf(line,sizeof(line),"%s follow gap: avg %.2f m, max %.2f m, newest packet %lld ms old, shown %d ms behind, %u in-air updates on the path",tag,gap_sum/gap_count,gap_max,
+                      (long long)(int64_t(now)-offset-int64_t(snaps[count-1].time)),delay,airborne_placed);
+        airborne_placed=0;
         ProbeLog(line);
       }
       gap_sum=0; gap_max=0; gap_count=0; next_gap_log=now+3000;
@@ -2382,6 +2384,16 @@ struct Follower {
     for(unsigned i=0;i<9;++i) api->write_f32(matrix+i*4,rows[i]);
     const bool is_avatar=obj==ResolveHuman(avatar_local);
     if(is_avatar && now<avatar_action_until && !avatar_jumping && path_speed>2.0f) avatar_action_until=0;
+    // In the air (jumping, falling, thrown): the game refuses move orders and
+    // its own jump physics drifted up to ~2 m from where the other player
+    // really is. Put the character on the path every update until it lands.
+    if(is_avatar && gap<6.0f && std::abs(vel[1])>2.0f && !avatar_climbing) {  // stairs stay below 2 m/s vertical
+      for(unsigned i=0;i<3;++i) api->write_f32(obj+20+i*4,path_pos[i]);
+      for(unsigned i=0;i<9;++i) api->write_f32(obj+32+i*4,rows[i]);
+      ++airborne_placed;
+      if(moving) { moving=false; next_order=0; order_mode=0; }
+      return true;
+    }
     if(speed>0.6f && !(is_avatar && now<avatar_action_until)) {
       // Keep one steady order: re-aim only every 400 ms, or sooner when the
       // direction or gait changes, so the walk cycle doesn't stop and start.
@@ -2396,8 +2408,16 @@ struct Follower {
         order_mode=mode; order_heading=heading;
         const uint32_t destination=data+1620;
         for(unsigned i=0;i<3;++i) api->write_f32(destination+i*4,path_pos[i]+vel[i]*0.8f);
-        if(!OrderMove(scratch,obj,destination,mode) && tag && failures++<5) {
-          char line[100]; std::snprintf(line,sizeof(line),"%s: move order refused",tag); ProbeLog(line);
+        if(!OrderMove(scratch,obj,destination,mode)) {
+          if(tag && failures++<5) { char line[100]; std::snprintf(line,sizeof(line),"%s: move order refused",tag); ProbeLog(line); }
+          // Refused (landing, getting up ...): keep it on the path this update
+          // instead of leaving it where it is.
+          if(is_avatar && gap<6.0f) {
+            for(unsigned i=0;i<3;++i) api->write_f32(obj+20+i*4,path_pos[i]);
+            for(unsigned i=0;i<9;++i) api->write_f32(obj+32+i*4,rows[i]);
+            next_order=now+100;
+            return true;
+          }
         }
         next_order=now+400; moving=true;
       }
