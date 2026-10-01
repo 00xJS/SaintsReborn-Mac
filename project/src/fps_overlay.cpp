@@ -157,6 +157,83 @@ void DrawChat(ImGuiIO& io) {
   }
 }
 
+// Online notices (fair play, invites, friends): a panel in the style of the
+// game's own help boxes - dark purple, Saints purple edge, white text, a
+// small header and a bar that runs down while it shows. Slides in from the
+// left and fades out.
+void DrawOnlineNotice(ImGuiIO& io) {
+  static std::string shown_text;
+  static std::chrono::steady_clock::time_point since;
+  const std::string text = wml::HostOverlayText();
+  const auto now = std::chrono::steady_clock::now();
+  if (text.empty()) { shown_text.clear(); return; }
+  if (text != shown_text) { shown_text = text; since = now; }
+  constexpr float kShow = 12.0f, kIn = 0.28f, kOut = 0.45f;
+  const float t = std::chrono::duration<float>(now - since).count();
+  if (t >= kShow) return;
+  const float in = std::min(1.0f, t / kIn);
+  const float ease = 1.0f - (1.0f - in) * (1.0f - in) * (1.0f - in);
+  const float alpha = std::min(ease, std::clamp((kShow - t) / kOut, 0.0f, 1.0f));
+  auto col = [&](int r, int g, int b, int a) { return IM_COL32(r, g, b, int(a * alpha)); };
+
+  const float scale = std::max(0.6f, io.DisplaySize.y / 1080.0f);
+  ImFont* font = g_font ? g_font : ImGui::GetFont();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const char* title = "ONLINE";
+  if (text.find("invited") != std::string::npos) title = "INVITE";
+  else if (text.find("friend") != std::string::npos && text.find("Private Party") == std::string::npos) title = "FRIENDS";
+
+  const float body_size = 24.0f * scale, title_size = 19.0f * scale;
+  const float pad = 18.0f * scale, edge = 7.0f * scale;
+  const float width = std::min(600.0f * scale, io.DisplaySize.x * 0.42f);
+  const float wrap = width - edge - pad * 2.0f;
+  const ImVec2 body_ext = font->CalcTextSizeA(body_size, FLT_MAX, wrap, text.c_str());
+  const float head_h = title_size + 10.0f * scale;
+  const float height = pad + head_h + body_ext.y + pad + 4.0f * scale;
+  const float x = io.DisplaySize.x * 0.045f - (1.0f - ease) * (width * 0.35f);
+  const float y = io.DisplaySize.y * 0.075f;
+  const ImVec2 a(x, y), b(x + width, y + height);
+
+  // Drop shadow, body (black to deep purple), purple frame and left edge.
+  dl->AddRectFilled(ImVec2(a.x + 5 * scale, a.y + 6 * scale), ImVec2(b.x + 5 * scale, b.y + 6 * scale),
+                    col(0, 0, 0, 110));
+  dl->AddRectFilledMultiColor(a, b, col(14, 6, 20, 232), col(30, 10, 44, 232), col(46, 14, 66, 236),
+                              col(18, 6, 26, 236));
+  dl->AddRect(a, b, col(126, 58, 176, 200), 0.0f, 0, std::max(1.0f, 1.5f * scale));
+  dl->AddRectFilled(a, ImVec2(a.x + edge, b.y), col(150, 70, 205, 255));
+  dl->AddRectFilled(ImVec2(a.x + edge, a.y), ImVec2(a.x + edge + 2 * scale, b.y), col(215, 170, 255, 120));
+
+  // Header: small spaced capitals and a line that fades out to the right.
+  float tx = a.x + edge + pad;
+  const float ty = a.y + pad * 0.8f;
+  for (const char* c = title; *c; ++c) {
+    const char ch[2] = {*c, 0};
+    dl->AddText(font, title_size, ImVec2(tx + scale, ty + scale), col(0, 0, 0, 200), ch);
+    dl->AddText(font, title_size, ImVec2(tx, ty), col(205, 160, 255, 255), ch);
+    tx += font->CalcTextSizeA(title_size, FLT_MAX, 0.0f, ch).x + 3.0f * scale;
+  }
+  const float line_y = ty + title_size + 4.0f * scale;
+  const float lx = a.x + edge + pad, rx = b.x - pad;
+  dl->AddRectFilledMultiColor(ImVec2(lx, line_y), ImVec2(rx, line_y + std::max(1.0f, 2.0f * scale)),
+                              col(160, 80, 220, 230), col(160, 80, 220, 0), col(160, 80, 220, 0),
+                              col(160, 80, 220, 230));
+
+  // Body: white with a black outline, like the game's HUD text.
+  const ImVec2 bp(lx, a.y + pad + head_h);
+  const float o = std::max(1.0f, 1.6f * scale);
+  const ImVec2 offs[] = {{-o, 0}, {o, 0}, {0, -o}, {0, o}, {o, o}};
+  for (const ImVec2& d : offs)
+    dl->AddText(font, body_size, ImVec2(bp.x + d.x, bp.y + d.y), col(0, 0, 0, 210), text.c_str(), nullptr, wrap);
+  dl->AddText(font, body_size, bp, col(255, 255, 255, 255), text.c_str(), nullptr, wrap);
+
+  // Time left.
+  const float left = std::clamp(1.0f - t / kShow, 0.0f, 1.0f);
+  const float bar_y = b.y - 4.0f * scale;
+  dl->AddRectFilled(ImVec2(a.x + edge, bar_y), ImVec2(b.x, b.y), col(0, 0, 0, 120));
+  dl->AddRectFilled(ImVec2(a.x + edge, bar_y), ImVec2(a.x + edge + (b.x - a.x - edge) * left, b.y),
+                    col(150, 70, 205, 255));
+}
+
 // Text native mods show over the game (WML overlay_text), always drawn.
 class ModTextDialog : public rex::ui::ImGuiDialog {
  public:
@@ -165,6 +242,7 @@ class ModTextDialog : public rex::ui::ImGuiDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     DrawChat(io);
+    DrawOnlineNotice(io);
     const std::string text = wml::OverlayText();
     if (text.empty()) return;
     if (!logged_) {

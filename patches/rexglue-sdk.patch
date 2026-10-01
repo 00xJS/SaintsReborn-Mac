@@ -8580,7 +8580,7 @@ index 3f9422d..943eea5 100644
  
  void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
 diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
-index 2b222da..44dedce 100644
+index 2b222da..018a9d2 100644
 --- a/src/kernel/xam/apps/xgi_app.cpp
 +++ b/src/kernel/xam/apps/xgi_app.cpp
 @@ -10,9 +10,38 @@
@@ -8663,7 +8663,7 @@ index 2b222da..44dedce 100644
        REXKRNL_DEBUG("XGIUserSetPropertyEx({:08X}, {:08X}, {}, {:08X})", user_index, property_id,
                      value_size, value_ptr);
        return X_E_SUCCESS;
-@@ -113,6 +162,65 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -113,6 +162,73 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            "{:08X})",
            session_ptr, flags, num_slots_public, num_slots_private, user_xuid, session_info_ptr,
            nonce_ptr);
@@ -8716,20 +8716,28 @@ index 2b222da..44dedce 100644
 +        REXLOG_INFO("LIVE XSessionCreate (host, flags {:X}, {} public / {} private slots): session info filled",
 +                    flags, num_slots_public, num_slots_private);
 +      } else if (REXCVAR_GET(xam_signed_in_to_live) && !(flags & 1) && (flags & 0xA)) {
-+        // Joining someone's Live match: an unmodded game only ever finds
-+        // unmodded hosts, and drops players who turn modded during it.
++        // Joining someone's Live session: mods only in a Private Party
++        // (eos_lan.cpp drops game packets between modded and unmodded games
++        // everywhere else).
 +        const bool modded = rex::system::online::Modded();
-+        rex::system::eoslan::SetEnforceClean(!modded);
-+        rex::cvar::SetFlagByName("online_session", "In a Live match");
++        const bool priv = session_info_ptr && AdvertIsPrivate(memory_->TranslateVirtual<uint8_t*>(session_info_ptr));
++        rex::system::eoslan::SetPrivateSession(priv);
++        if (modded && !priv)
++          rex::system::online::Notice("Public matches need an unmodded game. Turn off: " +
++                                      rex::system::online::ModdedReason() +
++                                      ". Mods work in a Private Party with invited friends.");
++        rex::cvar::SetFlagByName("online_session", priv ? "In a Private Party" : "In a Live match");
 +        // The host's session info comes in: invites from here point at it.
 +        if (session_info_ptr)
 +          rex::system::eoslan::SetInviteSession(memory_->TranslateVirtual<uint8_t*>(session_info_ptr));
-+        REXLOG_INFO("LIVE XSessionCreate (joining, flags {:X}): this game is {}", flags, modded ? "modded" : "unmodded");
++        REXLOG_INFO("LIVE XSessionCreate (joining, flags {:X}, {} public / {} private slots): this game is {}, {}",
++                    flags, num_slots_public, num_slots_private, modded ? "modded" : "unmodded",
++                    priv ? "private party" : "public session");
 +      }
        return X_E_SUCCESS;
      }
      case 0x000B0011: {
-@@ -123,7 +231,45 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -123,7 +239,45 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        uint64_t session_nonce = memory::load_and_swap<uint64_t>(buffer + 8);
  
        REXKRNL_DEBUG("XGISessionDelete({:08X}, {:08X}, {:016X})", obj_ptr, flags, session_nonce);
@@ -8746,7 +8754,7 @@ index 2b222da..44dedce 100644
 +          const uint32_t closed_flags = it->flags;
 +          g_live.sessions.erase(it);
 +          if (g_live.sessions.empty()) {
-+            rex::system::eoslan::SetEnforceClean(false);
++            rex::system::eoslan::SetPrivateSession(false);
 +            rex::cvar::SetFlagByName("online_session", "");
 +            rex::system::eoslan::SetInviteSession(nullptr);  // left the lobby: no invites to it
 +          }
@@ -8776,7 +8784,7 @@ index 2b222da..44dedce 100644
        return X_E_SUCCESS;
      }
      case 0x000B0012: {
-@@ -140,6 +286,18 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -140,6 +294,18 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                      user_count, xuid_array_ptr, user_index_array, private_slots_array);
        return X_E_SUCCESS;
      }
@@ -8795,7 +8803,7 @@ index 2b222da..44dedce 100644
      case 0x000B0014: {
        assert_true(!buffer_length || buffer_length == 16);
  
-@@ -179,6 +337,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -179,6 +345,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        REXKRNL_DEBUG("XSessionSearch({}, {}, {}, {}, {}, {:08X}, {:08X}, {}, {:08X})", proc_index,
                      user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
                      results_buffer_size, search_results_ptr);
@@ -8805,7 +8813,7 @@ index 2b222da..44dedce 100644
        return X_E_SUCCESS;
      }
      case 0x000B0018: {
-@@ -214,6 +375,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -214,6 +383,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                      proc_index, user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
                      results_buffer_size, search_results_ptr, num_users);
  
@@ -8815,7 +8823,7 @@ index 2b222da..44dedce 100644
        return X_E_SUCCESS;
      }
      case 0x000B001D: {
-@@ -274,21 +438,26 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -274,21 +446,26 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        return X_E_SUCCESS;
      }
      case 0x000B001B: {
@@ -8857,7 +8865,7 @@ index 2b222da..44dedce 100644
        return X_E_SUCCESS;
      }
      case 0x000B001F: {
-@@ -439,6 +608,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -439,6 +616,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            non_weighted_search_properties_ptr, non_weighted_search_contexts_ptr, results_buffer_size,
            search_results_ptr, num_users, weighted_search);
  
@@ -8870,10 +8878,10 @@ index 2b222da..44dedce 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..3b45e7d
+index 0000000..d3946e8
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
-@@ -0,0 +1,303 @@
+@@ -0,0 +1,316 @@
 +// Saints Reborn: Xbox Live sessions over Epic Online Services (included by
 +// xgi_app.cpp; only active with the cvar xam_signed_in_to_live).
 +//
@@ -8888,14 +8896,15 @@ index 0000000..3b45e7d
 +// Advert (hex text): version 2 | XSESSION_INFO 60 | open public, open private,
 +// filled public, filled private (u8 each) | u8 contexts, (u32 id, u32 value)*
 +// | u8 properties, (u32 id, u8 size, size bytes)* | u8 name length, name
-+// | u8 flags (1 modded host, 2 ranked, 4 matchmaking). Version 1 (older
-+// games) counts as modded.
++// | u8 flags (1 modded host, 2 ranked, 4 matchmaking, 8 private party).
++// Version 1 (older games) counts as modded.
 +//
-+// Fair play (online_identity.cpp): public matches keep modded and unmodded
-+// games apart - each only finds the other kind's sessions never - and ranked
-+// is for unmodded games only. An unmodded host also drops modded players'
-+// packets (eos_lan.cpp SetEnforceClean). Private play (System Link, co-op by
-+// join code) has no such rule.
++// Fair play (online_identity.cpp): mods, trainers and cheat tools only work
++// in a Private Party (a session whose slots are all invite-only). Public
++// matches (Player and Ranked) and System Link are for unmodded games: a
++// modded game is not advertised and finds no public sessions, and game
++// packets outside a Private Party only flow between unmodded games
++// (eos_lan.cpp SetPrivateSession). Story co-op by join code has no such rule.
 +
 +REXCVAR_DECLARE(std::string, xam_player_name);
 +
@@ -8907,7 +8916,7 @@ index 0000000..3b45e7d
 +};
 +void SetLiveAdvert(const std::string& text);
 +std::vector<LiveAdvertEntry> LiveAdverts(uint32_t wait_ms);
-+void SetEnforceClean(bool on);
++void SetPrivateSession(bool on);
 +void SetInviteSession(const uint8_t* info);  // lobby invites (xlivebase_app.cpp)
 +void SetSessionHost(const uint8_t* info, bool is_host);  // map check (eos_lan.cpp)
 +}  // namespace rex::system::eoslan
@@ -8976,25 +8985,28 @@ index 0000000..3b45e7d
 +  const bool modded = rex::system::online::Modded();
 +  if (!g_live.hosting) {
 +    rex::system::eoslan::SetLiveAdvert("");
-+    rex::system::eoslan::SetEnforceClean(false);
 +    if (g_live.sessions.empty()) rex::cvar::SetFlagByName("online_session", "");
 +    return;
 +  }
 +  const bool ranked = HostingRankedLocked();
-+  if (ranked && modded) {
++  const bool priv = !ranked && g_live.public_slots == 0 && g_live.private_slots > 0;
++  rex::system::eoslan::SetPrivateSession(priv);
++  if (modded && !priv) {
 +    static std::string told;
 +    const std::string reason = rex::system::online::ModdedReason();
 +    if (told != reason) {
 +      told = reason;
-+      rex::system::online::Notice("Ranked matches need an unmodded game, so nobody can find this one. Turn off: " +
-+                                  reason + ". Player Match lets modded games play together.");
++      rex::system::online::Notice("Public matches need an unmodded game, so nobody can find this one. Turn off: " +
++                                  reason + ". Mods work in a Private Party with invited friends.");
 +    }
++    REXLOG_INFO("LIVE: not advertised ({} public / {} private slots; modded games only host Private Parties)",
++                g_live.public_slots, g_live.private_slots);
 +    rex::system::eoslan::SetLiveAdvert("");
-+    rex::system::eoslan::SetEnforceClean(false);
 +    return;
 +  }
-+  rex::system::eoslan::SetEnforceClean(!modded);
-+  rex::cvar::SetFlagByName("online_session", ranked ? "Hosting a Ranked Match" : "Hosting a Player Match");
++  rex::cvar::SetFlagByName("online_session", priv     ? "Hosting a Private Party"
++                                             : ranked ? "Hosting a Ranked Match"
++                                                      : "Hosting a Player Match");
 +  std::vector<uint8_t> v;
 +  v.push_back(2);
 +  v.insert(v.end(), g_live.info, g_live.info + 60);
@@ -9027,7 +9039,8 @@ index 0000000..3b45e7d
 +  name = rex::system::online::SafeName(name);
 +  v.push_back(uint8_t(name.size()));
 +  v.insert(v.end(), name.begin(), name.end());
-+  v.push_back(uint8_t((modded ? 1 : 0) | (ranked ? 2 : 0) | ((g_live.flags & kFlagMatchmaking) ? 4 : 0)));
++  v.push_back(uint8_t((modded ? 1 : 0) | (ranked ? 2 : 0) | ((g_live.flags & kFlagMatchmaking) ? 4 : 0) |
++                     (priv ? 8 : 0)));
 +  rex::system::eoslan::SetLiveAdvert(Hex(v));
 +}
 +
@@ -9037,7 +9050,7 @@ index 0000000..3b45e7d
 +  std::vector<std::pair<uint32_t, uint32_t>> contexts;
 +  std::vector<std::pair<uint32_t, std::vector<uint8_t>>> properties;
 +  std::string name;
-+  bool modded = true, ranked = false;
++  bool modded = true, ranked = false, priv = false;
 +};
 +bool ParseAdvert(const std::string& text, Advert& a) {
 +  const auto v = Unhex(text);
@@ -9070,6 +9083,7 @@ index 0000000..3b45e7d
 +    const uint8_t f = v[p++];
 +    a.modded = f & 1;
 +    a.ranked = f & 2;
++    a.priv = f & 8;
 +  }
 +  return true;
 +}
@@ -9090,15 +9104,13 @@ index 0000000..3b45e7d
 +    wanted.push_back({rex::memory::load_and_swap<uint32_t>(c), rex::memory::load_and_swap<uint32_t>(c + 4)});
 +  }
 +  const bool me_modded = rex::system::online::Modded();
-+  bool ranked_search = false;
-+  for (auto& [id, value] : wanted) ranked_search |= id == kContextGameType && value == 0;
-+  if (me_modded && ranked_search) {
++  if (me_modded && !session_id) {
 +    static std::string told;
 +    const std::string reason = rex::system::online::ModdedReason();
 +    if (told != reason) {
 +      told = reason;
-+      rex::system::online::Notice("Ranked matches need an unmodded game. Turn off: " + reason +
-+                                  ". Player Match lets modded games play together.");
++      rex::system::online::Notice("Public matches need an unmodded game. Turn off: " + reason +
++                                  ". Mods work in a Private Party with invited friends.");
 +    }
 +  }
 +  uint32_t other_kind = 0;
@@ -9117,17 +9129,17 @@ index 0000000..3b45e7d
 +      for (auto& [aid, avalue] : a.contexts)
 +        if (aid == id && avalue != value) ok = false;
 +    if (!ok) continue;
-+    // Modded and unmodded games never meet in public matches; ranked is
-+    // unmodded only.
-+    if (a.modded != me_modded || (a.ranked && a.modded) || (me_modded && (a.ranked || ranked_search))) {
++    // Public matches are unmodded games only; Private Parties are joined by
++    // invite (XSessionSearchByID above), never found by a search.
++    if (me_modded || a.modded || a.priv) {
 +      ++other_kind;
 +      continue;
 +    }
 +    found.push_back(std::move(a));
 +  }
 +  if (other_kind)
-+    REXLOG_INFO("LIVE {}: {} session(s) hidden (this game is {}; modded and unmodded games don't meet in public "
-+                "matches)", what, other_kind, me_modded ? "modded" : "unmodded");
++    REXLOG_INFO("LIVE {}: {} session(s) hidden (this game is {}; public matches are unmodded games only, private "
++                "parties are joined by invite)", what, other_kind, me_modded ? "modded" : "unmodded");
 +  std::string wanted_text;
 +  for (auto& [id, value] : wanted) wanted_text += fmt::format(" {:X}={}", id, value);
 +  REXLOG_INFO("LIVE {}: {} advert(s) online, {} match (search contexts:{}; this game {})", what, texts.size(),
@@ -9174,6 +9186,15 @@ index 0000000..3b45e7d
 +  rex::memory::store_and_swap<uint32_t>(base + 0, count);
 +  rex::memory::store_and_swap<uint32_t>(base + 4, count ? results_ptr + 8 : 0);
 +  return count;
++}
++
++// The host's advert for this session id says it is a Private Party (joining).
++bool AdvertIsPrivate(const uint8_t* info) {
++  for (const auto& t : rex::system::eoslan::LiveAdverts(0)) {
++    Advert a;
++    if (ParseAdvert(t.text, a) && std::memcmp(a.info, info, 8) == 0) return a.priv;
++  }
++  return false;
 +}
 +
 +}  // namespace
@@ -10670,10 +10691,10 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..6977a79
+index 0000000..00294cf
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,1837 @@
+@@ -0,0 +1,1859 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -10876,7 +10897,9 @@ index 0000000..6977a79
 +std::map<std::string, std::string> applied_attrs;       // last sent to Epic
 +bool attrs_busy = false;
 +std::string my_puid, my_proof;
-+std::atomic<bool> enforce_clean{false};
++// Mods only in private play: outside a Private Party (a Live session whose
++// slots are all invite-only) game packets only flow between unmodded games.
++std::atomic<bool> private_session{false};
 +bool owner_online = false;  // the verified owner is on the virtual LAN (or is this game)
 +
 +// Invites (lobby > INVITE tab). The sender publishes the member attributes
@@ -11735,6 +11758,7 @@ index 0000000..6977a79
 +}
 +
 +void Receive() {
++  bool me_modded = false, me_checked = false;
 +  for (int i = 0; i < 256; ++i) {
 +    EOS_P2P_ReceivePacketOptions r{};
 +    r.ApiVersion = EOS_P2P_RECEIVEPACKET_API_LATEST;
@@ -11766,7 +11790,26 @@ index 0000000..6977a79
 +          if (pi) pi->imposter = true;
 +        }
 +      }
-+      if (!why && enforce_clean && (!pi || pi->modded)) why = pi ? "modded game (this is an unmodded public match)" : "not checked yet";
++      // Mods, trainers and cheat tools only in a Private Party: public Live
++      // matches and System Link are unmodded games only (chat always passes).
++      if (!why && !private_session && h.dst_port != kChatPort) {
++        if (!me_checked) { me_modded = rex::system::online::Modded(); me_checked = true; }
++        if (me_modded) {
++          why = "this game is modded (mods only work in a Private Party)";
++          static auto told = std::chrono::steady_clock::time_point{};
++          const auto now = std::chrono::steady_clock::now();
++          if (told == std::chrono::steady_clock::time_point{} || now - told > std::chrono::seconds(60)) {
++            told = now;
++            rex::system::online::Notice("Public matches and System Link need an unmodded game. Turn off: " +
++                                        rex::system::online::ModdedReason() +
++                                        ". Mods work in a Private Party with invited friends.");
++          }
++        } else if (!pi) {
++          why = "not checked yet";
++        } else if (pi->modded) {
++          why = "modded game (mods only work in a Private Party)";
++        }
++      }
 +      if (why) {
 +        if (pi && !pi->logged_drop) {
 +          pi->logged_drop = true;
@@ -12396,11 +12439,11 @@ index 0000000..6977a79
 +  return true;
 +}
 +
-+// While this game hosts an unmodded public Live match, modded players'
-+// packets are dropped (they can't join it).
-+void SetEnforceClean(bool on) {
-+  if (enforce_clean.exchange(on) != on)
-+    REXSYS_INFO("EOS LAN: unmodded-only mode {}", on ? "on (hosting an unmodded public match)" : "off");
++// In a Private Party (hosted or joined) modded and unmodded games play
++// together; everywhere else game packets only flow between unmodded games.
++void SetPrivateSession(bool on) {
++  if (private_session.exchange(on) != on)
++    REXSYS_INFO("EOS LAN: {}", on ? "Private Party - mods allowed" : "public play - unmodded games only");
 +}
 +
 +// A packet from the game (host-order address / ports).
@@ -12513,7 +12556,7 @@ index 0000000..6977a79
 +}
 diff --git a/src/system/eos_lan_off.cpp b/src/system/eos_lan_off.cpp
 new file mode 100644
-index 0000000..06b32b7
+index 0000000..7a0818a
 --- /dev/null
 +++ b/src/system/eos_lan_off.cpp
 @@ -0,0 +1,68 @@
@@ -12565,7 +12608,7 @@ index 0000000..06b32b7
 +int SendInvites(const std::vector<uint64_t>&) { return -1; }
 +bool AcceptPendingInvite() { return false; }
 +bool AcceptedInvite(uint64_t&, uint8_t[60]) { return false; }
-+void SetEnforceClean(bool) {}
++void SetPrivateSession(bool) {}
 +void Send(uint32_t, uint16_t, uint16_t, const uint8_t*, size_t) {}
 +
 +}  // namespace rex::system::eoslan

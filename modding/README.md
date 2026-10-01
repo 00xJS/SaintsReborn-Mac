@@ -203,6 +203,27 @@ DLL, compile it as a 64-bit Windows DLL with any compiler and add
   rate when you press F9.
 - **Example: file replacement** is a template for file mods.
 
+## Mods and online play
+
+Mods, trainers and cheat tools work in story co-op and in a **Private Party**
+(Multiplayer > Create Private Party, friends join by invite). Public matches
+(Player and Ranked) and System Link are for unmodded games; a modded game
+can't host, find or join them, and shows which mods to turn off.
+
+Mods that only change how the game looks are fine everywhere. The game checks
+what each mod actually changes when it starts (see `mods\wml.log`, lines
+starting with "Fair play"):
+
+- textures (`.peg_xbox2`) and fonts (`.vf3_*`), as loose files, in replaced
+  packfiles or written by a patch script;
+- the time-of-day lighting (`time_of_day.xtbl`), as long as it keeps at least
+  the game's fog and makes nights no brighter than the game's;
+- code mods (`main.lua` or a DLL) only in versions that were reviewed for it
+  (Modern Look is). Any other script or code counts as modded.
+
+Anything else a mod changes (handling, weapons, animations, maps, scripts ...)
+makes it private play only.
+
 ## Rules
 
 Don't put unmodified game files, recompiled game code or game executables in a

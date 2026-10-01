@@ -6,6 +6,7 @@
 #include <cstring>
 #include "world_studio_bridge.h"
 #include "online_integrity.h"
+#include "discord_presence.h"
 #include "saintsrow_config.h"
 #include "saintsrow_init.h"
 #include "fps_overlay.h"
@@ -860,6 +861,8 @@ public:
         wml::Start(runtime_->memory()->virtual_membase());
         // Online fair play: modded or not, cheat-tool watch, online notices.
         sr::StartOnlineIntegrity(exe_dir);
+        // Discord status ("Playing Saints Reborn", what and how long).
+        sr::StartDiscordPresence(exe_dir, runtime_->memory()->virtual_membase());
 
         spdlog::default_logger()->flush();
 

@@ -20,6 +20,14 @@ class Packfile {
   // Decompressed contents of a file. Names are case-insensitive.
   bool Read(const std::string& name, std::string& out) const;
 
+  // By position (0 .. Count()-1): name, decompressed contents, and the bytes
+  // as stored in the file (compressed or not; for condensed packfiles the
+  // decompressed bytes). Used to tell which files a mod's packfile changes.
+  size_t Count() const { return entries_.size(); }
+  const std::string& NameAt(size_t i) const { return entries_[i].name; }
+  bool ReadAt(size_t i, std::string& out) const;
+  bool StoredAt(size_t i, const uint8_t*& data, size_t& size) const;
+
   // Writes a copy of the packfile with some files replaced (keys are file
   // names as returned by Names()).
   bool Save(const std::filesystem::path& path, const std::map<std::string, std::string>& replacements,

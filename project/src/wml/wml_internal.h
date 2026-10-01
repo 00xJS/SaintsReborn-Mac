@@ -61,6 +61,23 @@ std::filesystem::path RunPatchScripts(const std::vector<ModInfo>& mods,
                                       const std::filesystem::path& game_dir,
                                       const std::filesystem::path& cache_dir);
 
+// Files inside packfiles that patch scripts replaced (this start, or the
+// cached run they reuse): which mod, which packfile (relative to the game
+// folder) and which file in it.
+struct PatchWrite {
+  std::string mod_id;
+  std::string pack;
+  std::string name;
+};
+const std::vector<PatchWrite>& PatchWrites();
+
+// Fair play (fair_play.cpp): checks in the background which enabled mods only
+// change how the game looks (textures, fonts, the time-of-day lighting
+// without less fog or brighter nights) or are approved code mods. Call after
+// RunPatchScripts.
+void StartFairCheck(const std::vector<ModInfo>& mods, const std::filesystem::path& game_dir,
+                    const std::filesystem::path& cache_dir);
+
 // Pushes the value of wml.setting(name, default) (arguments 1 and 2) and
 // returns 1. Shared by patch scripts and script mods.
 int PushSetting(lua_State* L, const std::vector<std::pair<std::string, std::string>>& settings);

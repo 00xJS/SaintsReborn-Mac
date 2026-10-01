@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rex::filesystem {
@@ -35,6 +36,12 @@ bool KeyTaken(int virtual_key);
 std::string OverlayText();
 // The game's own text over the view (e.g. online notices), shown with it.
 void SetHostOverlayText(const std::string& text);
+// Fair play check of the enabled mods (fair_play.cpp): false while it still
+// runs; then, per enabled mod (not the built-in parts), its folder name and
+// why it is private play only ("" = it only changes how the game looks).
+bool FairCheckResults(std::vector<std::pair<std::string, std::string>>& results);
+// The game's own text (SetHostOverlayText), drawn as an in-game notice panel.
+std::string HostOverlayText();
 // In-game chat (chat.cpp): keep the overlay drawn while chat shows; mute the
 // mods' keys while the player types.
 void SetChatVisible(bool visible);

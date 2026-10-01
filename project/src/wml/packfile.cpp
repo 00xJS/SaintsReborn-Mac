@@ -139,6 +139,26 @@ int Packfile::Find(const std::string& name) const {
 
 bool Packfile::Contains(const std::string& name) const { return Find(name) >= 0; }
 
+bool Packfile::ReadAt(size_t i, std::string& out) const {
+  return i < entries_.size() && Read(entries_[i].name, out);
+}
+
+bool Packfile::StoredAt(size_t i, const uint8_t*& data, size_t& size) const {
+  if (i >= entries_.size()) return false;
+  const Entry& e = entries_[i];
+  if (condensed_) {
+    if (uint64_t(e.fields[2]) + e.fields[4] > blob_.size()) return false;
+    data = &blob_[e.fields[2]];
+    size = e.fields[4];
+    return true;
+  }
+  const uint32_t stored = compressed_ ? e.fields[5] : e.fields[4];
+  if (e.stored_offset + stored > data_.size()) return false;
+  data = &data_[e.stored_offset];
+  size = stored;
+  return true;
+}
+
 bool Packfile::Read(const std::string& name, std::string& out) const {
   int index = Find(name);
   if (index < 0) return false;

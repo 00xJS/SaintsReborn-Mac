@@ -488,6 +488,8 @@ void SetHostOverlayText(const std::string& text) {
       }
     }
     if (!found) g_overlay_texts.emplace_back(&host_owner, text);
+    for (auto& t : g_overlay_texts)
+      if (t.first == &host_owner && !t.second.empty()) t.second.insert(0, 1, '\x02');  // not mod text
     shown = AnyOverlayTextLocked();
     changed_visibility = before != shown;
   }
@@ -530,11 +532,17 @@ std::string OverlayText() {
   std::lock_guard<std::mutex> lock(g_overlay_mutex);
   std::string all;
   for (const auto& t : g_overlay_texts) {
-    if (t.second.empty() || t.second[0] == '\x01') continue;
+    if (t.second.empty() || t.second[0] == '\x01' || t.second[0] == '\x02') continue;
     if (!all.empty()) all += "\n\n";
     all += t.second;
   }
   return all;
+}
+std::string HostOverlayText() {
+  std::lock_guard<std::mutex> lock(g_overlay_mutex);
+  for (const auto& t : g_overlay_texts)
+    if (!t.second.empty() && t.second[0] == '\x02') return t.second.substr(1);
+  return {};
 }
 bool KeyTaken(int vk) {
   return vk > 0 && vk < 256 && g_keys_taken[vk].load(std::memory_order_relaxed);
@@ -676,6 +684,11 @@ void Initialize(const fs::path& exe_dir, const fs::path& game_dir,
   // Always run, so outdated patched packfiles are cleaned up.
   fs::path patched = RunPatchScripts(g_mods, game_dir, g_mods_dir / ".cache");
   if (!patched.empty()) mount(patched, "WML", "the patched packfiles");
+  // Which of the player's mods may be used in public online play.
+  std::vector<ModInfo> player_mods;
+  for (const auto& mod : g_mods)
+    if (std::find(core_ids.begin(), core_ids.end(), mod.id) == core_ids.end()) player_mods.push_back(mod);
+  StartFairCheck(player_mods, game_dir, g_mods_dir / ".cache");
 }
 
 void Start(uint8_t* guest_base) {

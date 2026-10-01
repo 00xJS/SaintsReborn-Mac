@@ -1,5 +1,6 @@
 // Keyboard and mouse controls (kbm.cpp).
 #pragma once
+#include <cstdint>
 
 namespace sr {
 
@@ -9,5 +10,9 @@ double GetMouseSensitivity();
 
 // Mouse wheel input from the host window (positive = wheel up).
 void AddMouseWheel(int delta);
+// Game state for the Discord status: the player drives a vehicle / the pause
+// menu is open.
+bool PlayerDriving(uint8_t* base);
+bool PauseMenuOpen();
 
 }  // namespace sr

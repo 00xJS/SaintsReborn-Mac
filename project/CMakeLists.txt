@@ -83,6 +83,8 @@ set(SAINTSROW_SOURCES
     src/wml/lua_mods.cpp
     src/wml/packfile.cpp
     src/wml/patch_phase.cpp
+    src/wml/fair_play.cpp
+    src/discord_presence.cpp
     ${REXGLUE_SHARE_DIR}/rex_app.cpp
     res/saintsreborn.rc
 )

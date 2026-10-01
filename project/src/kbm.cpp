@@ -436,6 +436,10 @@ Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation, bool map_
 
 }  // namespace
 
+// For the Discord status (discord_presence.cpp).
+bool sr::PlayerDriving(uint8_t* base) { return PlayerInVehicle(base); }
+bool sr::PauseMenuOpen() { return g_pause_menu_active; }
+
 double sr::GetMouseSensitivity() { return g_sensitivity.load(std::memory_order_relaxed); }
 
 void sr::SetMouseSensitivity(double sensitivity) {

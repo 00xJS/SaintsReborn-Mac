@@ -57,7 +57,9 @@ struct PatchedPack {
 struct PatchState {
   fs::path game_dir;
   std::map<std::string, PatchedPack> packs;  // key: lower-case relative path
+  std::vector<PatchWrite> writes;
 };
+std::vector<PatchWrite> g_patch_writes;
 
 PatchState* g_state = nullptr;
 
@@ -156,6 +158,7 @@ int LPackfileWrite(lua_State* L) {
   }
   pp->replacements[name] = std::string(data, size);
   pp->mods.insert(ContextOf(L)->mod->name);
+  g_state->writes.push_back({ContextOf(L)->mod->id, pp->relative_path, name});
   return 0;
 }
 
@@ -304,8 +307,11 @@ int PushSetting(lua_State* L, const std::vector<std::pair<std::string, std::stri
   return 1;
 }
 
+const std::vector<PatchWrite>& PatchWrites() { return g_patch_writes; }
+
 fs::path RunPatchScripts(const std::vector<ModInfo>& mods, const fs::path& game_dir,
                          const fs::path& cache_dir) {
+  g_patch_writes.clear();
   fs::path files_dir = cache_dir / "files";
   std::error_code ec;
   bool any_patch = false;
@@ -331,6 +337,11 @@ fs::path RunPatchScripts(const std::vector<ModInfo>& mods, const fs::path& game_
         outputs.push_back(output);
       }
       if (all_there) {
+        std::ifstream wf(cache_dir / "keys" / "_patch_writes.txt");
+        for (std::string w; std::getline(wf, w);) {
+          const size_t a = w.find('\t'), b = a == std::string::npos ? a : w.find('\t', a + 1);
+          if (b != std::string::npos) g_patch_writes.push_back({w.substr(0, a), w.substr(a + 1, b - a - 1), w.substr(b + 1)});
+        }
         Log("WML", "Patch scripts skipped: mods and game files unchanged since the last start (" +
                        std::to_string(outputs.size()) + " cached packfile(s))");
         return outputs.empty() ? fs::path() : files_dir;
@@ -346,6 +357,12 @@ fs::path RunPatchScripts(const std::vector<ModInfo>& mods, const fs::path& game_
     if (mod.has_patch()) all_ok = RunPatchScript(mod) && all_ok;
   }
   g_state = nullptr;
+  g_patch_writes = state.writes;
+  {
+    fs::create_directories(cache_dir / "keys", ec);
+    std::ofstream wf(cache_dir / "keys" / "_patch_writes.txt", std::ios::trunc);
+    for (const auto& w : state.writes) wf << w.mod_id << '\t' << w.pack << '\t' << w.name << '\n';
+  }
 
   // Build (or reuse) the patched packfiles, and remove outdated ones.
   std::vector<std::string> output_names;
