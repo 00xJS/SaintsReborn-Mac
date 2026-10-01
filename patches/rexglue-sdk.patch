@@ -8580,7 +8580,7 @@ index 3f9422d..943eea5 100644
  
  void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
 diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
-index 2b222da..fb03baf 100644
+index 2b222da..a6cdeb0 100644
 --- a/src/kernel/xam/apps/xgi_app.cpp
 +++ b/src/kernel/xam/apps/xgi_app.cpp
 @@ -10,9 +10,36 @@
@@ -8774,7 +8774,49 @@ index 2b222da..fb03baf 100644
        return X_E_SUCCESS;
      }
      case 0x000B001D: {
-@@ -439,6 +562,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -274,21 +397,26 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       return X_E_SUCCESS;
+     }
+     case 0x000B001B: {
+-      assert_true(!buffer_length || buffer_length == 32);
+-
+-      uint32_t user_index = memory::load_and_swap<uint32_t>(buffer + 0);
+-      uint32_t num_session_ids = memory::load_and_swap<uint32_t>(buffer + 4);
+-      uint32_t session_ids_ptr = memory::load_and_swap<uint32_t>(buffer + 8);
+-      uint32_t results_buffer_size = memory::load_and_swap<uint32_t>(buffer + 12);
+-      uint32_t search_results_ptr = memory::load_and_swap<uint32_t>(buffer + 16);
+-      uint32_t reserved1 = memory::load_and_swap<uint32_t>(buffer + 20);
+-      uint32_t reserved2 = memory::load_and_swap<uint32_t>(buffer + 24);
+-      uint32_t reserved3 = memory::load_and_swap<uint32_t>(buffer + 28);
+-
+-      REXKRNL_DEBUG("XSessionSearchByID({}, {:08X}, {:08X}, {:08X}, {:08X}, {}, {}, {})",
+-                    user_index, num_session_ids, session_ids_ptr, results_buffer_size,
+-                    search_results_ptr, reserved1, reserved2, reserved3);
+-
++      // XSessionSearchByID(user, XNKID session id, *cbResults, results,
++      // overlapped), packed by the game as 20 bytes: +0 user, +4 session id
++      // (8 bytes), +12 results buffer size, +16 results. A party member
++      // follows the host into the match with it (the match session is a new
++      // one); answering "no results" left them on the loading screen.
++      if (!buffer || buffer_length < 20) return X_E_INVALIDARG;
++      uint8_t session_id[8];
++      std::memcpy(session_id, buffer + 4, 8);
++      const uint32_t results_buffer_size = memory::load_and_swap<uint32_t>(buffer + 12);
++      const uint32_t search_results_ptr = memory::load_and_swap<uint32_t>(buffer + 16);
++      if (REXCVAR_GET(xam_signed_in_to_live)) {
++        const uint32_t n = FillSearchResults(memory_, search_results_ptr, results_buffer_size, 1, 0, 0,
++                                             "XSessionSearchByID", session_id);
++        if (!n) {
++          static int told = 0;
++          if (told++ < 20)
++            REXLOG_INFO("LIVE XSessionSearchByID {:016X}: not in the online list (yet)",
++                        memory::load_and_swap<uint64_t>(buffer + 4));
++        }
++      }
+       return X_E_SUCCESS;
+     }
+     case 0x000B001F: {
+@@ -439,6 +567,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            non_weighted_search_properties_ptr, non_weighted_search_contexts_ptr, results_buffer_size,
            search_results_ptr, num_users, weighted_search);
  
@@ -8787,10 +8829,10 @@ index 2b222da..fb03baf 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..2489dd7
+index 0000000..d235b14
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,293 @@
 +// Saints Reborn: Xbox Live sessions over Epic Online Services (included by
 +// xgi_app.cpp; only active with the cvar xam_signed_in_to_live).
 +//
@@ -8987,7 +9029,8 @@ index 0000000..2489dd7
 +// (8 bytes) arrays at the end of the buffer. Returns the number written.
 +template <class Mem>
 +uint32_t FillSearchResults(Mem* memory, uint32_t results_ptr, uint32_t buffer_size,
-+                           uint32_t max_results, uint32_t num_ctx, uint32_t ctx_ptr, const char* what) {
++                           uint32_t max_results, uint32_t num_ctx, uint32_t ctx_ptr, const char* what,
++                           const uint8_t* session_id = nullptr) {
 +  const auto texts = rex::system::eoslan::LiveAdverts(3000);
 +  std::vector<Advert> found;
 +  std::vector<std::pair<uint32_t, uint32_t>> wanted;
@@ -9012,6 +9055,12 @@ index 0000000..2489dd7
 +    Advert a;
 +    if (!ParseAdvert(t.text, a)) continue;
 +    a.modded = a.modded || t.modded;  // the host's own published state counts too
++    if (session_id) {
++      // XSessionSearchByID: exactly that session (the match an invited / party
++      // player follows the host into); no lobby filters.
++      if (std::memcmp(a.info, session_id, 8) == 0) found.push_back(std::move(a));
++      continue;
++    }
 +    bool ok = true;
 +    for (auto& [id, value] : wanted)
 +      for (auto& [aid, avalue] : a.contexts)
