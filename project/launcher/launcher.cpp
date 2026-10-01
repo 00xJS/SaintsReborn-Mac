@@ -14,6 +14,7 @@
 #include <uxtheme.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -205,8 +206,69 @@ void Move(int delta) {
   SetFocus(g_app.list);
 }
 
+// Online play (Epic) comes as a separate online pack that setup downloads
+// (scripts\online_pack.ps1). When that download failed, or the files were
+// replaced, the pack is fetched again here before the game starts: a few
+// seconds, at most once every 30 minutes, nothing at all when it's installed.
+std::string ReadSmallFile(const fs::path& path) {
+  std::string text;
+  if (FILE* f = _wfopen(path.c_str(), L"rb")) {
+    char buffer[256];
+    size_t n = fread(buffer, 1, sizeof(buffer), f);
+    fclose(f);
+    text.assign(buffer, n);
+  }
+  while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
+  return text;
+}
+
+void RepairOnlinePack() {
+  const fs::path dist = g_app.exe_dir;
+  const std::string wanted = ReadSmallFile(dist / L"online_pack_wanted.txt");
+  if (wanted.empty()) return;  // not set up by setup.ps1 (own Epic files or a developer build)
+  std::error_code ec;
+  if (ReadSmallFile(dist / L"online_pack.txt") == wanted &&
+      fs::exists(dist / L"core" / L"WhompaysCoop" / L"eos" / L"EOSSDK-Win64-Shipping.dll", ec))
+    return;
+  const fs::path script = dist.parent_path() / L"scripts" / L"online_pack.ps1";
+  if (!fs::exists(script, ec)) return;
+  const fs::path tried = dist / L"online_pack_try.txt";
+  const auto last = fs::last_write_time(tried, ec);
+  if (!ec && fs::file_time_type::clock::now() - last < std::chrono::minutes(30)) return;
+  if (FILE* f = _wfopen(tried.c_str(), L"wb")) fclose(f);
+
+  wchar_t system_dir[MAX_PATH] = {};
+  GetSystemDirectoryW(system_dir, MAX_PATH);
+  const std::wstring powershell = std::wstring(system_dir) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
+  std::wstring command = L"\"" + powershell + L"\" -NoProfile -ExecutionPolicy Bypass -File \"" +
+                         script.wstring() + L"\" -Root \"" + dist.parent_path().wstring() + L"\" -Dist \"" +
+                         dist.wstring() + L"\"";
+  STARTUPINFOW startup = {sizeof(startup)};
+  PROCESS_INFORMATION process = {};
+  if (!CreateProcessW(powershell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                      dist.c_str(), &startup, &process))
+    return;
+  CloseHandle(process.hThread);
+  SetWindowTextW(g_app.window, L"Whompay's Mod Loader - getting the online play files...");
+  HCURSOR old_cursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::seconds(120)) {
+    if (MsgWaitForMultipleObjects(1, &process.hProcess, FALSE, 100, QS_ALLINPUT) == WAIT_OBJECT_0) break;
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_LBUTTONDOWN || msg.message == WM_KEYDOWN || msg.message == WM_LBUTTONUP) continue;
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+  CloseHandle(process.hProcess);
+  SetCursor(old_cursor);
+  SetWindowTextW(g_app.window, kTitle);
+}
+
 void Play() {
   SaveList();
+  RepairOnlinePack();
   fs::path game = g_app.exe_dir / kGameExe;
   std::error_code ec;
   if (!fs::exists(game, ec)) {
