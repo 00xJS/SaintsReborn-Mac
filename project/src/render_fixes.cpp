@@ -2278,10 +2278,11 @@ PPC_FUNC(sub_8223E8D8) {
     mesh_census::MaybeLog();
 }
 extern "C" void __imp__sub_825DB738(PPCContext& ctx, uint8_t* base);
+void sr_vfetch_patch(PPCContext& ctx, uint8_t* base);  // shadow_probe.cpp (native_vfetch.inc): memo
 PPC_FUNC(sub_825DB738) {
-    if (!mesh_census::On()) { __imp__sub_825DB738(ctx, base); return; }
+    if (!mesh_census::On()) { sr_vfetch_patch(ctx, base); return; }
     const uint64_t t0 = __rdtsc();
-    __imp__sub_825DB738(ctx, base);
+    sr_vfetch_patch(ctx, base);
     const uint64_t dt = __rdtsc() - t0;
     std::lock_guard lock(mesh_census::mutex);
     ++mesh_census::patch_calls; mesh_census::patch_ticks += dt;

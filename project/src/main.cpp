@@ -72,6 +72,9 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 
+// fast_fma.h (x86-64-v2 build): file "fma_crt" = always the C runtime's fma.
+extern "C" bool sr_fma_use_crt = false;
+
 // ============================================================================
 // Guest memory safety net
 // ============================================================================
@@ -522,6 +525,18 @@ public:
         rex::RegisterLogLevelCallback();
         REXLOG_INFO("Saints Row starting");
         REXLOG_INFO("  Game directory: {}", game_dir.string());
+        if (FILE* ff = std::fopen("fma_crt", "rb")) {
+            std::fclose(ff);
+            sr_fma_use_crt = true;
+            REXLOG_INFO("fma: C runtime fma for every call (fma_crt)");
+        }
+        // Test aid: the C runtime's fma without FMA3, as on CPUs from 2012 and
+        // earlier (only matters for saintsrow_compat.exe).
+        if (FILE* sf = std::fopen("crt_fma_soft", "rb")) {
+            std::fclose(sf);
+            _set_FMA3_enable(0);
+            REXLOG_INFO("fma: C runtime FMA3 path off (crt_fma_soft)");
+        }
         {
             // What this PC has (weak laptops get lighter defaults, see hw_profile.h).
             const sr::HwProfile& hw = sr::GetHwProfile();

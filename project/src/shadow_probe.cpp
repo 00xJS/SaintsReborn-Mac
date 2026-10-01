@@ -1,4 +1,4 @@
-// Probe of the character/vehicle shadow-volume builder sub_822447B0 (the
+// Native version + probe of the character/vehicle shadow-volume builder sub_822447B0 (the
 // hottest function of the game's job worker threads: 11-26 % of each worker's
 // samples). Only active with a file named "shadow_probe" next to the exe:
 // logs every 10 s "SHADOW PROBE: calls/s, us per call, CPU ms/s, by caller
@@ -22,6 +22,7 @@
 
 #include <rex/logging.h>
 #include <rex/ppc/function.h>
+#include <rex/ppc/intrinsics.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -90,8 +91,20 @@ std::string Top(std::unordered_map<uint32_t, Stat>& m, double freq) {
 
 }  // namespace
 
+#include "native_shadow.inc"
+#include "native_math.inc"
+#include "native_vfetch.inc"
+
 PPC_FUNC(sub_822447B0) {
   if (!Enabled()) {
+    const int mode = native_shadow::Mode();
+    if (mode == 1) {
+      if (native_shadow::Run(ctx, base, true)) return;
+    } else if (mode == 2) {
+      static thread_local uint32_t tick = 0;
+      if ((++tick & 31) == 0) { native_shadow::Verify(ctx, base); return; }
+      if (native_shadow::Run(ctx, base, true)) return;
+    }
     __imp__sub_822447B0(ctx, base);
     return;
   }
@@ -122,4 +135,65 @@ PPC_FUNC(sub_822447B0) {
     g_by_vtable.clear();
     g_window_start = t0;
   }
+}
+
+// ALLOC PROBE (file "alloc_probe"): the game's VirtualAlloc wrapper 8271B570(r3 address, r4 size,
+// r5 type, r6 protect) and VirtualFree 82717360(r3 address, r4 size, r5 type): calls and bytes per
+// second by caller, every 10 s ("ALLOC PROBE"). Committing memory the game had decommitted makes the
+// runtime zero it.
+extern "C" void __imp__sub_8271B570(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82717360(PPCContext& ctx, uint8_t* base);
+namespace alloc_probe {
+bool On() {
+  static const bool on = [] {
+    FILE* f = std::fopen("alloc_probe", "rb");
+    if (f) std::fclose(f);
+    return f != nullptr;
+  }();
+  return on;
+}
+struct S { uint64_t calls = 0, bytes = 0, ticks = 0; };
+std::mutex m;
+std::unordered_map<uint64_t, S> by;  // (kind << 63) | (type << 32) | caller
+int64_t start = 0;
+void Add(bool fr, uint32_t caller, uint32_t type, uint32_t size, int64_t dt) {
+  std::lock_guard<std::mutex> lock(m);
+  auto& s = by[(uint64_t(fr) << 63) | (uint64_t(type) << 32) | caller];
+  ++s.calls; s.bytes += size; s.ticks += dt;
+  const int64_t now = Now();
+  if (!start) start = now;
+  static const double freq = double(Freq());
+  const double secs = (now - start) / freq;
+  if (secs >= 10.0) {
+    std::vector<std::pair<uint64_t, S>> v(by.begin(), by.end());
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second.ticks > b.second.ticks; });
+    std::string t;
+    for (size_t i = 0; i < v.size() && i < 10; ++i) {
+      char buf[160];
+      std::snprintf(buf, sizeof buf, " [%s %08X type %08X: %.0f/s, %.1f MB/s, %.1f ms/s]",
+                    (v[i].first >> 63) ? "free" : "alloc", uint32_t(v[i].first),
+                    uint32_t(v[i].first >> 32) & 0x7FFFFFFF, v[i].second.calls / secs,
+                    v[i].second.bytes / secs / 1048576.0, v[i].second.ticks * 1e3 / freq / secs);
+      t += buf;
+    }
+    REXLOG_INFO("ALLOC PROBE 10 s:{}", t);
+    by.clear();
+    start = now;
+  }
+}
+}  // namespace alloc_probe
+
+PPC_FUNC(sub_8271B570) {
+  if (!alloc_probe::On()) { __imp__sub_8271B570(ctx, base); return; }
+  const uint32_t caller = uint32_t(ctx.lr), size = ctx.r4.u32, type = ctx.r5.u32;
+  const int64_t t0 = Now();
+  __imp__sub_8271B570(ctx, base);
+  alloc_probe::Add(false, caller, type, size, Now() - t0);
+}
+PPC_FUNC(sub_82717360) {
+  if (!alloc_probe::On()) { __imp__sub_82717360(ctx, base); return; }
+  const uint32_t caller = uint32_t(ctx.lr), size = ctx.r4.u32, type = ctx.r5.u32;
+  const int64_t t0 = Now();
+  __imp__sub_82717360(ctx, base);
+  alloc_probe::Add(true, caller, type, size, Now() - t0);
 }

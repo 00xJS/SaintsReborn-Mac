@@ -25,6 +25,10 @@ namespace {
 
 constexpr uint32_t kMagic = 0x51890ACE;
 constexpr uint32_t kAlign = 2048;
+// Mod replacements are normally already compressed payloads (DDS/PEG, audio,
+// video, and so on).  Z_BEST_COMPRESSION can spend minutes trying to shave a
+// negligible amount from them while the game appears to be hung at startup.
+constexpr int kReplacementCompressionLevel = Z_BEST_SPEED;
 
 uint32_t Align(uint64_t x) { return static_cast<uint32_t>((x + kAlign - 1) & ~uint64_t(kAlign - 1)); }
 
@@ -188,7 +192,7 @@ bool Packfile::Save(const std::filesystem::path& path,
       uLongf bound = compressBound(static_cast<uLong>(raw.size()));
       blobs[i].resize(bound);
       if (compress2(blobs[i].data(), &bound, reinterpret_cast<const Bytef*>(raw.data()),
-                    static_cast<uLong>(raw.size()), 9) != Z_OK) {
+                    static_cast<uLong>(raw.size()), kReplacementCompressionLevel) != Z_OK) {
         if (error) *error = "compression failed for " + entries[i].name;
         return false;
       }
@@ -252,7 +256,8 @@ bool Packfile::SaveCondensed(const std::filesystem::path& path,
       // The per-file compressed size is kept meaningful for the replaced file.
       uLongf bound = compressBound(static_cast<uLong>(size));
       std::vector<uint8_t> tmp(bound);
-      if (compress2(tmp.data(), &bound, begin, static_cast<uLong>(size), 9) == Z_OK) {
+      if (compress2(tmp.data(), &bound, begin, static_cast<uLong>(size),
+                    kReplacementCompressionLevel) == Z_OK) {
         entries[i].fields[5] = static_cast<uint32_t>(bound);
       }
     } else {
@@ -270,7 +275,8 @@ bool Packfile::SaveCondensed(const std::filesystem::path& path,
   if (compressed_) {
     uLongf bound = compressBound(static_cast<uLong>(blob.size()));
     stored.resize(bound);
-    if (compress2(stored.data(), &bound, blob.data(), static_cast<uLong>(blob.size()), 9) != Z_OK) {
+    if (compress2(stored.data(), &bound, blob.data(), static_cast<uLong>(blob.size()),
+                  kReplacementCompressionLevel) != Z_OK) {
       if (error) *error = "compression failed";
       return false;
     }

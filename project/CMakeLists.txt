@@ -158,6 +158,10 @@ if(NOT MSVC)
         # For older CPUs (SSE4.2 + POPCNT: Nehalem / Bulldozer and newer, i.e.
         # everything from ~2009 on). Built as saintsrow_compat.exe.
         target_compile_options(saintsrow PRIVATE -march=x86-64-v2)
+        # No FMA3: replace the runtime's slow software std::fma in the
+        # recompiled code with an exact fast path (src/fast_fma.h).
+        set_source_files_properties(${GENERATED_SOURCES} PROPERTIES COMPILE_OPTIONS
+            "-include;${CMAKE_CURRENT_SOURCE_DIR}/src/fast_fma.h")
         # Asked for explicitly = the extra exe for old CPUs next to a v3 one.
         # (auto on an old CPU builds a plain saintsrow.exe.)
         if(SR_CPU_LEVEL STREQUAL "v2")
