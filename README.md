@@ -33,8 +33,6 @@ use the faster one.
 
 - Some textures on the character flicker slightly while rotating them in the
   character creator.
-- Green bars can appear at the edges of the "Welcome to Stilwater" splash.
-- After "Begin Game" the loading screen can sit for a few extra seconds.
 - Only the disc version this port was made with is supported. Setup warns if
   your `default.xex` is different.
 
