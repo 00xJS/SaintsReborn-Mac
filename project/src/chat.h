@@ -12,7 +12,7 @@ struct ChatLine {
   bool system = false;  // a note from the game ("nobody to chat with"), no name
 };
 // Input thread, every input poll: T / typing / Enter / Esc, and new lines.
-void ChatPoll();
+void ChatPoll(bool in_multiplayer = false);  // in_multiplayer: a System Link lobby or a match
 // True while the player types (the game and the mods get no keys).
 bool ChatTyping();
 // For drawing (UI thread): the lines to show now; true + input while typing.

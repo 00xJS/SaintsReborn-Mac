@@ -278,6 +278,20 @@ struct Pad {
 // A live player separates it from the front end. If the overlay is dismissed
 // by a menu action instead of Start, the returning gameplay camera clears the
 // state below.
+// A game screen is open (the game's own test, see the multiplayer note in
+// the input hook): help pop-ups, the taxi and subway maps, shops.
+bool AnyMenuUp(uint8_t* base) {
+  return PPC_LOAD_U32(0x839E0DF8u) != 0 || PPC_LOAD_U32(0x839E0FB0u) != 0 ||
+         PPC_LOAD_U32(0x82FFE434u) != 0 || PPC_LOAD_U32(0x82FFE43Cu) != 0;
+}
+
+// Milliseconds since the gameplay camera last ran (it stops while the game
+// is paused by a screen).
+long long CameraIdleMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                               g_mouse.last_camera).count();
+}
+
 bool UpdatePauseMenuState(uint8_t* base, uint16_t controller_buttons) {
   const bool player_loaded = PPC_LOAD_U32(0x8309ABECu) != 0;
   // Inside the pause menu Esc is Back (B), so only M / Start close it here;
@@ -287,8 +301,22 @@ bool UpdatePauseMenuState(uint8_t* base, uint16_t controller_buttons) {
   if (!player_loaded) {
     g_pause_menu_active = false;
   } else if (toggle_down && !g_pause_toggle_down) {
-    g_pause_menu_active = !g_pause_menu_active;
-    g_pause_toggled = std::chrono::steady_clock::now();
+    // A screen that already paused the game (a help pop-up, a map) takes this
+    // Start press itself; no pause menu opens. Counting it as the pause menu
+    // made Esc the Back key, and pop-ups that missed the first press could
+    // then only be closed with M.
+    const bool screen_open = !g_pause_menu_active && AnyMenuUp(base) && CameraIdleMs() > 200 &&
+                             !PPC_LOAD_U8(0x8370D991u) && !PPC_LOAD_U8(0x8370D990u);
+    if (screen_open) {
+      static int logged = 0;
+      if (logged++ < 20)
+        REXLOG_INFO("KBM: Start went to an open screen | slot A {:08X} slot B {:08X} E434 {:08X} E43C {:08X} vehicle {}",
+                    PPC_LOAD_U32(0x839E0DF8u), PPC_LOAD_U32(0x839E0FB0u), PPC_LOAD_U32(0x82FFE434u),
+                    PPC_LOAD_U32(0x82FFE43Cu), PlayerInVehicle(base));
+    } else {
+      g_pause_menu_active = !g_pause_menu_active;
+      g_pause_toggled = std::chrono::steady_clock::now();
+    }
   }
   g_pause_toggle_down = toggle_down;
   return g_pause_menu_active;
@@ -296,9 +324,11 @@ bool UpdatePauseMenuState(uint8_t* base, uint16_t controller_buttons) {
 
 bool g_esc_released = false;
 
-Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation) {
+Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation, bool map_screen) {
   Pad p;
-  const bool in_vehicle = PlayerInVehicle(base);
+  // Taxi and subway maps open while sitting in the vehicle: on-foot keys
+  // there (W/S move the cursor instead of driving).
+  const bool in_vehicle = PlayerInVehicle(base) && !map_screen;
   auto press = [&](bool down, uint16_t button) {
     if (down) p.buttons |= button;
   };
@@ -378,7 +408,8 @@ Pad ReadKeyboard(uint8_t* base, bool pause_menu, bool player_creation) {
     press(Down('Q'), X_INPUT_GAMEPAD_B);
     press(Down('E'), X_INPUT_GAMEPAD_Y);
   }
-  if (Down(VK_LBUTTON)) p.rt = 0xFF;
+  if (map_screen) press(Down(VK_LBUTTON), X_INPUT_GAMEPAD_A);
+  else if (Down(VK_LBUTTON)) p.rt = 0xFF;
   press(Down(VK_MBUTTON) || Down('V'), X_INPUT_GAMEPAD_RIGHT_THUMB);
 
   if (in_vehicle) {
@@ -497,7 +528,11 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
     return;
   }
   sr::CoopMenuPoll(base);
-  sr::ChatPoll();
+  {
+    // Top-level mode 6 is the System Link lobby, the matches run above it.
+    const int32_t mode = int32_t(PPC_LOAD_U32(0x827D578Cu));
+    sr::ChatPoll(mode >= 6 && mode <= 31 && PPC_LOAD_U32(0x8309ABECu) != 0);
+  }
   if (const uint16_t auto_buttons = AutoBenchButtons(base)) {
     state->gamepad = {};
     state->gamepad.buttons = auto_buttons;
@@ -603,7 +638,22 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
     pause_menu = false;
     g_pause_menu_active = false;
   }
-  Pad k = ReadKeyboard(base, pause_menu, player_creation);
+  // A screen open while sitting in a vehicle with the game paused: the taxi
+  // and subway maps. They get the pause map's controls (WASD and the mouse
+  // move the cursor, the wheel zooms, a click picks).
+  const bool map_screen = !pause_menu && !player_creation && !multiplayer && PPC_LOAD_U32(0x8309ABECu) != 0 &&
+                          PlayerInVehicle(base) && any_menu_up() && CameraIdleMs() > 200 &&
+                          !PPC_LOAD_U8(0x8370D991u) && !PPC_LOAD_U8(0x8370D990u);
+  {
+    static bool logged_map = false;
+    if (map_screen != logged_map) {
+      logged_map = map_screen;
+      REXLOG_INFO("KBM: vehicle screen {} | slot A {:08X} slot B {:08X} E434 {:08X} E43C {:08X}", map_screen ? "open" : "closed",
+                  PPC_LOAD_U32(0x839E0DF8u), PPC_LOAD_U32(0x839E0FB0u), PPC_LOAD_U32(0x82FFE434u),
+                  PPC_LOAD_U32(0x82FFE43Cu));
+    }
+  }
+  Pad k = ReadKeyboard(base, pause_menu, player_creation, map_screen);
   if (!pause_menu) {
     // Q / E still held from a multiplayer menu (see above): no Back / Y / radial.
     if (mp_block_q && !Down(VK_BACK)) k.buttons &= uint16_t(~X_INPUT_GAMEPAD_B);
@@ -658,7 +708,7 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
     // the selection around, so menus there are keys only (W/S, arrows).
     g_mouse.wheel_y = 0;
     g_mouse.dx = g_mouse.dy = 0;
-  } else if (pause_menu) {
+  } else if (pause_menu || map_screen) {
     // The pause map normally pans with the left stick (and therefore WASD).
     // Feed mouse motion into those same axes; held WASD wins on either axis.
     int mx = 0, my = 0;

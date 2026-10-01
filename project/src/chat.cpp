@@ -192,7 +192,7 @@ void PollIncoming() {
 
 }  // namespace
 
-void sr::ChatPoll() {
+void sr::ChatPoll(bool in_multiplayer) {
   std::lock_guard<std::mutex> lock(g_mutex);
   PollIncoming();
 #ifdef _WIN32
@@ -205,7 +205,7 @@ void sr::ChatPoll() {
     // (the keys are still held)
   } else if (!g_typing) {
     const bool t = Pressed('T');
-    if (t && Focused() && !sr::CoopDialogOpen() && (LobbyPlayers() > 0 || InSession() || CoopRunning())) {
+    if (t && Focused() && !sr::CoopDialogOpen() && (in_multiplayer || LobbyPlayers() > 0 || InSession() || CoopRunning())) {
       g_typing = true;
       g_input.clear();
       ResetKeys();

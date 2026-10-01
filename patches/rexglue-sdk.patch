@@ -10670,7 +10670,7 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..d04c540
+index 0000000..6977a79
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
 @@ -0,0 +1,1837 @@
@@ -11779,8 +11779,10 @@ index 0000000..d04c540
 +    by_ip[h.src_ip] = peer;  // learn who has this virtual IP
 +    if (h.dst_ip != my_ip && h.dst_ip != 0xFFFFFFFFu && h.dst_ip != 0x0A4DFFFFu) continue;
 +    if (blocked_host_ip != 0 && h.src_ip == blocked_host_ip) continue;  // host's map isn't here (SrMapCheck)
-+    if (session_active && h.dst_ip == my_ip) {
-+      recent_seen.insert(peer);   // played together
++    if (h.dst_ip == my_ip) {
++      // Game packets addressed to this game: the other player is in the same
++      // lobby / match (System Link lobbies have no session until a match).
++      if (session_active) recent_seen.insert(peer);   // played together
 +      std::lock_guard<std::mutex> cl(chat_mutex);
 +      session_peer_seen[h.src_ip] = std::chrono::steady_clock::now();
 +    }
@@ -12268,8 +12270,6 @@ index 0000000..d04c540
 +    session_host_ip = 0;
 +    session_active = false;
 +    blocked_host_ip = 0;
-+    std::lock_guard<std::mutex> cl(chat_mutex);
-+    session_peer_seen.clear();
 +  }
 +}
 +
@@ -12457,7 +12457,7 @@ index 0000000..d04c540
 +std::vector<uint32_t> ChatTargets() {
 +  using namespace rex::system::eoslan;
 +  std::vector<uint32_t> out;
-+  if (!session_active || state != State::Ready) return out;
++  if (state != State::Ready) return out;
 +  const auto now = std::chrono::steady_clock::now();
 +  std::lock_guard<std::mutex> cl(chat_mutex);
 +  for (auto& [ip, seen] : session_peer_seen)
