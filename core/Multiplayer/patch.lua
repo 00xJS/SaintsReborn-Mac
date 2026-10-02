@@ -1,9 +1,9 @@
 -- Multiplayer (built in, dist\core\Multiplayer):
 -- 1. The main menu's XBOX LIVE item is renamed MULTIPLAYER (US_Strings.txt:
 --    UTF-16 LE, one KEY=Text per line).
--- 2. Quick Match waits until a map's Optimal_Players_Min players are in
---    (4 or 8 in multiplayer_levels.xtbl): lowered to min_players, so a few
---    friends can play.
+-- 2. multiplayer_levels.xtbl Optimal_Players_Min (4 or 8) lowered to
+--    min_players. (The game reads it nowhere we know of; the real matchmaking
+--    start gate is mp_auto_mm_conn_needed, set in main.lua.)
 -- 3. Co-op allows a party of 1 in Player Match (MaxStandardParty in
 --    multiplayer_mode.xtbl, "Co-op needs at most 1 player(s)"): raised to
 --    coop_party.

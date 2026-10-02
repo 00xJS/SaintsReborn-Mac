@@ -8878,7 +8878,7 @@ index 2b222da..018a9d2 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..d3946e8
+index 0000000..600c158
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
 @@ -0,0 +1,316 @@
@@ -9078,7 +9078,7 @@ index 0000000..d3946e8
 +    const uint8_t nn = v[p++];
 +    if (need(nn)) { a.name.assign(reinterpret_cast<const char*>(&v[p]), nn); p += nn; }
 +  }
-+  a.modded = true;  // version 1: an older game, no fair-play check
++  a.modded = false;  // version 1: an older game (no fair-play flag): allowed, else updated players never find it
 +  if (v[0] == 2 && need(1)) {
 +    const uint8_t f = v[p++];
 +    a.modded = f & 1;
@@ -9199,10 +9199,10 @@ index 0000000..d3946e8
 +
 +}  // namespace
 diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
-index 3593403..22b588e 100644
+index 3593403..6f72017 100644
 --- a/src/kernel/xam/apps/xlivebase_app.cpp
 +++ b/src/kernel/xam/apps/xlivebase_app.cpp
-@@ -10,8 +10,68 @@
+@@ -10,8 +10,71 @@
   */
  
  #include <rex/kernel/xam/apps/xlivebase_app.h>
@@ -9247,6 +9247,9 @@ index 3593403..22b588e 100644
 +// Online layer trace (only with xam_signed_in_to_live): each XGI / XLiveBase
 +// message id is logged the first 20 times.
 +REXCVAR_DECLARE(bool, xam_signed_in_to_live);
++namespace rex::system::online {
++uint64_t OnlineXuid();  // online_identity.cpp
++}
 +namespace {
 +// The game's XOnline wrappers (sub_8265B900) pack their arguments as 16-byte
 +// records {u32 type, u32 pad, s64 value}, the count at +512; the pack is the
@@ -9271,7 +9274,7 @@ index 3593403..22b588e 100644
  
  namespace rex {
  namespace kernel {
-@@ -29,6 +89,12 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -29,6 +92,12 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
                                              uint32_t buffer_length) {
    // NOTE: buffer_length may be zero or valid.
    auto buffer = memory_->TranslateVirtual(buffer_ptr);
@@ -9284,7 +9287,7 @@ index 3593403..22b588e 100644
    switch (message) {
      case 0x00058004: {
        // Called on startup, seems to just return a bool in the buffer.
-@@ -51,20 +117,70 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -51,20 +120,74 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        return 0x80151802;  // ERROR_CONNECTION_INVALID
      }
      case 0x00058020: {
@@ -9357,7 +9360,11 @@ index 3593403..22b588e 100644
 +      }
 +      uint8_t* out = memory_->TranslateVirtual<uint8_t*>(info_ptr);
 +      std::memset(out, 0, 88);
-+      memory::store_and_swap<uint64_t>(out + 0, REX_KERNEL_STATE()->user_profile()->xuid());
++      // Invitee = the XUID the game gets from XamUserGetXUID(mask 7):
++      // sub_8236C8F0 looks for the local user with that XUID.
++      memory::store_and_swap<uint64_t>(out + 0, REXCVAR_GET(xam_signed_in_to_live)
++                                                    ? rex::system::online::OnlineXuid()
++                                                    : REX_KERNEL_STATE()->user_profile()->xuid());
 +      memory::store_and_swap<uint64_t>(out + 8, inviter);
 +      PutBE32(out + 16, REX_KERNEL_STATE()->title_id());
 +      std::memcpy(out + 20, session, 60);
@@ -9367,7 +9374,7 @@ index 3593403..22b588e 100644
      }
      case 0x00058046: {
        // Required to be successful for 4D530910 to detect signed-in profile
-@@ -73,6 +189,95 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -73,6 +196,95 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        REXKRNL_DEBUG("XLiveBaseUnk58046({:08X}, {:08X}) unimplemented", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
      }
@@ -9463,7 +9470,7 @@ index 3593403..22b588e 100644
      case 0x00058037: {
        REXKRNL_DEBUG("XPresenceInitialize({:08X}, {:08X})", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
-@@ -89,3 +294,116 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -89,3 +301,116 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
  }  // namespace xam
  }  // namespace kernel
  }  // namespace rex
@@ -9639,7 +9646,7 @@ index 9dcab94..759fdc9 100644
  
  u32 XamGetPrivateEnumStructureFromHandle_entry(u32 handle, mapped_u32 out_object_ptr) {
 diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
-index 58e36a4..488491a 100644
+index 58e36a4..1634d2b 100644
 --- a/src/kernel/xam/xam_net.cpp
 +++ b/src/kernel/xam/xam_net.cpp
 @@ -12,7 +12,19 @@
@@ -9906,7 +9913,7 @@ index 58e36a4..488491a 100644
  }
  
  u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
-@@ -476,26 +618,123 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
+@@ -476,25 +618,145 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
    rex::string::copy_truncating(string_out, "666.666.666.666", string_size);
  }
  
@@ -9922,8 +9929,11 @@ index 58e36a4..488491a 100644
 +  if (NetLogOnce("XNetXnAddrToInAddr"))
 +    REXKRNL_INFO("NET XNetXnAddrToInAddr {:08X}", ntohl(xn_addr->ina.s_addr));
 +  return 0;
-+}
-+
+ }
+ 
+-// Does the reverse of the above.
+-// FIXME: Arguments may not be correct.
+-u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, mapped_void in_addr, ppc_ptr_t<XNADDR> xn_addr,
 +// rt13: the session key (XNKID) of the current system-link session. A real console
 +// returns the key of the secure association with that address from XNetInAddrToXnAddr;
 +// the host's join handler (sub_8235B3C0) compares it with its session key and refuses
@@ -9938,11 +9948,8 @@ index 58e36a4..488491a 100644
 +  g_have_kid = true;
 +  REXKRNL_INFO("NET key {}: {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}", why, g_kid[0], g_kid[1], g_kid[2],
 +               g_kid[3], g_kid[4], g_kid[5], g_kid[6], g_kid[7]);
- }
- 
--// Does the reverse of the above.
--// FIXME: Arguments may not be correct.
--u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, mapped_void in_addr, ppc_ptr_t<XNADDR> xn_addr,
++}
++
 +u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, ppc_ptr_t<XNADDR> xn_addr,
                                      mapped_void xid) {
 -  return 1;
@@ -9958,15 +9965,38 @@ index 58e36a4..488491a 100644
 +  const uint8_t mac[6] = {0x00, 0x22, uint8_t(ip >> 24), uint8_t(ip >> 16), uint8_t(ip >> 8), uint8_t(ip)};
 +  std::memcpy(xn_addr->abEnet, mac, 6);
 +  bool kid_written = false;
++  const char* kid_from = "none";
 +  if (xid) {
-+    std::lock_guard<std::mutex> lock(g_kid_mutex);
-+    if (g_have_kid) {
-+      std::memcpy(static_cast<void*>(xid), g_kid, 8);
++    // The only caller that uses the key is the host's join handler
++    // (sub_8235B3C0): it compares it with the key of the session it hosts now,
++    // [[0x8370EC98] + 5]. "The last key created" was wrong as soon as the game
++    // had more than one session (party lobby + match): after a match, or when
++    // the same lobby re-invited a player, the joiner was refused and saw
++    // "host disconnected". Give that session's key; else the last one.
++    uint8_t cur[8] = {};
++    bool have_cur = false;
++    if (auto* mem = REX_KERNEL_MEMORY()) {
++      const uint32_t session = rex::memory::load_and_swap<uint32_t>(mem->TranslateVirtual(0x8370EC98u));
++      if (session >= 0x80000000u && session < 0xA0000000u) {
++        std::memcpy(cur, mem->TranslateVirtual<uint8_t*>(session + 5), 8);
++        for (int i = 0; i < 8; ++i) have_cur |= cur[i] != 0;
++      }
++    }
++    if (have_cur) {
++      std::memcpy(static_cast<void*>(xid), cur, 8);
 +      kid_written = true;
++      kid_from = "current session";
++    } else {
++      std::lock_guard<std::mutex> lock(g_kid_mutex);
++      if (g_have_kid) {
++        std::memcpy(static_cast<void*>(xid), g_kid, 8);
++        kid_written = true;
++        kid_from = "last created";
++      }
 +    }
 +  }
-+  if (NetLogOnce("XNetInAddrToXnAddr", 24))
-+    REXKRNL_INFO("NET XNetInAddrToXnAddr {:08X} (key {})", ip, kid_written ? "given" : "none");
++  if (NetLogOnce("XNetInAddrToXnAddr", 40))
++    REXKRNL_INFO("NET XNetInAddrToXnAddr {:08X} (key {})", ip, kid_written ? kid_from : "none");
 +  return 0;
  }
  
@@ -10018,14 +10048,14 @@ index 58e36a4..488491a 100644
 +  for (int i = 0; i < 16; ++i) info[44 + i] = uint8_t((v * 2654435761u) >> (i * 3));
 +  rex::system::eoslan::Activate("Xbox Live session created");
 +  RememberKid(info, "live session");
- }
- 
++}
++
 +u32 NetDll_XNetRegisterKey_entry(u32 caller, mapped_void xnkid, mapped_void xnkey) {
 +  if (NetLogOnce("XNetRegisterKey")) REXKRNL_INFO("NET XNetRegisterKey");
 +  rex::system::eoslan::Activate("System Link key registered");
 +  RememberKid(static_cast<void*>(xnkid), "registered");
 +  return 0;
-+}
+ }
 +u32 NetDll_XNetUnregisterKey_entry(u32 caller, mapped_void xnkid) {
 +  if (NetLogOnce("XNetUnregisterKey")) REXKRNL_INFO("NET XNetUnregisterKey");
 +  return 0;
@@ -10035,11 +10065,10 @@ index 58e36a4..488491a 100644
 +  return 2;  // XNET_CONNECT_STATUS_CONNECTED
 +}
 +u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) { return 0; }
-+
+ 
  // https://github.com/ILOVEPIE/Cxbx-Reloaded/blob/master/src/CxbxKrnl/EmuXOnline.h#L39
  struct XEthernetStatus {
-   static const uint32_t XNET_ETHERNET_LINK_ACTIVE = 0x01;
-@@ -506,7 +745,9 @@ struct XEthernetStatus {
+@@ -506,7 +768,9 @@ struct XEthernetStatus {
  };
  
  u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
@@ -10050,7 +10079,7 @@ index 58e36a4..488491a 100644
  }
  
  u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
-@@ -559,7 +800,106 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
+@@ -559,7 +823,111 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
  
  u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
                                 u32 flags) {
@@ -10064,6 +10093,11 @@ index 58e36a4..488491a 100644
 +    uint8_t kid[8];
 +    std::memcpy(kid, id.as<uint8_t*>(), 8);
 +    rex::system::eoslan::SetQosData(kid, data.as<uint8_t*>(), std::min<uint32_t>(uint32_t(data_size), 100));
++  } else if ((uint32_t(flags) & 0x10) && id.guest_address()) {
++    // XNET_QOS_LISTEN_RELEASE: that session is gone.
++    uint8_t kid[8];
++    std::memcpy(kid, id.as<uint8_t*>(), 8);
++    rex::system::eoslan::SetQosData(kid, nullptr, 0);
 +  }
 +  return 0;  // accepted (probes are answered by XNetQosLookup on the other side)
 +}
@@ -10158,7 +10192,7 @@ index 58e36a4..488491a 100644
  }
  
  u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
-@@ -591,7 +931,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
+@@ -591,7 +959,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
      XThread::SetLastError(error);
      return -1;
    }
@@ -10168,7 +10202,7 @@ index 58e36a4..488491a 100644
    return socket->handle();
  }
  
-@@ -605,6 +946,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+@@ -605,6 +974,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
  
    // TODO: Absolutely delete this object. It is no longer valid after calling
    // closesocket.
@@ -10176,7 +10210,7 @@ index 58e36a4..488491a 100644
    socket->Close();
    socket->ReleaseHandle();
    return 0;
-@@ -652,6 +994,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
+@@ -652,6 +1022,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
    }
  
    X_STATUS status = socket->IOControl(cmd, arg_ptr);
@@ -10185,7 +10219,7 @@ index 58e36a4..488491a 100644
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
      return -1;
-@@ -670,6 +1014,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
+@@ -670,6 +1042,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
    }
  
    N_XSOCKADDR_IN native_name(name);
@@ -10194,7 +10228,7 @@ index 58e36a4..488491a 100644
    X_STATUS status = socket->Bind(&native_name, namelen);
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
-@@ -795,9 +1141,71 @@ struct host_set {
+@@ -795,9 +1169,71 @@ struct host_set {
    }
  };
  
@@ -10266,7 +10300,7 @@ index 58e36a4..488491a 100644
    host_set host_readfds = {};
    fd_set native_readfds = {};
    if (readfds) {
-@@ -825,8 +1233,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+@@ -825,8 +1261,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
                                               reinterpret_cast<int32_t*>(&timeout.tv_usec));
      timeout_in = &timeout;
    }
@@ -10336,7 +10370,7 @@ index 58e36a4..488491a 100644
    if (readfds) {
      host_readfds.UpdateFrom(&native_readfds);
      host_readfds.Store(readfds);
-@@ -852,7 +1319,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
+@@ -852,7 +1347,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
      return -1;
    }
  
@@ -10351,7 +10385,7 @@ index 58e36a4..488491a 100644
  }
  
  u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
-@@ -871,6 +1344,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
+@@ -871,6 +1372,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
    uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
    int ret =
        socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
@@ -10371,7 +10405,7 @@ index 58e36a4..488491a 100644
  
    if (from_ptr) {
      from_ptr->sin_family = native_from.sin_family;
-@@ -916,9 +1402,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
+@@ -916,9 +1430,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
    }
  
    N_XSOCKADDR_IN native_to(to_ptr);
@@ -10421,7 +10455,7 @@ index 58e36a4..488491a 100644
  u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
    const uint8_t max_fd_count = std::min((uint32_t)fd_set->fd_count, uint32_t(64));
    for (uint8_t i = 0; i < max_fd_count; i++) {
-@@ -1030,25 +1556,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
+@@ -1030,25 +1584,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
  REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
  REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
  REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
@@ -10455,7 +10489,7 @@ index 58e36a4..488491a 100644
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
-@@ -1098,5 +1624,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
+@@ -1098,5 +1652,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
  REX_EXPORT_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
  REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
  REX_EXPORT_STUB(__imp__NetDll_getpeername);
@@ -10500,7 +10534,7 @@ index 9abcef6..feec2b3 100644
    // Handle ref is incremented, so return that.
    uint32_t handle = listener->handle();
 diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
-index 8778066..67a86e0 100644
+index 8778066..62a577c 100644
 --- a/src/kernel/xam/xam_user.cpp
 +++ b/src/kernel/xam/xam_user.cpp
 @@ -14,8 +14,11 @@
@@ -10515,16 +10549,31 @@ index 8778066..67a86e0 100644
  #include <rex/logging.h>
  #include <rex/math.h>
  #include <rex/hook.h>
-@@ -30,6 +33,8 @@
+@@ -30,6 +33,12 @@
  
  REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
  
 +REXCVAR_DECLARE(bool, xam_signed_in_to_live);
 +
++namespace rex::system::online {
++uint64_t OnlineXuid();  // online_identity.cpp
++}
++
  namespace rex {
  namespace kernel {
  namespace xam {
-@@ -273,6 +278,11 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
+@@ -51,6 +60,10 @@ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+       if (type & (2 | 4)) {
+         // maybe online profile?
+         xuid = user_profile->xuid();
++        // Multiplayer asks with mask 7 (sub_82716BD0): each player needs
++        // their own XUID there (teams, "is this me" checks). Mask 3 (profile
++        // settings) and everything else keep the profile XUID.
++        if ((type_mask & 4) && REXCVAR_GET(xam_signed_in_to_live)) xuid = rex::system::online::OnlineXuid();
+         result = X_E_SUCCESS;
+       } else if (type & 1) {
+         // maybe offline profile?
+@@ -273,6 +286,11 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index, ui
      if (setting && setting->is_set) {
        setting->Append(&out_setting->data, &out_stream);
      }
@@ -10536,7 +10585,7 @@ index 8778066..67a86e0 100644
      ++out_setting;
    }
  
-@@ -348,6 +358,8 @@ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_
+@@ -348,6 +366,8 @@ u32 XamUserWriteProfileSettings_entry(u32 title_id, u32 user_index, u32 setting_
            // Data pointer was NULL, so just fill with zeroes
            bytes.resize(binary_size, 0);
          }
@@ -10545,7 +10594,7 @@ index 8778066..67a86e0 100644
          user_profile->AddSetting(
              std::make_unique<xam::UserProfile::BinarySetting>(setting.setting_id, bytes));
        } break;
-@@ -383,7 +395,13 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
+@@ -383,7 +403,13 @@ u32 XamUserCheckPrivilege_entry(u32 user_index, u32 mask, mapped_u32 out_value)
    }
  
    // If we deny everything, games should hopefully not try to do stuff.
@@ -10560,7 +10609,7 @@ index 8778066..67a86e0 100644
    return X_ERROR_SUCCESS;
  }
  
-@@ -595,6 +613,72 @@ class XStaticAchievementEnumerator : public XEnumerator {
+@@ -595,6 +621,72 @@ class XStaticAchievementEnumerator : public XEnumerator {
    size_t current_item_ = 0;
  };
  
@@ -10633,7 +10682,7 @@ index 8778066..67a86e0 100644
  u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 xuid, u32 flags,
                                               u32 offset, u32 count, mapped_u32 buffer_size_ptr,
                                               mapped_u32 handle_ptr) {
-@@ -761,7 +845,7 @@ REX_EXPORT_STUB(__imp__XamUserAddRecentPlayer);
+@@ -761,7 +853,7 @@ REX_EXPORT_STUB(__imp__XamUserAddRecentPlayer);
  REX_EXPORT_STUB(__imp__XamUserAllowedToPostToSocialNetwork);
  REX_EXPORT_STUB(__imp__XamUserCreateAvatarAssetEnumerator);
  REX_EXPORT_STUB(__imp__XamUserCreatePlayerEnumerator);
@@ -10691,10 +10740,10 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..00294cf
+index 0000000..06b8fae
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,1859 @@
+@@ -0,0 +1,1881 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -10769,7 +10818,7 @@ index 0000000..00294cf
 +
 +struct LiveAdvertEntry {
 +  std::string text;
-+  bool modded = true;  // the member's own SRMOD (missing = older game = modded)
++  bool modded = false;  // the member's own SRMOD (only "modded ..." counts; missing = older game = allowed)
 +  std::string name;
 +};
 +
@@ -10779,7 +10828,7 @@ index 0000000..00294cf
 +struct OnlinePlayer {
 +  uint64_t xuid = 0;      // made from the Epic ProductUserId (XuidForPuid)
 +  std::string puid, name, where;
-+  bool modded = true;
++  bool modded = false;
 +  bool in_session = false;  // hosting or in a Live lobby (invites can go to them... and they can be joined)
 +  uint8_t session_id[8] = {};
 +  bool online = true;       // FriendsList: false = a friend who isn't playing now
@@ -10886,7 +10935,7 @@ index 0000000..00294cf
 +  std::string puid, name, mod_text;
 +  bool owner = false;      // valid owner proof
 +  bool imposter = false;   // reserved name (in SRNAME or seen in its packets) without a proof
-+  bool modded = true;
++  bool modded = false;     // only true once the member publishes "modded ..."
 +  bool logged_drop = false;
 +  std::string where;       // SRWHERE: what they are doing
 +  std::string freq;        // SRFREQ: friend requests it sends
@@ -11418,9 +11467,12 @@ index 0000000..00294cf
 +    pi.name = name;
 +    if (reserved && !owner) pi.imposter = true;
 +    if (owner) pi.imposter = false;
-+    const bool modded = !found || mod.rfind("clean", 0) != 0;
++    // Only a game that says it is modded counts as modded. A missing SRMOD (an older version of the game, or its
++    // attributes not read yet) used to count as modded too: after the fair play update, updated players then
++    // dropped everyone still on the old version and loaded into public matches alone (2026-10-02).
++    const bool modded = found && !mod.empty() && mod.rfind("clean", 0) != 0;
 +    if (modded != pi.modded || mod != pi.mod_text)
-+      REXSYS_INFO("EOS LAN: {} ('{}') is {}", pi.puid, name, modded ? (mod.empty() ? std::string("an older game (counts as modded)") : mod) : std::string("unmodded"));
++      REXSYS_INFO("EOS LAN: {} ('{}') is {}", pi.puid, name, modded ? mod : (mod.empty() ? std::string("an older game (allowed)") : std::string("unmodded")));
 +    pi.modded = modded;
 +    pi.mod_text = mod;
 +    std::string text;
@@ -11459,10 +11511,18 @@ index 0000000..00294cf
 +    {
 +      bool qos_found = false;
 +      const std::string qos = attr(m, "SRQOS", qos_found);
-+      const size_t colon = qos.find(':');
-+      if (colon == 16) {
-+        std::lock_guard<std::mutex> il(invite_mutex);
-+        qos_by_kid[qos.substr(0, 16)] = UnhexBytes(qos.substr(17));
++      // "<kid>:<data>" entries separated by ';' (a host can have its party
++      // lobby and a match session at the same time).
++      size_t start = 0;
++      while (start < qos.size()) {
++        size_t end = qos.find(';', start);
++        if (end == std::string::npos) end = qos.size();
++        const std::string entry = qos.substr(start, end - start);
++        if (entry.size() > 17 && entry[16] == ':') {
++          std::lock_guard<std::mutex> il(invite_mutex);
++          qos_by_kid[entry.substr(0, 16)] = UnhexBytes(entry.substr(17));
++        }
++        start = end + 1;
 +      }
 +    }
 +    bool inv_found = false;
@@ -11804,9 +11864,7 @@ index 0000000..00294cf
 +                                        rex::system::online::ModdedReason() +
 +                                        ". Mods work in a Private Party with invited friends.");
 +          }
-+        } else if (!pi) {
-+          why = "not checked yet";
-+        } else if (pi->modded) {
++        } else if (pi && pi->modded) {
 +          why = "modded game (mods only work in a Private Party)";
 +        }
 +      }
@@ -12250,13 +12308,26 @@ index 0000000..00294cf
 +  return s;
 +}
 +// XNetQosListen(SET_DATA) on the host: publish the data for its session id.
++// Up to 4 sessions (newest first): the party lobby keeps its data while a
++// match session publishes its own, so a player invited back into the same
++// lobby still gets the lobby's data. data == nullptr removes that session.
 +void SetQosData(const uint8_t kid[8], const uint8_t* data, size_t n) {
 +  static const char* d = "0123456789abcdef";
++  static std::vector<std::pair<std::string, std::string>> entries;  // under invite_mutex
 +  std::string hex;
-+  for (size_t i = 0; i < n && i < 100; ++i) { hex += d[data[i] >> 4]; hex += d[data[i] & 15]; }
++  for (size_t i = 0; data && i < n && i < 100; ++i) { hex += d[data[i] >> 4]; hex += d[data[i] & 15]; }
 +  std::lock_guard<std::mutex> il(invite_mutex);
-+  my_qos = KidHex(kid) + ":" + hex;
-+  REXSYS_INFO("EOS LAN: QoS data for session {} published ({} byte(s))", KidHex(kid), n);
++  const std::string k = KidHex(kid);
++  for (auto it = entries.begin(); it != entries.end();) it = it->first == k ? entries.erase(it) : it + 1;
++  if (data && n) entries.insert(entries.begin(), {k, hex});
++  if (entries.size() > 4) entries.resize(4);
++  my_qos.clear();
++  for (const auto& e : entries) {
++    if (!my_qos.empty()) my_qos += ';';
++    my_qos += e.first + ":" + e.second;
++  }
++  if (data && n) REXSYS_INFO("EOS LAN: QoS data for session {} published ({} byte(s), {} session(s))", k, n, entries.size());
++  else REXSYS_INFO("EOS LAN: QoS data for session {} removed", k);
 +}
 +// XNetQosLookup on the joiner: the host's data for that session id.
 +bool QosData(const uint8_t kid[8], std::vector<uint8_t>& out) {
@@ -12663,10 +12734,10 @@ index bd43109..7c34df1 100644
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
 diff --git a/src/system/online_identity.cpp b/src/system/online_identity.cpp
 new file mode 100644
-index 0000000..5400792
+index 0000000..1990170
 --- /dev/null
 +++ b/src/system/online_identity.cpp
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,264 @@
 +/**
 + * Saints Reborn online identity and fair play (used by eos_lan.cpp, the
 + * Xbox Live session layer and the user profile).
@@ -12878,6 +12949,56 @@ index 0000000..5400792
 +void Notice(const std::string& text) {
 +  rex::cvar::SetFlagByName("online_notice", text);
 +  REXSYS_INFO("Online notice: {}", text);
++}
++
++// This player's Xbox Live XUID for multiplayer (XamUserGetXUID with the
++// online bit). Everyone used to report the profile XUID 0xB13EBABEBABEBABE,
++// and the game matches players by XUID: the match start message (type 83)
++// hands out teams as {xuid, team} pairs, so with equal XUIDs every player got
++// the last team ("all on one team"), and each game took every player for
++// itself. The profile XUID stays as it is (saves use it); this one is made
++// once per install (dist\online_id.txt, random) and mixed with the PC and
++// Windows user names, so a copied folder still gives a different XUID.
++uint64_t OnlineXuid() {
++  static std::once_flag once;
++  static uint64_t xuid = 0;
++  std::call_once(once, [] {
++    const std::string path = ExeDir() + "online_id.txt";
++    std::string id;
++    if (FILE* f = std::fopen(path.c_str(), "rb")) {
++      char buf[64] = {};
++      const size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
++      std::fclose(f);
++      for (size_t i = 0; i < n; ++i)
++        if ((buf[i] >= '0' && buf[i] <= '9') || (buf[i] >= 'a' && buf[i] <= 'f')) id += buf[i];
++    }
++    if (id.size() < 16) {
++      uint8_t rnd[16] = {};
++      if (BCryptGenRandom(nullptr, rnd, sizeof(rnd), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
++        const uint64_t t = GetTickCount64() ^ (uint64_t(GetCurrentProcessId()) << 32);
++        std::memcpy(rnd, &t, 8);
++      }
++      id = Hex(rnd, sizeof(rnd));
++      if (FILE* f = std::fopen(path.c_str(), "wb")) {
++        std::fwrite(id.data(), 1, id.size(), f);
++        std::fclose(f);
++      }
++    }
++    char pc[MAX_COMPUTERNAME_LENGTH + 1] = {};
++    DWORD pc_n = sizeof(pc);
++    GetComputerNameA(pc, &pc_n);
++    char user[256] = {};
++    DWORD user_n = 0;
++    if (const DWORD got = GetEnvironmentVariableA("USERNAME", user, sizeof(user)); got && got < sizeof(user)) user_n = got;
++    const std::string key = "saintsreborn-xuid|" + id + "|" + std::string(pc, pc_n) + "|" + std::string(user, user_n);
++    uint64_t h = 1469598103934665603ull;
++    for (char c : key) { h ^= uint8_t(c); h *= 1099511628211ull; }
++    // 0x0009 = online (Live) XUID range, like the friend list XUIDs.
++    xuid = 0x0009000000000000ull | (h & 0x0000FFFFFFFFFFFFull);
++    if (xuid == 0x0009000000000000ull) xuid |= 1;
++    REXSYS_INFO("Online: multiplayer XUID {:016X} (profile XUID unchanged)", xuid);
++  });
++  return xuid;
 +}
 +
 +}  // namespace rex::system::online
