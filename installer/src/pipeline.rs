@@ -557,6 +557,10 @@ fn common_cmake_args(tc: &Toolchain) -> Vec<String> {
         }
     }
     v.push(format!("-DCMAKE_MAKE_PROGRAM={}", cm(&ninja_path(tc))));
+    // Only the release C runtime is downloaded: CMake's compiler checks must not
+    // link a Debug program (msvcrtd.lib). Without Visual Studio on the PC the
+    // first configure failed with "could not open 'msvcrtd.lib'".
+    v.push("-DCMAKE_TRY_COMPILE_CONFIGURATION=Release".into());
     v
 }
 
