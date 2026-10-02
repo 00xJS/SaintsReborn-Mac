@@ -94,6 +94,8 @@ std::string Top(std::unordered_map<uint32_t, Stat>& m, double freq) {
 #include "native_shadow.inc"
 #include "native_math.inc"
 #include "native_vfetch.inc"
+#include "native_flush.inc"
+#include "native_clip.inc"
 
 PPC_FUNC(sub_822447B0) {
   if (!Enabled()) {
@@ -183,7 +185,39 @@ void Add(bool fr, uint32_t caller, uint32_t type, uint32_t size, int64_t dt) {
 }
 }  // namespace alloc_probe
 
+// ARENA COMMITS WITHOUT KERNEL ZEROING (2026-10-02). The game's job arenas (82633108 reserve, grown by
+// 82633340 in 64 KB commits, shrunk by 826335C0, released by 82633240) are created and released ~1000x/s and
+// recommit ~300 MB/s; the kernel zero-fills every commit (Memory::Zero) - ~5 % of all busy CPU at the air spot,
+// on the job workers and the main thread. Arena memory below the high-water mark is reused with stale contents
+// anyway, and arenas that need zeros (flag byte +56) memset it themselves, so the commit at 826334A8 gets
+// X_MEM_NOZERO when dist\arena_nozero exists (opt-in); dist\arena_poison = NOZERO and fill with 0xCD (test that nothing
+// relies on zeroed pages).
+namespace arena_fast {
+int Mode() {
+  static const int m = [] {
+    // Opt-in since 2026-10-02 20:30: one GPU device-removed (TDR) happened in an "on" bench run (nz_on3) - not
+    // proven related, but no gain on 28 threads either. File "arena_nozero" = on.
+    int r = 0;
+    if (FILE* f = std::fopen("arena_nozero", "rb")) { std::fclose(f); r = 1; }
+    else if (FILE* f2 = std::fopen("arena_poison", "rb")) { std::fclose(f2); r = 2; }
+    REXLOG_INFO("Arena commits: {}", r == 0 ? "kernel zeroing (original)" : r == 1 ? "no kernel zeroing" :
+                "no kernel zeroing, POISON fill 0xCD (test mode)");
+    return r;
+  }();
+  return m;
+}
+}  // namespace arena_fast
+
 PPC_FUNC(sub_8271B570) {
+  if (uint32_t(ctx.lr) == 0x826334A8u && (ctx.r5.u32 & 0x1000u) && arena_fast::Mode() != 0) {
+    ctx.r5.u64 = ctx.r5.u32 | 0x00800000u;  // X_MEM_NOZERO
+    if (arena_fast::Mode() == 2) {
+      const uint32_t size = ctx.r4.u32;
+      __imp__sub_8271B570(ctx, base);
+      if (ctx.r3.u32) std::memset(base + ctx.r3.u32, 0xCD, size);
+      return;
+    }
+  }
   if (!alloc_probe::On()) { __imp__sub_8271B570(ctx, base); return; }
   const uint32_t caller = uint32_t(ctx.lr), size = ctx.r4.u32, type = ctx.r5.u32;
   const int64_t t0 = Now();

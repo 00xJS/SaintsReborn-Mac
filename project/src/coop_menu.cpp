@@ -28,6 +28,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -83,6 +84,7 @@ int g_mp_name_row = -1;                           // our row in that list
 int g_mp_add_row = -1;                            // "Add Friend" row (friend code row above it)
 std::string g_code_shown;                         // friend code in the row now
 bool g_mp_reselect = false;                       // put the cursor back on our row after a rebuild
+bool g_mp_reselect_minp = false;                  // same for the Players to Start row
 constexpr uint32_t kOptionsTabAdded = 0x822BFCB0u;  // return address of the OPTIONS tab add in sub_822BFA88
 constexpr uint32_t kMultiplayerFlag = 0x8370E9F6u;   // byte, nonzero in multiplayer (other tab set)
 
@@ -92,6 +94,11 @@ uint32_t g_info_text = 0;       // guest UTF-16BE: join code / IP row (kInfoChar
 uint32_t g_name_text = 0;       // guest UTF-16BE: "Player Name: X" row (kInfoChars)
 uint32_t g_code_text = 0;       // guest UTF-16BE: "Friend Code: XXXX-XXXX" row (kInfoChars)
 uint32_t g_addfriend_text = 0;  // guest UTF-16BE: "Add Friend" row (kInfoChars)
+uint32_t g_minp_text = 0;       // guest UTF-16BE: "Players to Start: N" row (kInfoChars)
+uint32_t g_lobby_minp_text = 0; // same, for the lobby GAME list
+int g_lobby_minp_row = -1;      // our row in the lobby GAME list (-1 = not added)
+uint32_t g_lobby_minp_menu = 0; // the list object it was added to
+int g_mp_minp_row = -1;         // that row in the multiplayer OPTIONS list
 constexpr uint32_t kInfoChars = 64;
 int g_pause_first = -1;         // first of our rows in the pause OPTIONS list
 std::vector<Action> g_pause_actions;
@@ -235,9 +242,45 @@ void SetPlayerName(const std::string& name) {
   REXLOG_INFO("Player name set to '{}'", name);
 }
 
+// Players to start a matchmade game (Ranked / Player Match / Quick Match):
+// the host's countdown starts once this many players are connected
+// (console var mp_auto_mm_conn_needed, int 0x827ADF04, game default 4;
+// sub_82362108). Set in MULTIPLAYER > OPTIONS, kept in mp_min_players.txt
+// next to the exe. Only the host's value counts.
+constexpr uint32_t kMinPlayersVar = 0x827ADF04u;
+constexpr int kMinPlayersLow = 2, kMinPlayersHigh = 12;
+int g_min_players = 0;  // 0 = not loaded yet
+int MinPlayers() {
+  if (g_min_players) return g_min_players;
+  int v = 4;  // the game's own default (mp_auto_mm_conn_needed)
+  if (FILE* f = std::fopen("mp_min_players.txt", "rb")) {
+    int x = 0;
+    if (std::fscanf(f, "%d", &x) == 1 && x >= kMinPlayersLow && x <= kMinPlayersHigh) v = x;
+    std::fclose(f);
+  }
+  g_min_players = v;
+  REXLOG_INFO("Multiplayer: matchmade games start with {} player(s) (MULTIPLAYER > OPTIONS)", v);
+  return v;
+}
+void SetMinPlayers(int v) {
+  g_min_players = v;
+  if (FILE* f = std::fopen("mp_min_players.txt", "wb")) {
+    std::fprintf(f, "%d\n", v);
+    std::fclose(f);
+  }
+  REXLOG_INFO("Multiplayer: players to start set to {}", v);
+}
+void ApplyMinPlayers(uint8_t* base) {
+  const uint32_t v = uint32_t(MinPlayers());
+  if (R32(base, kMinPlayersVar) != v) W32(base, kMinPlayersVar, v);
+}
+std::string MinPlayersRowText() {
+  return "Players to Start: " + std::to_string(MinPlayers());
+}
+
 bool EnsureTexts(uint8_t* base) {
   if (g_text[0]) return true;
-  const uint32_t block = REX_KERNEL_STATE()->memory()->SystemHeapAlloc(256 + kInfoChars * 8);
+  const uint32_t block = REX_KERNEL_STATE()->memory()->SystemHeapAlloc(256 + kInfoChars * 12);
   if (!block) return false;
   g_info_text = block + 256;
   W16(base, g_info_text, 0);
@@ -247,6 +290,10 @@ bool EnsureTexts(uint8_t* base) {
   W16(base, g_code_text, 0);
   g_addfriend_text = g_code_text + kInfoChars * 2;
   W16(base, g_addfriend_text, 0);
+  g_minp_text = g_addfriend_text + kInfoChars * 2;
+  W16(base, g_minp_text, 0);
+  g_lobby_minp_text = g_minp_text + kInfoChars * 2;
+  W16(base, g_lobby_minp_text, 0);
   uint32_t at = block;
   for (int i = 0; i < kLabelCount; ++i) {
     g_text[i] = at;
@@ -514,6 +561,7 @@ void Select(PPCContext& ctx, uint8_t* base, uint32_t row) {
 // List finisher: add our row to the main menu.
 PPC_FUNC(sub_8228CAD8) {
   const uint32_t lr = uint32_t(ctx.lr);
+  ApplyMinPlayers(base);  // every menu list build (matchmaking starts from menus)
   if (lr == kMpOptionsDone && sr::PlayersBuilding(base)) {
     // MULTIPLAYER > PLAYERS (online_players.cpp) uses the OPTIONS build.
     sr::PlayersFillList(ctx, base);
@@ -526,11 +574,16 @@ PPC_FUNC(sub_8228CAD8) {
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     g_mp_name_row = -1;
     g_mp_add_row = -1;
+    g_mp_minp_row = -1;
     const uint32_t menu = R32(base, kMenuPointer);
     if (menu && EnsureTexts(base)) {
       WriteText(base, g_name_text, NameRowText(), kInfoChars * 2);
       g_mp_name_row = int(R16(base, menu + 58));
       AddRow(ctx, base, g_name_text);
+      // Matchmaking: players needed before a hosted Ranked / Player Match starts.
+      WriteText(base, g_minp_text, MinPlayersRowText(), kInfoChars * 2);
+      g_mp_minp_row = int(R16(base, menu + 58));
+      AddRow(ctx, base, g_minp_text);
       // Friends (runtime eos_lan.cpp): this player's code, and Add Friend.
       rex::cvar::SetFlagByName("online_wanted", "true");
       g_code_shown = rex::cvar::GetFlagByName("online_friend_code");
@@ -542,8 +595,10 @@ PPC_FUNC(sub_8228CAD8) {
       AddRow(ctx, base, g_addfriend_text);
     }
     __imp__sub_8228CAD8(ctx, base);
-    if (g_mp_reselect && g_mp_name_row >= 0) Select(ctx, base, uint32_t(g_mp_name_row));
+    if (g_mp_reselect_minp && g_mp_minp_row >= 0) Select(ctx, base, uint32_t(g_mp_minp_row));
+    else if (g_mp_reselect && g_mp_name_row >= 0) Select(ctx, base, uint32_t(g_mp_name_row));
     g_mp_reselect = false;
+    g_mp_reselect_minp = false;
     return;
   }
   if (lr == kMainMenuDone && CoopLoaded()) {
@@ -765,6 +820,25 @@ PPC_FUNC(sub_82349018) {
         W32(base, kMenuRequested, kMpOptionsId);  // build the list again (new name)
       } else if (rex::cvar::GetFlagByName("online_friend_code") != g_code_shown) {
         W32(base, kMenuRequested, kMpOptionsId);  // the friend code arrived: show it
+      } else if (g_mp_minp_row >= 0 && R16(base, menu + 62) == uint16_t(g_mp_minp_row) &&
+                 MainConfirmPressed(ctx, base)) {
+        // A: 2 -> 3 -> ... -> 12 -> 2. The row's text is written in place;
+        // the list is built again so the new text shows.
+        int v = MinPlayers() + 1;
+        if (v > kMinPlayersHigh) v = kMinPlayersLow;
+        SetMinPlayers(v);
+        ApplyMinPlayers(base);
+        {
+          rex::CallFrame frame(ctx);
+          frame.ctx.r3.u64 = R32(base, 0x827B05B8u);  // the menu's select sound
+          frame.ctx.r4.u64 = 1;
+          frame.ctx.r5.u64 = 1;
+          __imp__sub_82287FC0(frame.ctx, base);
+        }
+        WriteText(base, g_minp_text, MinPlayersRowText(), kInfoChars * 2);
+        g_mp_reselect_minp = true;
+        W32(base, kMenuRequested, kMpOptionsId);
+        return;
       } else if (g_mp_add_row >= 0 && R16(base, menu + 62) == uint16_t(g_mp_add_row) && MainConfirmPressed(ctx, base)) {
         REXLOG_INFO("Co-op menu: add friend (multiplayer options)");
         {
@@ -791,6 +865,119 @@ PPC_FUNC(sub_82349018) {
     }
   }
   __imp__sub_82349018(ctx, base);
+}
+
+// Multiplayer lobby, GAME list (Ranked / Player Match lobbies): "Players to
+// Start: N" as the last row. The list is built by sub_82399828 (rows from
+// the row-type table 0x8307B318, 4 bytes per row, count byte 0x8370F292) and
+// run by the lobby update sub_823963D0 (A on a row looks its type up by the
+// cursor: 5 / 11 open sub pages; 3 does nothing anywhere, so our row gets
+// type 3 in the slot after the game's rows). A on our row is handled here.
+constexpr uint32_t kLobbyKind = 0x827AD564u;      // 0 custom, 1 player match, 2 ranked, 3 system link
+constexpr uint32_t kLobbyRowTypes = 0x8307B318u;  // u32 per row (room for 64)
+bool MatchmadeLobby(uint8_t* base) {
+  const uint32_t kind = R32(base, kLobbyKind);
+  return kind == 1 || kind == 2;
+}
+// The row is a selector like the game's own value rows (Mode etc.): an item
+// of the selector class (vtable 0x82068024, see options_menu.cpp) in guest
+// memory, choices "2" .. "12", +788 the chosen one; left / right go to the
+// selector's routines sub_82292CC8 / sub_82292D68 (what the lobby uses for
+// its own value rows).
+constexpr uint32_t kSelectorVtable = 0x82068024u;
+constexpr uint32_t kDefaultChoiceColour = 0x82816CF0u;
+constexpr uint32_t kSelectorSize = 1024;
+uint32_t g_lobby_item = 0;         // selector item (kSelectorSize) + choice texts
+uint32_t g_lobby_label = 0;        // "Players to Start"
+bool EnsureLobbyItem(uint8_t* base) {
+  if (g_lobby_item) return true;
+  const int n = kMinPlayersHigh - kMinPlayersLow + 1;
+  const uint32_t block = REX_KERNEL_STATE()->memory()->SystemHeapAlloc(kSelectorSize + 64 + n * 8);
+  if (!block) return false;
+  g_lobby_item = block;
+  g_lobby_label = block + kSelectorSize;
+  WriteText(base, g_lobby_label, "Players to Start", 64);
+  return true;
+}
+void BuildLobbyItem(uint8_t* base) {
+  const uint32_t item = g_lobby_item;
+  std::memset(Host(base, item), 0, kSelectorSize);
+  W32(base, item + 0, kSelectorVtable);
+  const uint32_t colour = R32(base, kDefaultChoiceColour);
+  for (uint32_t i = 0; i < 64; ++i) {
+    W32(base, item + 272 + i * 4, 0xFFFFFFFFu);
+    W32(base, item + 528 + i * 4, colour);
+  }
+  const uint32_t texts = g_lobby_label + 64;
+  const int n = kMinPlayersHigh - kMinPlayersLow + 1;
+  for (int i = 0; i < n; ++i) {
+    WriteText(base, texts + i * 8, std::to_string(kMinPlayersLow + i), 8);
+    W32(base, item + 16 + i * 4, texts + i * 8);
+  }
+  W32(base, item + 784, uint32_t(n));
+  W32(base, item + 788, uint32_t(MinPlayers() - kMinPlayersLow));
+  Host(base, item + 792)[0] = 1;
+}
+extern "C" void __imp__sub_82399828(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_82399828) {
+  __imp__sub_82399828(ctx, base);
+  std::lock_guard<std::recursive_mutex> lock(g_mutex);
+  g_lobby_minp_row = -1;
+  g_lobby_minp_menu = 0;
+  const uint32_t menu = R32(base, kMenuPointer);
+  if (!menu || !MatchmadeLobby(base) || !EnsureLobbyItem(base)) return;
+  const int row = int(R16(base, menu + 58));
+  if (row >= 64) return;
+  BuildLobbyItem(base);
+  W32(base, kLobbyRowTypes + uint32_t(row) * 4, 3);
+  {
+    rex::CallFrame frame(ctx);
+    frame.ctx.r3.u64 = g_lobby_label;
+    frame.ctx.r4.u64 = g_lobby_item;
+    frame.ctx.r5.u64 = 0;
+    frame.ctx.r6.u64 = 0xFFFFFFFFFFFFFFFFull;
+    frame.ctx.r7.u64 = 1;
+    frame.ctx.r8.u64 = 0;
+    __imp__sub_8228BAB0(frame.ctx, base);
+  }
+  if (int(R16(base, menu + 58)) == row + 1) {
+    g_lobby_minp_row = row;
+    g_lobby_minp_menu = menu;
+  }
+}
+extern "C" void __imp__sub_823963D0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82292CC8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82292D68(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_823963D0) {
+  {
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
+    const uint32_t menu = R32(base, kMenuPointer);
+    if (g_lobby_minp_row >= 0 && menu && menu == g_lobby_minp_menu && MatchmadeLobby(base) &&
+        int(R16(base, menu + 58)) > g_lobby_minp_row) {
+      // Left / right on our row (the test the lobby's own value rows use).
+      if (R16(base, menu + 62) == uint16_t(g_lobby_minp_row) && !g_dialog_open.load() &&
+          GuestBool(ctx, base, __imp__sub_82288750, 0)) {
+        const bool left = GuestBool(ctx, base, __imp__sub_8216ED48, 39);
+        const bool right = !left && GuestBool(ctx, base, __imp__sub_8216ED48, 40);
+        if (left || right) {
+          rex::CallFrame frame(ctx);
+          frame.ctx.r3.u64 = g_lobby_item;
+          frame.ctx.r4.u64 = 1;
+          if (left) __imp__sub_82292CC8(frame.ctx, base);
+          else __imp__sub_82292D68(frame.ctx, base);
+        }
+      }
+      // Apply whatever the selector shows now (keys or mouse on the arrows).
+      const int n = kMinPlayersHigh - kMinPlayersLow + 1;
+      const int chosen = int(R32(base, g_lobby_item + 788));
+      if (chosen >= 0 && chosen < n && chosen + kMinPlayersLow != MinPlayers()) {
+        SetMinPlayers(chosen + kMinPlayersLow);
+        ApplyMinPlayers(base);
+        REXLOG_INFO("Multiplayer lobby: players to start {}", chosen + kMinPlayersLow);
+      }
+    }
+  }
+  __imp__sub_823963D0(ctx, base);
 }
 
 bool sr::CoopMainMenuPre(PPCContext& ctx, uint8_t* base) {

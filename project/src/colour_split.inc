@@ -33,7 +33,9 @@ uint32_t cmd_mem[2] = {0, 0};
 bool cmd_mem_failed = false;
 std::atomic<int> trace{0};
 std::atomic<bool> a_done{false};  // colour_split_serial: half B records only after half A finished
-bool Serial() { static const bool on = FileExists("colour_split_serial"); return on; }  // first splits: every step logged
+bool Serial() { static const bool on = FileExists("colour_split_serial"); return on; }
+bool EndState() { static const bool on = FileExists("colour_split_endstate"); return on; }
+std::atomic<uint64_t> endstate_copies{0};  // first splits: every step logged
 #define CS_TRACE(...) do { if (colour_split::trace.load() < 5) REXLOG_INFO("COLOUR SPLIT TRACE: " __VA_ARGS__); } while (0)
 // Context index (buffer +5432) -> device, through the game's tables (8263DCF0 -> 82631000 -> 826460D8).
 uint32_t DeviceOf(uint8_t* base, uint32_t idx) {
@@ -134,7 +136,9 @@ loc_82191370:
 	REX_STORE_U32(ctx.r11.u32 + 3932, ctx.r10.u32);
 	// bl 0x8263ecd0
 	ctx.lr = 0x8219139C;
-	sub_8263ECD0(ctx, base);
+	// cs12: 8263ECD0 = the colour pass's Clear (825D7620, a predicated quad). Half B runs after half A on the GPU,
+	// so its clear wiped everything half A drew (the "fog-coloured / missing objects" bug of cs1..cs10).
+	if (colour_split::tl_begin == 0) sub_8263ECD0(ctx, base);
 	// lwzx r11,r29,r27
 	ctx.r11.u64 = REX_LOAD_U32(ctx.r29.u32 + ctx.r27.u32);
 	// clrlwi r10,r30,24
@@ -622,6 +626,23 @@ bool Half(PPCContext& ctx, uint8_t* base) {
             }
         }
     }
+    // cs11 (colour_split_endstate, needs colour_split_serial): after half A finished, give half B the state the
+    // single recording would have had there: A's render struct and A's recording device (fetch + float constants,
+    // register shadow) as they are at the END of half A, then everything marked dirty so B's buffer sets it all.
+    if (part == 2 && Serial() && EndState() && a_done.load(std::memory_order_acquire)) {
+        const uint32_t tls = Rd32(base, g.saved.r13.u32);
+        const uint32_t dev_c = Rd32(base, tls + 7688);
+        const uint32_t dev_a = DeviceOf(base, Rd32(base, 0x838EB3E0u + 5432));
+        const uint32_t s_c = cmd;
+        if (dev_a && dev_c && dev_a != dev_c && s_c && s_c != 0x838EB3E0u) {
+            std::memcpy(base + s_c, base + 0x838EB3E0u, 4292);
+            std::memcpy(base + s_c + 4400, base + 0x838EB3E0u + 4400, 5428 - 4400);
+            std::memcpy(base + dev_c + 1024, base + dev_a + 1024, 9984 - 1024);
+            std::memcpy(base + dev_c + 10240, base + dev_a + 10240, 10760 - 10240);
+            std::memset(base + dev_c, 0xFF, 40);
+            ++endstate_copies;
+        }
+    }
     tl_begin = part == 1 ? 0 : mid.load();
     tl_end = part == 1 ? mid.load() : 0x7FFFFFFF;
     ctx.r3.u64 = flag ? 1 : 0; ctx.lr = 0x82191624;
@@ -652,9 +673,9 @@ void Frame() {
     frames_now = 0; mode_start = now; next = now + std::chrono::seconds(10);
     const uint64_t jc = join_b_count.exchange(0), jt = join_b_ticks.exchange(0);
     REXLOG_INFO("COLOUR SPLIT: this window {} | splits {} (skipped: {} shadows>2, {} small, {} pending) | no pool C "
-                "memory {} | job B join wait avg {:.3f} ms | cumulative fps: split OFF {:.1f} ({:.0f} s), ON {:.1f} ({:.0f} s)",
+                "memory {} | end-state copies {} | job B join wait avg {:.3f} ms | cumulative fps: split OFF {:.1f} ({:.0f} s), ON {:.1f} ({:.0f} s)",
                 m ? "ON" : "OFF", splits.exchange(0), skipped_shadows.exchange(0), skipped_small.exchange(0),
-                skipped_pending.exchange(0), no_memory.load(), jc ? jt * mesh_census::TickUs() / 1000.0 / jc : 0.0,
+                skipped_pending.exchange(0), no_memory.load(), endstate_copies.load(), jc ? jt * mesh_census::TickUs() / 1000.0 / jc : 0.0,
                 secs[0] > 0 ? frames[0] / secs[0] : 0.0, secs[0], secs[1] > 0 ? frames[1] / secs[1] : 0.0, secs[1]);
     if (AbOn()) ab_active.store(!ab_active.load());
 }

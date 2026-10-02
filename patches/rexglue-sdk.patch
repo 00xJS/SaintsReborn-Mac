@@ -8580,7 +8580,7 @@ index 3f9422d..943eea5 100644
  
  void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
 diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
-index 2b222da..018a9d2 100644
+index 2b222da..9ed0edf 100644
 --- a/src/kernel/xam/apps/xgi_app.cpp
 +++ b/src/kernel/xam/apps/xgi_app.cpp
 @@ -10,9 +10,38 @@
@@ -8823,7 +8823,50 @@ index 2b222da..018a9d2 100644
        return X_E_SUCCESS;
      }
      case 0x000B001D: {
-@@ -274,21 +446,26 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -271,24 +443,69 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                     obj_ptr, flags, session_nonce, session_duration_sec, results_buffer_size,
+                     results_ptr);
+ 
++      // Ranked matches are arbitrated: once registration completes, the host
++      // (sub_82382070 at 0x823828C0) walks its player list and REMOVES every
++      // player whose XUID is not among the registrants (sub_82366148 +
++      // sub_8234D038). Leaving the results empty made everyone else vanish
++      // right after spawning ("invisible" players in ranked only). Fill
++      // XSESSION_REGISTRATION_RESULTS {DWORD count; REGISTRANT* list} with one
++      // registrant per player in the game's own list: circular list from
++      // [0x83061938], XUID at +0x21E68, next at +0x21EA4 (the same fields the
++      // check reads). REGISTRANT = {u64 machine id, u32 trust, u32 users,
++      // XUID* users} (24 bytes).
++      if (results_ptr && results_buffer_size >= 8) {
++        uint8_t* res = memory_->TranslateVirtual(results_ptr);
++        const uint32_t max_n = std::min<uint32_t>(32, (results_buffer_size - 8) / (24 + 8));
++        std::vector<uint64_t> xuids;
++        const uint32_t head = memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(0x83061938u));
++        uint32_t p = head;
++        for (uint32_t guard = 0; p && guard < 64 && xuids.size() < max_n; ++guard) {
++          const uint64_t x = memory::load_and_swap<uint64_t>(memory_->TranslateVirtual(p + 0x21E68u));
++          if (x && std::find(xuids.begin(), xuids.end(), x) == xuids.end()) xuids.push_back(x);
++          const uint32_t next = memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(p + 0x21EA4u));
++          if (next == head || next == p) break;
++          p = next;
++        }
++        const uint32_t n = uint32_t(xuids.size());
++        const uint32_t list = results_ptr + 8, users = list + n * 24;
++        memory::store_and_swap<uint32_t>(res + 0, n);
++        memory::store_and_swap<uint32_t>(res + 4, n ? list : 0);
++        for (uint32_t i = 0; i < n; ++i) {
++          uint8_t* r = memory_->TranslateVirtual(list + i * 24);
++          memory::store_and_swap<uint64_t>(r + 0, xuids[i]);  // machine id: one machine per player
++          memory::store_and_swap<uint32_t>(r + 8, 1);         // trustworthiness
++          memory::store_and_swap<uint32_t>(r + 12, 1);        // users on that machine
++          memory::store_and_swap<uint32_t>(r + 16, users + i * 8);
++          memory::store_and_swap<uint32_t>(r + 20, 0);
++          memory::store_and_swap<uint64_t>(memory_->TranslateVirtual(users + i * 8), xuids[i]);
++        }
++        std::string list_text;
++        for (uint64_t x : xuids) list_text += fmt::format(" {:016X}", x);
++        REXLOG_INFO("LIVE XSessionArbitrationRegister: {} registrant(s):{}", n, list_text);
++      }
        return X_E_SUCCESS;
      }
      case 0x000B001B: {
@@ -8865,7 +8908,7 @@ index 2b222da..018a9d2 100644
        return X_E_SUCCESS;
      }
      case 0x000B001F: {
-@@ -439,6 +616,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -439,6 +656,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            non_weighted_search_properties_ptr, non_weighted_search_contexts_ptr, results_buffer_size,
            search_results_ptr, num_users, weighted_search);
  
@@ -13245,6 +13288,111 @@ index a77f5e6..a4383a9 100644
      fwrite(serialized_setting.data(), 1, serialized_setting.size(), file);
      fclose(file);
    } else {
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..0f67ce0 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -12,6 +12,10 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <utility>
++#include <cstdio>
++#include <vector>
++#include <unordered_map>
++#include <mutex>
+ 
+ #if REX_PLATFORM_MAC
+ #include <sys/mman.h>
+@@ -869,6 +873,38 @@ bool Memory::HasAnyFunctionTable() const {
+   return !function_tables_.empty();
+ }
+ 
++// HOST COMMIT CACHE (2026-10-02, Saints Reborn perf). Guest heaps with pages >= the host page size are views
++// of one SEC_RESERVE mapping; the host never decommits them (Decommit/Release only change the page table), so a
++// page committed once with read-write access stays committed read-write until this heap changes its host
++// protection (BaseHeap::Protect, protect_on_release). The game's job arenas decommit and recommit ~300 MB/s;
++// each recommit called VirtualAlloc(MEM_COMMIT) again - a no-op syscall under the global lock. Remember the
++// pages and skip it. Virtual heaps only. File "host_commit_cache.off" next to the exe = old behaviour.
++namespace {
++std::mutex g_rw_commit_mutex;
++std::unordered_map<const void*, std::vector<uint8_t>>* g_rw_commit = nullptr;
++bool RwCommitCacheOn() {
++  static const bool on = [] {
++    FILE* f = std::fopen("host_commit_cache.off", "rb");
++    if (f) std::fclose(f);
++    return f == nullptr;
++  }();
++  return on;
++}
++// Caller holds the heap's heap_mutex_ for all reads/writes of the returned vector.
++std::vector<uint8_t>& RwCommitBits(const void* heap, size_t pages) {
++  std::lock_guard<std::mutex> lock(g_rw_commit_mutex);
++  if (!g_rw_commit) g_rw_commit = new std::unordered_map<const void*, std::vector<uint8_t>>();
++  auto& v = (*g_rw_commit)[heap];
++  if (v.size() < pages) v.resize(pages, 0);
++  return v;
++}
++void RwCommitClear(const void* heap, size_t pages, uint32_t first, uint32_t last) {
++  if (!RwCommitCacheOn()) return;
++  auto& v = RwCommitBits(heap, pages);
++  for (uint32_t p = first; p <= last && p < v.size(); ++p) v[p] = 0;
++}
++}  // namespace
++
+ rex::memory::PageAccess ToPageAccess(uint32_t protect) {
+   bool is_writable =
+       (protect & memory::kMemoryProtectWrite) || (protect & memory::kMemoryProtectWriteCombine);
+@@ -1347,12 +1383,27 @@ bool BaseHeap::AllocFixed(uint32_t base_address, uint32_t size, uint32_t alignme
+     auto alloc_type = (allocation_type & memory::kMemoryAllocationCommit)
+                           ? rex::memory::AllocationType::kCommit
+                           : rex::memory::AllocationType::kReserve;
+-    void* result =
+-        rex::memory::AllocFixed(TranslateRelative(start_page_number << page_size_shift_),
+-                                page_count << page_size_shift_, alloc_type, ToPageAccess(protect));
+-    if (!result) {
+-      REXSYS_ERROR("BaseHeap::AllocFixed failed to alloc range from host");
+-      return false;
++    std::vector<uint8_t>* rw_bits = nullptr;
++    if (allocation_type == memory::kMemoryAllocationCommit &&
++        heap_type_ == memory::HeapType::kGuestVirtual &&
++        ToPageAccess(protect) == rex::memory::PageAccess::kReadWrite && RwCommitCacheOn()) {
++      rw_bits = &RwCommitBits(this, page_table_.size());
++    }
++    bool already = rw_bits != nullptr;
++    for (uint32_t p = start_page_number; already && p <= end_page_number; ++p) {
++      if (!(*rw_bits)[p]) already = false;
++    }
++    if (!already) {
++      void* result =
++          rex::memory::AllocFixed(TranslateRelative(start_page_number << page_size_shift_),
++                                  page_count << page_size_shift_, alloc_type, ToPageAccess(protect));
++      if (!result) {
++        REXSYS_ERROR("BaseHeap::AllocFixed failed to alloc range from host");
++        return false;
++      }
++      if (rw_bits) {
++        for (uint32_t p = start_page_number; p <= end_page_number; ++p) (*rw_bits)[p] = 1;
++      }
+     }
+   }
+ 
+@@ -1621,6 +1672,8 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
+     // it. It's possible this is some virtual/physical stuff where the GPU
+     // still can access it.
+     if (REXCVAR_GET(protect_on_release)) {
++      RwCommitClear(this, page_table_.size(), base_page_number,
++                    base_page_number + base_page_entry.region_page_count - 1);
+       if (!rex::memory::Protect(TranslateRelative(base_page_number << page_size_shift_),
+                                 base_page_entry.region_page_count << page_size_shift_,
+                                 rex::memory::PageAccess::kNoAccess, nullptr)) {
+@@ -1701,6 +1754,7 @@ bool BaseHeap::Protect(uint32_t address, uint32_t size, uint32_t protect, uint32
+   // Change host protection directly when guest pages are at least as large as
+   // host pages. Smaller guest pages are reconciled after the page table update.
+   if (page_size_ >= memory_->system_page_size_) {
++    RwCommitClear(this, page_table_.size(), start_page_number, end_page_number);
+     const uint32_t page_count = end_page_number - start_page_number + 1;
+     memory::PageAccess old_protect_access;
+     if (!rex::memory::Protect(TranslateRelative(start_page_number << page_size_shift_),
 diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
 index 2d13ac8..d437ac5 100644
 --- a/src/system/xsocket.cpp

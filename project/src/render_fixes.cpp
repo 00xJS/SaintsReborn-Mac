@@ -44,6 +44,7 @@
 #include <chrono>
 #include <map>
 #include <rex/system/kernel_state.h>
+extern "C" __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -793,8 +794,8 @@ constexpr uint32_t kSlots = 1u << 16;
 Entry table[kSlots];
 inline uint32_t Hash(uint32_t r) { return (r * 2654435761u) >> 16; }
 inline uint32_t NowMs() {
-    return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch()).count()) | 1u;
+    // 2026-10-02: GetTickCount64 (shared-page read) instead of QPC - called per fade test (~1 % of busy CPU).
+    return uint32_t(GetTickCount64()) | 1u;
 }
 }  // namespace fade_hysteresis
 
@@ -1456,7 +1457,7 @@ PPC_FUNC(sub_82128848) {
         // undrawn (black ground, never even fade-tested). While the air view
         // is on the switch is 0; its own value comes back after landing.
         // File "pvs_object_gate_in_air" = original.
-        static const bool keep = FileExists("pvs_object_gate_in_air");
+        static const bool keep = !FileExists("pvs_object_gate_air_experiment");  // 2026-10-02: experiment now opt-in
         static bool saved = false;
         static uint8_t original = 1;
         if (far_clip::g_air_view && !keep) {
@@ -2550,10 +2551,25 @@ void Add(uint32_t fn, uint64_t dt) {
     if (fn == 0x821938B8) t938[m] += dt; else if (fn == 0x82193A20) t3a20[m] += dt;
 }
 }  // namespace batch_ab
+bool sr_native_copy68(PPCContext& ctx, uint8_t* base);  // native_flush.inc (shadow_probe.cpp)
+bool sr_native_context(PPCContext& ctx, uint8_t* base);
+// Plain wrappers: no diagnostics, A/B or special hooks this run -> the wrapped function directly (the checks
+// below cost a few ns per call, ~60k calls per frame in heavy scenes).
+inline bool sr_rt_plain() {
+    static const bool plain = !rt_timing::Enabled() && !batch_ab::On() && !colour_split::On() &&
+                              !render_overlap::Point() && native_mesh::Mode() != 2;
+    return plain;
+}
 #define SR_RT_TIMED(A, P)                                                                  \
     extern "C" void __imp__sub_##A(PPCContext& ctx, uint8_t* base);                      \
     static void sr_timed_##A(PPCContext& ctx, uint8_t* base);                              \
     PPC_FUNC(sub_##A) {                                                                    \
+        if (sr_rt_plain()) [[likely]] {                                                    \
+            if (0x##A == 0x82129CA0 && sr_native_copy68(ctx, base)) return;                \
+            if (0x##A == 0x826306A8 && sr_native_context(ctx, base)) return;               \
+            __imp__sub_##A(ctx, base);                                                     \
+            return;                                                                        \
+        }                                                                                  \
         if (native_mesh::RecActive(ctx)) [[unlikely]] {                                    \
             native_mesh::RecBefore(ctx, base);                                             \
             sr_timed_##A(ctx, base);                                                       \
@@ -2571,6 +2587,7 @@ void Add(uint32_t fn, uint64_t dt) {
     static void sr_timed_##A(PPCContext& ctx, uint8_t* base) {                             \
         static const int idx = rt_timing::Register(0x##A, 0x##P);                         \
         if (!rt_timing::Enabled()) {                                                        \
+            if (0x##A == 0x82129CA0 && sr_native_copy68(ctx, base)) return;                \
             if ((0x##A == 0x821938B8 || 0x##A == 0x82193A20) && batch_ab::On()) {          \
                 const uint64_t t0 = __rdtsc();                                             \
                 __imp__sub_##A(ctx, base);                                                 \
@@ -2925,7 +2942,7 @@ std::atomic<uint64_t> tests{0}, hidden{0}, overridden{0};
 extern "C" void __imp__sub_82126B40(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_82126B40) {
     using namespace occluders;
-    static const bool keep = FileExists("occluders_in_air");
+    static const bool keep = !FileExists("occluders_air_experiment");  // 2026-10-02: experiment now opt-in
     __imp__sub_82126B40(ctx, base);
     tests.fetch_add(1, std::memory_order_relaxed);
     if (ctx.r3.u32 & 0xFF) {
@@ -2936,6 +2953,8 @@ PPC_FUNC(sub_82126B40) {
         }
     }
     static std::atomic<int64_t> next{0};
+    static thread_local uint32_t log_tick = 0;
+    if ((++log_tick & 1023) != 0) return;
     const int64_t now = fade_hysteresis::NowMs();
     int64_t n = next.load(std::memory_order_relaxed);
     if (now - n >= 10000 && next.compare_exchange_strong(n, now) && n) {
@@ -2971,7 +2990,7 @@ PPC_FUNC(sub_82126C30) {
     // (r5 = 0: no light record, r7 = 0: no occluders) = frustum only. In air
     // view a frustum reject is counted and overridden. File
     // "frustum_in_air" = original.
-    static const bool frustum_keep = FileExists("frustum_in_air");
+    static const bool frustum_keep = !FileExists("frustum_air_experiment");  // 2026-10-02: experiment now opt-in
     const uint32_t lr = uint32_t(ctx.lr);
     // Diagnostic: per-object test from the cell walk (82127390, bl at 82127690)
     // for objects within 80 m of the camera in air view: how many does the
@@ -3015,6 +3034,8 @@ PPC_FUNC(sub_82126C30) {
         __imp__sub_82126C30(ctx, base);
     }
     static std::atomic<int64_t> next{0};
+    static thread_local uint32_t log_tick = 0;
+    if ((++log_tick & 1023) != 0) return;
     const int64_t now = fade_hysteresis::NowMs();
     int64_t n = next.load(std::memory_order_relaxed);
     if (now - n >= 5000 && next.compare_exchange_strong(n, now) && n) {
