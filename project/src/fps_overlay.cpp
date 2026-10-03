@@ -151,10 +151,57 @@ void DrawChat(ImGuiIO& io) {
     y += line_h;
   }
   if (typing) {
-    const float w = put(x, y, "Say: ", IM_COL32(255, 210, 60, 255), 1.0f);
+    const float w = put(x, y, sr::ChatPrompt(), IM_COL32(255, 210, 60, 255), 1.0f);
     const bool caret = (std::chrono::steady_clock::now().time_since_epoch() / std::chrono::milliseconds(500)) % 2 == 0;
     put(x + w, y, input + (caret ? "_" : ""), IM_COL32(255, 255, 255, 255), 1.0f);
   }
+}
+
+// A pick list (chat.cpp PickerBegin): the friends list of "Invite New Gang
+// Member". A dark panel in the middle, the chosen row in the game's yellow.
+void DrawPicker(ImGuiIO& io) {
+  std::string title, note;
+  std::vector<sr::PickerItem> items;
+  int sel = 0;
+  if (!sr::PickerSnapshot(title, note, items, sel)) return;
+  const float scale = std::max(0.75f, io.DisplaySize.y / 1080.0f);
+  ImFont* font = g_font ? g_font : ImGui::GetFont();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  const float sz_big = 34.0f * scale, size = 26.0f * scale, sz_small = 20.0f * scale;
+  const float row_h = size * 1.45f, pad = 22.0f * scale;
+  const int max_rows = 10;
+  const int first = std::max(0, std::min(sel - max_rows / 2, int(items.size()) - max_rows));
+  const int rows = std::min<int>(max_rows, int(items.size()));
+  const float w = 560.0f * scale;
+  const float h = pad * 2 + sz_big * 1.3f + (note.empty() ? 0.0f : sz_small * 1.5f) + std::max(1, rows) * row_h + sz_small * 1.8f;
+  const ImVec2 p0((io.DisplaySize.x - w) * 0.5f, (io.DisplaySize.y - h) * 0.5f), p1(p0.x + w, p0.y + h);
+  dl->AddRectFilled(p0, p1, IM_COL32(12, 8, 18, 235), 6.0f * scale);
+  dl->AddRect(p0, p1, IM_COL32(150, 90, 200, 255), 6.0f * scale, 0, 2.0f * scale);
+  float y = p0.y + pad;
+  const ImVec2 tsz = font->CalcTextSizeA(sz_big, FLT_MAX, 0.0f, title.c_str());
+  dl->AddText(font, sz_big, ImVec2(p0.x + (w - tsz.x) * 0.5f, y), IM_COL32(255, 210, 60, 255), title.c_str());
+  y += sz_big * 1.3f;
+  if (!note.empty()) {
+    const ImVec2 nsz = font->CalcTextSizeA(sz_small, FLT_MAX, 0.0f, note.c_str());
+    dl->AddText(font, sz_small, ImVec2(p0.x + (w - nsz.x) * 0.5f, y), IM_COL32(200, 200, 200, 255), note.c_str());
+    y += sz_small * 1.5f;
+  }
+  for (int i = first; i < first + rows; ++i) {
+    const auto& it = items[size_t(i)];
+    const bool on = i == sel;
+    if (on) dl->AddRectFilled(ImVec2(p0.x + pad * 0.5f, y), ImVec2(p1.x - pad * 0.5f, y + row_h * 0.92f), IM_COL32(230, 180, 40, 255), 3.0f * scale);
+    const ImU32 col = on ? IM_COL32(10, 10, 10, 255) : it.dim ? IM_COL32(150, 150, 150, 255) : IM_COL32(255, 255, 255, 255);
+    dl->AddText(font, size, ImVec2(p0.x + pad, y + row_h * 0.12f), col, it.text.c_str());
+    if (!it.detail.empty()) {
+      const ImVec2 dsz = font->CalcTextSizeA(sz_small, FLT_MAX, 0.0f, it.detail.c_str());
+      dl->AddText(font, sz_small, ImVec2(p1.x - pad - dsz.x, y + row_h * 0.22f), on ? IM_COL32(40, 30, 10, 255) : IM_COL32(170, 170, 170, 255), it.detail.c_str());
+    }
+    y += row_h;
+  }
+  if (!rows) y += row_h;
+  const char* help = items.empty() ? "Esc: back" : "Up / Down: choose    Enter: invite    Esc: back";
+  const ImVec2 hsz = font->CalcTextSizeA(sz_small, FLT_MAX, 0.0f, help);
+  dl->AddText(font, sz_small, ImVec2(p0.x + (w - hsz.x) * 0.5f, p1.y - pad - sz_small), IM_COL32(190, 190, 190, 255), help);
 }
 
 // Online notices (fair play, invites, friends): a panel in the style of the
@@ -242,6 +289,7 @@ class ModTextDialog : public rex::ui::ImGuiDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     DrawChat(io);
+    DrawPicker(io);
     DrawOnlineNotice(io);
     const std::string text = wml::OverlayText();
     if (text.empty()) return;

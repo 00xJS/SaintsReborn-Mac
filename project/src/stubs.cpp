@@ -367,12 +367,18 @@ PPC_FUNC(sub_825D4748) {
 // switches the game to the multiplayer mode (6). Runs only while the game's network is
 // active ([0x8370E9F6] == 1: System Link Start Game / Find Game); otherwise returns 0
 // as before, so single player is unchanged.
+// The DemonWare manager (sub_82356998, first call of the net tick) also has to run
+// in the menus while the multiplayer GANGS connection is open (gangs_bridge.cpp),
+// or the gang screens never see the server's replies.
 extern "C" void __imp__sub_8234C1C0(PPCContext& ctx, uint8_t* base);
+extern "C" void sub_82356998(PPCContext& ctx, uint8_t* base);
+bool SrGangsActive();
 PPC_FUNC(sub_8234C1C0) {
     if (*GuestPtr(base, 0x8370E9F6u) == 1) {
         __imp__sub_8234C1C0(ctx, base);
         return;
     }
+    if (SrGangsActive()) sub_82356998(ctx, base);
     ctx.r3.u64 = 0;
 }
 

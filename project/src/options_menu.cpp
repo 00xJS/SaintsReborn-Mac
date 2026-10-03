@@ -21,6 +21,7 @@
 
 #include "options_menu.h"
 
+#include "coop_menu.h"
 #include "kbm.h"
 #include "perf_monitor.h"
 #include "saintsrow_config.h"
@@ -391,8 +392,12 @@ void sr::SetOptionsHost(OptionsHost host) {
 extern "C" void __imp__sub_8228BAB0(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_8228BAB0) {
   const uint32_t item = ctx.r4.u32;
+  const uint32_t label = ctx.r3.u32;
   const uint32_t caller = uint32_t(ctx.lr);
+  const uint32_t list = R32(base, 0x8370DDC4u);  // current list menu (+58 rows)
+  const int row = list ? int(uint16_t(Host(base, list + 58)[0] << 8 | Host(base, list + 58)[1])) : -1;
   __imp__sub_8228BAB0(ctx, base);
+  if (item && row >= 0) sr::LobbyRowAdded(base, label, item, row);
   {
     // Diagnostic: which lists get rows (the pause menu's Display page had none).
     static int lines = 0;

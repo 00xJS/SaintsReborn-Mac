@@ -85,6 +85,12 @@ Step "Checking build tools"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Fail "Git was not found. Install Git for Windows (https://git-scm.com/download/win) and run setup again."
 }
+# Git refuses folders it cannot prove belong to this Windows user ("detected
+# dubious ownership": exFAT / FAT32 / network drives, folders made by another
+# account). Setup only runs git in its own folders, so trust them all here.
+$env:GIT_CONFIG_COUNT = "1"
+$env:GIT_CONFIG_KEY_0 = "safe.directory"
+$env:GIT_CONFIG_VALUE_0 = "*"
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
     Fail "Visual Studio 2022 was not found. See README.md (Requirements) for what to install."

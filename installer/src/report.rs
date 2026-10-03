@@ -135,6 +135,13 @@ impl Env {
             c.env_remove(v);
         }
         c.env("GIT_TERMINAL_PROMPT", "0");
+        // Git refuses folders it can't prove belong to this Windows user
+        // ("detected dubious ownership"): exFAT / FAT32 / network drives, or an
+        // install folder made by another account. Setup only runs git in its
+        // own install folder, so every folder is trusted for these commands.
+        c.env("GIT_CONFIG_COUNT", "1");
+        c.env("GIT_CONFIG_KEY_0", "safe.directory");
+        c.env("GIT_CONFIG_VALUE_0", "*");
         for (k, v) in &self.vars {
             c.env(k, v);
         }

@@ -9242,7 +9242,7 @@ index 0000000..600c158
 +
 +}  // namespace
 diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
-index 3593403..6f72017 100644
+index 3593403..6f9486b 100644
 --- a/src/kernel/xam/apps/xlivebase_app.cpp
 +++ b/src/kernel/xam/apps/xlivebase_app.cpp
 @@ -10,8 +10,71 @@
@@ -9330,7 +9330,7 @@ index 3593403..6f72017 100644
    switch (message) {
      case 0x00058004: {
        // Called on startup, seems to just return a bool in the buffer.
-@@ -51,20 +120,74 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -51,20 +120,76 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        return 0x80151802;  // ERROR_CONNECTION_INVALID
      }
      case 0x00058020: {
@@ -9344,7 +9344,7 @@ index 3593403..6f72017 100644
 +      // XFriendsCreateEnumerator(user, start, count, pcbBuffer, phEnum), packed
 +      // (sub_8265B930). Saints Reborn: friends added by friend code (both
 +      // ways, online or not) and players met in a match recently who are
-+      // online (eos_lan.cpp FriendsList). XONLINE_FRIEND is 200 bytes.
++      // online (eos_lan.cpp FriendsList). XONLINE_FRIEND is 196 bytes.
 +      uint32_t user_ptr = 0, start_ptr = 0, count_ptr = 0, pcb_ptr = 0, handle_ptr = 0;
 +      if (!REXCVAR_GET(xam_signed_in_to_live) || !PackValue(memory_, buffer_length, 0, user_ptr) ||
 +          !PackValue(memory_, buffer_length, 1, start_ptr) || !PackValue(memory_, buffer_length, 2, count_ptr) ||
@@ -9355,7 +9355,9 @@ index 3593403..6f72017 100644
 +      const uint32_t user = memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(user_ptr));
 +      const uint32_t start = start_ptr ? memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(start_ptr)) : 0;
 +      const uint32_t count = std::clamp<uint32_t>(memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(count_ptr)), 1, 100);
-+      constexpr uint32_t kFriendSize = 200;
++      // XONLINE_FRIEND is 196 bytes in this game (sub_82399620 / sub_8238F8C8 step
++      // 196): 200 shifted every friend after the first (names cut, wrong XUIDs).
++      constexpr uint32_t kFriendSize = 196;
 +      const auto players = rex::system::eoslan::FriendsList();
 +      auto e = object_ref<XStaticUntypedEnumerator>(
 +          new XStaticUntypedEnumerator(REX_KERNEL_STATE(), count, kFriendSize));
@@ -9417,7 +9419,7 @@ index 3593403..6f72017 100644
      }
      case 0x00058046: {
        // Required to be successful for 4D530910 to detect signed-in profile
-@@ -73,6 +196,95 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -73,6 +198,96 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
        REXKRNL_DEBUG("XLiveBaseUnk58046({:08X}, {:08X}) unimplemented", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
      }
@@ -9486,7 +9488,8 @@ index 3593403..6f72017 100644
 +      const uint32_t count = std::min<uint32_t>(memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(count_ptr)), 100);
 +      const uint32_t max_items =
 +          std::clamp<uint32_t>(max_ptr ? memory::load_and_swap<uint32_t>(memory_->TranslateVirtual(max_ptr)) : count, 1, 100);
-+      constexpr uint32_t kPresenceSize = 168;
++      // XONLINE_PRESENCE is 164 bytes (sub_8235F530 steps 164), not 168.
++      constexpr uint32_t kPresenceSize = 164;
 +      const auto friends = rex::system::eoslan::FriendsList();
 +      auto e = object_ref<XStaticUntypedEnumerator>(new XStaticUntypedEnumerator(REX_KERNEL_STATE(), max_items, kPresenceSize));
 +      if (XFAILED(e->Initialize(user, 0xFC, 0x58019, 0x5801A, 0))) return X_E_FAIL;
@@ -9513,7 +9516,7 @@ index 3593403..6f72017 100644
      case 0x00058037: {
        REXKRNL_DEBUG("XPresenceInitialize({:08X}, {:08X})", buffer_ptr, buffer_length);
        return X_E_SUCCESS;
-@@ -89,3 +301,116 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+@@ -89,3 +304,116 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
  }  // namespace xam
  }  // namespace kernel
  }  // namespace rex
@@ -10783,10 +10786,10 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..06b8fae
+index 0000000..f2957d3
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,1881 @@
+@@ -0,0 +1,1973 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -10989,6 +10992,8 @@ index 0000000..06b8fae
 +std::map<std::string, std::string> applied_attrs;       // last sent to Epic
 +bool attrs_busy = false;
 +std::string my_puid, my_proof;
++std::mutex my_puid_mutex;
++std::string my_puid_shared;  // my_puid for other threads (SrMyPuid), under my_puid_mutex
 +// Mods only in private play: outside a Private Party (a Live session whose
 +// slots are all invite-only) game packets only flow between unmodded games.
 +std::atomic<bool> private_session{false};
@@ -11069,6 +11074,14 @@ index 0000000..06b8fae
 +std::deque<std::string> chat_in;                                               // "name\ttext"
 +std::set<std::pair<uint32_t, uint32_t>> chat_seen;                             // (origin IP, id)
 +uint32_t chat_next_id = 1;
++
++// Mod data channel (SrModSend / SrModPoll below): small messages between the
++// games in a lobby / match for built-in modes (Zombies), to a port the game
++// never uses. Same fair-play rule as game packets. Payload: "SRM1" + channel
++// (LE u32) + data; single packets only (<= kFragData - 8 bytes).
++constexpr uint16_t kModPort = 0xC4A8;
++struct ModIn { uint32_t from_ip; std::vector<uint8_t> data; };
++std::map<uint32_t, std::deque<ModIn>> mod_in;  // by channel, under chat_mutex
 +std::map<std::string, std::vector<uint8_t>> qos_by_kid;      // others', by session id hex
 +
 +std::string PuidString(EOS_ProductUserId id) {
@@ -11934,6 +11947,19 @@ index 0000000..06b8fae
 +      if (h.count <= 1) HandleChat(peer, h.src_ip, pkt + sizeof(h), written - sizeof(h));
 +      continue;
 +    }
++    if (h.dst_port == kModPort) {
++      const uint8_t* m = pkt + sizeof(h);
++      const size_t mn = written - sizeof(h);
++      if (h.count <= 1 && h.src_ip != my_ip && mn >= 8 && std::memcmp(m, "SRM1", 4) == 0) {
++        uint32_t ch;
++        std::memcpy(&ch, m + 4, 4);
++        std::lock_guard<std::mutex> cl(chat_mutex);
++        auto& q = mod_in[ch];
++        q.push_back(ModIn{h.src_ip, std::vector<uint8_t>(m + 8, m + mn)});
++        while (q.size() > 512) q.pop_front();
++      }
++      continue;
++    }
 +    const uint8_t* data = pkt + sizeof(h);
 +    const size_t n = written - sizeof(h);
 +    if (h.count <= 1) {
@@ -11974,6 +12000,10 @@ index 0000000..06b8fae
 +  }
 +  if (my_puid.empty()) {
 +    my_puid = PuidString(me);
++    {
++      std::lock_guard<std::mutex> pl(my_puid_mutex);
++      my_puid_shared = my_puid;
++    }
 +    my_proof = rex::system::online::OwnerProof(my_puid);
 +    if (!my_proof.empty()) REXSYS_INFO("EOS LAN: owner proof published for {}", my_puid);
 +  }
@@ -12668,12 +12698,77 @@ index 0000000..06b8fae
 +  out[n] = 0;
 +  return n;
 +}
++
++// Mod data channel for the built-in mods (core\Zombies).
++// SrModSend: to_ip 0 = everyone in this game's lobby / match (as chat), else
++// that virtual IP. Returns the number of players it went to.
++extern "C" __declspec(dllexport) int SrModSend(uint32_t channel, const void* data, int len, uint32_t to_ip) {
++  using namespace rex::system::eoslan;
++  if (!data || len < 0 || len > int(kFragData) - 8 || state != State::Ready) return 0;
++  std::vector<uint8_t> d = {'S', 'R', 'M', '1'};
++  d.resize(8);
++  std::memcpy(d.data() + 4, &channel, 4);
++  d.insert(d.end(), static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + len);
++  if (to_ip) {
++    QueueOut(to_ip, kModPort, d);
++    return 1;
++  }
++  const auto targets = ChatTargets();
++  for (uint32_t ip : targets) QueueOut(ip, kModPort, d);
++  return int(targets.size());
++}
++// Next message on `channel`: its length (0 = none), *from_ip = the sender's virtual IP.
++extern "C" __declspec(dllexport) int SrModPoll(uint32_t channel, void* out, int size, uint32_t* from_ip) {
++  using namespace rex::system::eoslan;
++  if (!out || size <= 0) return 0;
++  std::lock_guard<std::mutex> cl(chat_mutex);
++  auto it = mod_in.find(channel);
++  if (it == mod_in.end() || it->second.empty()) return 0;
++  ModIn m = std::move(it->second.front());
++  it->second.pop_front();
++  const int n = std::min<int>(int(m.data.size()), size);
++  if (n) std::memcpy(out, m.data.data(), size_t(n));
++  if (from_ip) *from_ip = m.from_ip;
++  return n > 0 ? n : -1;
++}
++// This game's virtual IP and the session host's (0 = none).
++extern "C" __declspec(dllexport) uint32_t SrModMyIp() { return rex::system::eoslan::my_ip; }
++extern "C" __declspec(dllexport) uint32_t SrModHostIp() { return rex::system::eoslan::session_host_ip.load(); }
++
++// Multiplayer gangs (game: gangs_bridge.cpp / friends_ui.cpp).
++// SrMyPuid: this player's Epic ProductUserId (empty until Epic is ready).
++extern "C" __declspec(dllexport) int SrMyPuid(char* out, int size) {
++  using namespace rex::system::eoslan;
++  if (!out || size <= 1) return 0;
++  std::lock_guard<std::mutex> pl(my_puid_mutex);
++  const int n = std::min<int>(int(my_puid_shared.size()), size - 1);
++  std::memcpy(out, my_puid_shared.data(), size_t(n));
++  out[n] = 0;
++  return n;
++}
++// SrFriendsSnapshot: the friends list as the game sees it (FriendsList), one
++// line per player: "<xuid hex16>\t<name>\t<1 online / 0>\t<1 mutual / 0>\n".
++extern "C" __declspec(dllexport) int SrFriendsSnapshot(char* out, int size) {
++  using namespace rex::system::eoslan;
++  if (!out || size <= 1) return 0;
++  std::string text;
++  for (const auto& p : FriendsList()) {
++    char line[256];
++    std::snprintf(line, sizeof(line), "%016llx\t%s\t%d\t%d\n", (unsigned long long)p.xuid, p.name.c_str(),
++                  p.online ? 1 : 0, p.mutual ? 1 : 0);
++    text += line;
++  }
++  const int n = std::min<int>(int(text.size()), size - 1);
++  std::memcpy(out, text.data(), size_t(n));
++  out[n] = 0;
++  return n;
++}
 diff --git a/src/system/eos_lan_off.cpp b/src/system/eos_lan_off.cpp
 new file mode 100644
-index 0000000..7a0818a
+index 0000000..2e1b538
 --- /dev/null
 +++ b/src/system/eos_lan_off.cpp
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,74 @@
 +// Built instead of eos_lan.cpp when the Epic Online Services SDK headers
 +// aren't available (REX_EOS_SDK_INCLUDE not set / not found). Online play
 +// over Epic (Live lobbies, PLAYERS list, invites, chat) is then off; System
@@ -12742,6 +12837,12 @@ index 0000000..7a0818a
 +SR_EXPORT int SrChatInSession() { return 0; }
 +SR_EXPORT int SrChatSend(const char*) { return 0; }
 +SR_EXPORT int SrChatPoll(char*, int) { return 0; }
++SR_EXPORT int SrModSend(uint32_t, const void*, int, uint32_t) { return 0; }
++SR_EXPORT int SrModPoll(uint32_t, void*, int, uint32_t*) { return 0; }
++SR_EXPORT uint32_t SrModMyIp() { return 0; }
++SR_EXPORT uint32_t SrModHostIp() { return 0; }
++SR_EXPORT int SrMyPuid(char* out, int size) { if (out && size > 0) out[0] = 0; return 0; }
++SR_EXPORT int SrFriendsSnapshot(char* out, int size) { if (out && size > 0) out[0] = 0; return 0; }
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
 index bd43109..7c34df1 100644
 --- a/src/system/function_dispatcher.cpp
