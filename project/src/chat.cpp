@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <mutex>
 
 #include <rex/cvar.h>
@@ -42,6 +43,22 @@ bool g_release_wait = false;  // Enter / Esc that closed the chat still held: th
 std::string g_input;
 bool g_visible = false;
 bool g_down[256] = {};
+// Picker (sr::PickerBegin)
+bool g_pick = false;
+std::string g_pick_title, g_pick_note;
+std::vector<sr::PickerItem> g_pick_items;
+int g_pick_sel = 0;
+std::function<void(int)> g_pick_done;
+// Keyboard prompt (sr::KeyboardBegin): pending until the input line opens.
+bool g_kb_pending = false, g_kb = false;
+std::string g_kb_prompt, g_kb_text;
+size_t g_kb_max = kMaxInput;
+std::function<void(bool, const std::string&)> g_kb_done;
+size_t Utf8Chars(const std::string& s) {
+  size_t n = 0;
+  for (unsigned char c : s) n += (c & 0xC0) != 0x80;
+  return n;
+}
 
 #ifdef _WIN32
 template <class F>
@@ -203,6 +220,35 @@ void sr::ChatPoll(bool in_multiplayer) {
 #endif
   if (g_release_wait) {
     // (the keys are still held)
+  } else if (g_pick) {
+    if (!Focused()) {
+      ResetKeys();
+    } else {
+      int chosen = -2;
+      for (int vk = 8; vk < 256; ++vk) {
+        if (!Pressed(vk)) continue;
+        const int n = int(g_pick_items.size());
+        if (vk == VK_UP && n) g_pick_sel = (g_pick_sel + n - 1) % n;
+        else if (vk == VK_DOWN && n) g_pick_sel = (g_pick_sel + 1) % n;
+        else if (vk == VK_RETURN && n) chosen = g_pick_sel;
+        else if (vk == VK_ESCAPE || (vk == VK_RETURN && !n)) chosen = -1;
+      }
+      if (chosen != -2) {
+        g_pick = false;
+        auto done = std::move(g_pick_done);
+        g_pick_done = nullptr;
+        if (done) done(chosen);
+        ResetKeys();
+        g_release_wait = true;  // Enter / Esc still held: not for the game
+      }
+    }
+  } else if (!g_typing && g_kb_pending) {
+    g_kb_pending = false;
+    g_kb = true;
+    g_typing = true;
+    g_input = g_kb_text;
+    ResetKeys();
+    wml::SetKeysSuppressed(true);
   } else if (!g_typing) {
     const bool t = Pressed('T');
     if (t && Focused() && !sr::CoopDialogOpen() && (in_multiplayer || LobbyPlayers() > 0 || InSession() || CoopRunning())) {
@@ -221,12 +267,25 @@ void sr::ChatPoll(bool in_multiplayer) {
         while (!text.empty() && text.back() == ' ') text.pop_back();
         g_typing = false;
         g_input.clear();
-        if (!text.empty()) Send(text);
+        if (g_kb) {
+          g_kb = false;
+          auto done = std::move(g_kb_done);
+          g_kb_done = nullptr;
+          if (done) done(true, text);
+        } else if (!text.empty()) {
+          Send(text);
+        }
         break;
       }
       if (vk == VK_ESCAPE) {
         g_typing = false;
         g_input.clear();
+        if (g_kb) {
+          g_kb = false;
+          auto done = std::move(g_kb_done);
+          g_kb_done = nullptr;
+          if (done) done(false, std::string());
+        }
         break;
       }
       if (vk == VK_BACK) {
@@ -235,14 +294,15 @@ void sr::ChatPoll(bool in_multiplayer) {
         continue;
       }
       const std::string ch = KeyText(vk);
-      if (!ch.empty() && g_input.size() + ch.size() <= kMaxInput) g_input += ch;
+      const size_t limit = g_kb ? g_kb_max : kMaxInput;
+      if (!ch.empty() && (g_kb ? Utf8Chars(g_input) + 1 <= limit : g_input.size() + ch.size() <= limit)) g_input += ch;
     }
     if (!g_typing) {
       ResetKeys();
       g_release_wait = true;  // Enter / Esc still held: not for the game
     }
   }
-  bool visible = g_typing;
+  bool visible = g_typing || g_pick;
   const auto now = Clock::now();
   for (const auto& l : g_lines) visible |= now - l.at < kShowFor;
   if (visible != g_visible) {
@@ -253,7 +313,7 @@ void sr::ChatPoll(bool in_multiplayer) {
 
 bool sr::ChatTyping() {
   std::lock_guard<std::mutex> lock(g_mutex);
-  return g_typing || g_release_wait;
+  return g_typing || g_release_wait || g_pick;
 }
 
 bool sr::ChatSnapshot(std::vector<ChatLine>& lines, std::string& input) {
@@ -272,4 +332,51 @@ bool sr::ChatSnapshot(std::vector<ChatLine>& lines, std::string& input) {
   }
   input = g_input;
   return g_typing;
+}
+
+std::string sr::ChatPrompt() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_kb ? g_kb_prompt + ": " : std::string("Say: ");
+}
+
+void sr::KeyboardBegin(const std::string& prompt, const std::string& text, size_t max_chars,
+                       std::function<void(bool, const std::string&)> done) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_kb_done) g_kb_done(false, std::string());  // an older prompt still open: cancel it
+  g_kb_prompt = prompt.empty() ? std::string("Text") : prompt;
+  g_kb_text = text;
+  g_kb_max = max_chars ? max_chars : kMaxInput;
+  g_kb_done = std::move(done);
+  if (g_typing) {  // the input line is open (chat or an older prompt): it becomes this prompt
+    g_kb = true;
+    g_input = g_kb_text;
+  } else {
+    g_kb_pending = true;
+  }
+  REXLOG_INFO("Keyboard: \"{}\" (max {})", g_kb_prompt, g_kb_max);
+}
+
+void sr::PickerBegin(const std::string& title, const std::string& note, std::vector<PickerItem> items,
+                     std::function<void(int)> done) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_pick_done) g_pick_done(-1);
+  g_pick = true;
+  g_pick_title = title;
+  g_pick_note = note;
+  g_pick_items = std::move(items);
+  g_pick_sel = 0;
+  g_pick_done = std::move(done);
+  ResetKeys();
+  wml::SetKeysSuppressed(true);
+  REXLOG_INFO("Picker: \"{}\" ({} item(s))", g_pick_title, g_pick_items.size());
+}
+
+bool sr::PickerSnapshot(std::string& title, std::string& note, std::vector<PickerItem>& items, int& selected) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!g_pick) return false;
+  title = g_pick_title;
+  note = g_pick_note;
+  items = g_pick_items;
+  selected = g_pick_sel;
+  return true;
 }

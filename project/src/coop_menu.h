@@ -26,4 +26,9 @@ bool CoopDialogOpen();
 // a Start press then, which closes the pause menu.
 bool CoopResumePulse();
 
+// Every row the game adds to a menu list (options_menu.cpp's hook of the row
+// adder sub_8228BAB0): `row` is the list row it got. Finds the lobby's Mode
+// row, which gets a "Zombies" entry.
+void LobbyRowAdded(uint8_t* base, uint32_t label, uint32_t item, int row);
+
 }  // namespace sr

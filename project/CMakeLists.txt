@@ -85,6 +85,9 @@ set(SAINTSROW_SOURCES
     src/wml/patch_phase.cpp
     src/wml/fair_play.cpp
     src/discord_presence.cpp
+    src/gangs_bridge.cpp
+    src/keyboard_ui.cpp
+    src/friends_ui.cpp
     ${REXGLUE_SHARE_DIR}/rex_app.cpp
     res/saintsreborn.rc
 )
@@ -113,7 +116,7 @@ target_include_directories(saintsrow PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../modding/include
     ${SR_GENERATED_DIR}
 )
-target_link_libraries(saintsrow PRIVATE winmm rex::runtime rex::gpu-xenos wml_lua wml_minhook wml_zlib)
+target_link_libraries(saintsrow PRIVATE winmm winhttp rex::runtime rex::gpu-xenos wml_lua wml_minhook wml_zlib)
 
 target_compile_options(saintsrow PRIVATE
     -fno-strict-aliasing
@@ -240,6 +243,18 @@ if(SR_EOS AND EXISTS "${SR_EOS}/SDK/Include/eos_sdk.h")
     target_include_directories(whompays_coop PRIVATE ${SR_EOS}/SDK/Include)
 endif()
 set_target_properties(whompays_coop PROPERTIES OUTPUT_NAME "WhompaysCoop" PREFIX "")
+
+# Zombies (built in: multiplayer Mode "Zombies"). Built next to its mod.ini in
+# core/Zombies, so setup's copy of core\ into dist takes it along.
+add_library(zombies SHARED ../core/Zombies/zombies.cpp)
+target_include_directories(zombies PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../modding/include)
+target_compile_definitions(zombies PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(zombies PRIVATE rex::runtime)
+target_compile_options(zombies PRIVATE -msse4.1)
+set_target_properties(zombies PROPERTIES OUTPUT_NAME "Zombies" PREFIX "")
+add_custom_command(TARGET zombies POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:zombies>
+            ${CMAKE_CURRENT_SOURCE_DIR}/../core/Zombies/Zombies.dll)
 
 # Keyboard/mouse button pictures: setup runs glyphgen on the player's own game
 # files to make dist/kbm_ui.bin (see tools/glyphgen/README.md).

@@ -1,5 +1,6 @@
 -- Multiplayer (built in, dist\core\Multiplayer):
--- 1. The main menu's XBOX LIVE item is renamed MULTIPLAYER (US_Strings.txt:
+-- 1. The main menu's XBOX LIVE item is renamed MULTIPLAYER and the gang URL
+--    field becomes DISCORD (US_Strings.txt:
 --    UTF-16 LE, one KEY=Text per line).
 -- 2. multiplayer_levels.xtbl Optimal_Players_Min (4 or 8) lowered to
 --    min_players. (The game reads it nowhere we know of; the real matchmaking
@@ -18,6 +19,16 @@ local new = key .. utf16("MULTIPLAYER")
 for _, pack in ipairs({ "misc2.vpp_xbox2", "misc.vpp_xbox2" }) do
   local text = wml.packfile_read(pack, "US_Strings.txt")
   if text then
+    -- Gangs: the URL field (Form Gang / Update Gang Info) is the gang's Discord now.
+    for _, r in ipairs({
+      { "MP_GANGS_FORM_URL=", "URL:", "DISCORD:" },
+      { "MP_GANG_FORM_URL_TITLE=", "Gang URL", "Gang Discord" },
+      { "MP_GANG_FORM_URL_HELP=", "Enter your gang's URL", "Enter your gang's Discord invite (discord.gg/...)" },
+    }) do
+      local o, n = utf16(r[1] .. r[2] .. "\r\n"), utf16(r[1] .. r[3] .. "\r\n")
+      local gs, ge = text:find(o, 1, true)
+      if gs then text = text:sub(1, gs - 1) .. n .. text:sub(ge + 1) end
+    end
     local s, e = text:find(old, 1, true)
     if s then
       wml.packfile_write(pack, "US_Strings.txt", text:sub(1, s - 1) .. new .. text:sub(e + 1))

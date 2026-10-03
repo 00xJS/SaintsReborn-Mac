@@ -19,3 +19,10 @@ SaintsRebornMapEditor_layout.ini
 
 # PGO raw profiles (only the merged .profdata files are kept)
 pgo/*.profraw
+# Built by the game build (CMake target zombies) next to its mod.ini
+core/Zombies/Zombies.dll
+# Gangs server: local test database and logs
+server/gangs/*.db
+server/gangs/*.log
+server/gangs/.wrangler/
+server/gangs/node_modules/
