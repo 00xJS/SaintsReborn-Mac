@@ -23,9 +23,10 @@ on your own Mac, from your own disc.
 
 ## Install
 
-1. On this page, click the green **Code** button, then **Download ZIP**.
-   Open the ZIP in your Downloads folder to unpack it.
-2. In the unpacked folder, right-click **Install Saints Reborn** and choose
+1. Download **SaintsReborn-Mac-Setup.zip** from the
+   [latest release](https://github.com/00xJS/SaintsReborn-Mac/releases/latest)
+   and open it in your Downloads folder to unpack it.
+2. Right-click **Install Saints Reborn** and choose
    **Open**. If macOS says it cannot be opened, go to **System Settings >
    Privacy & Security**, scroll down and click **Open Anyway**.
 3. Choose your Saints Row disc image (`.iso`) when asked, then let it work.
@@ -35,7 +36,7 @@ on your own Mac, from your own disc.
    your home folder. Tick the mods you want and press **Play**.
 
 You can drag the app to your Dock or Applications folder, and delete the
-downloaded ZIP and folder.
+downloaded ZIP and installer afterwards.
 
 ### With Terminal
 
@@ -50,7 +51,8 @@ uses. [Homebrew](https://brew.sh) must be installed first.
 ## Update
 
 Double-click **Update Saints Reborn** in the `SaintsReborn` folder in your
-home folder. Your saves and mod list are kept.
+home folder. Your saves and mod list are kept. New versions are announced on
+the [releases page](https://github.com/00xJS/SaintsReborn-Mac/releases).
 
 ## Playing
 

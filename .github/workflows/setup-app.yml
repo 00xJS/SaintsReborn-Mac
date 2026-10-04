@@ -17,6 +17,9 @@ on:
 jobs:
   build:
     name: Build (${{ matrix.name }})
+    # The Windows / Linux Setup app belongs to the upstream project; this fork's
+    # releases carry the Mac installer (scripts/mac/make_release.sh).
+    if: github.repository == 'whompay/SaintsReborn'
     strategy:
       fail-fast: false
       matrix:
