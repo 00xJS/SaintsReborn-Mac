@@ -42,4 +42,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Files from a downloaded ZIP carry the "downloaded from the internet" mark;
+# the app is made on this Mac, so it should open without that warning.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 echo "Created $APP"

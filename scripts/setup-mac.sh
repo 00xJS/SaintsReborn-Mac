@@ -403,7 +403,7 @@ fi
 
 # ---------------------------------------------------------------------------
 step "Saints Reborn.app"
-run "$ROOT/scripts/mac/make_app.sh" "$ROOT"
+run /bin/bash "$ROOT/scripts/mac/make_app.sh" "$ROOT"
 
 printf '\nDone. Open "%s/Saints Reborn.app" to pick mods and play.\n' "$ROOT" | tee -a "$LOG"
 printf 'Saves and profile data are in %s\n' "$GAME_DIR" | tee -a "$LOG"

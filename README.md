@@ -20,38 +20,37 @@ on your own Mac, from your own disc.
 - A Mac with Apple silicon (M1 or newer), macOS 14 or newer
 - Your own Saints Row (Xbox 360) disc image (`.iso`)
 - About 15 GB of free disk space
-- [Homebrew](https://brew.sh)
 
 ## Install
 
-1. Open **Terminal** and download this repository:
+1. On this page, click the green **Code** button, then **Download ZIP**.
+   Open the ZIP in your Downloads folder to unpack it.
+2. In the unpacked folder, right-click **Install Saints Reborn** and choose
+   **Open**. If macOS says it cannot be opened, go to **System Settings >
+   Privacy & Security**, scroll down and click **Open Anyway**.
+3. Choose your Saints Row disc image (`.iso`) when asked, then let it work.
+   It downloads the free tools it needs and builds the game, which takes
+   about an hour. It may ask for your Mac password once.
+4. When it finishes, open **Saints Reborn** in the `SaintsReborn` folder in
+   your home folder. Tick the mods you want and press **Play**.
 
-   ```bash
-   git clone https://github.com/00xJS/SaintsReborn-Mac.git ~/SaintsReborn
-   ```
+You can drag the app to your Dock or Applications folder, and delete the
+downloaded ZIP and folder.
 
-2. Run setup with the path to your disc image:
+### With Terminal
 
-   ```bash
-   ~/SaintsReborn/scripts/setup-mac.sh --iso "/path/to/Saints Row.iso" --accept-license
-   ```
+```bash
+git clone https://github.com/00xJS/SaintsReborn-Mac.git ~/SaintsReborn
+~/SaintsReborn/scripts/setup-mac.sh --iso "/path/to/Saints Row.iso" --accept-license
+```
 
-   Setup downloads the free tools it needs, builds the game and creates the
-   app. The first run takes about an hour. `--accept-license` accepts
-   Microsoft's license for the C++ files the build uses.
-
-3. Open **Saints Reborn** in the `~/SaintsReborn` folder. Tick the mods you
-   want and press **Play**.
-
-You can drag the app to your Dock or Applications folder.
+`--accept-license` accepts Microsoft's license for the C++ files the build
+uses. [Homebrew](https://brew.sh) must be installed first.
 
 ## Update
 
-```bash
-cd ~/SaintsReborn && git pull && ./scripts/setup-mac.sh --accept-license
-```
-
-Your saves and mod list are kept.
+Double-click **Update Saints Reborn** in the `SaintsReborn` folder in your
+home folder. Your saves and mod list are kept.
 
 ## Playing
 
