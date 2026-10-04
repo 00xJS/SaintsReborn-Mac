@@ -55,6 +55,8 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <cstdio>
+#include <thread>
 
 #include <rex/input/input.h>
 #include <rex/logging.h>
@@ -163,7 +165,62 @@ void ReleaseMouseLocked() {
   g_mouse.wheel_until = {};
 }
 
-// Collects cursor movement since the last call and puts the cursor back in the
+// Raw mouse movement (WM_INPUT), collected on its own thread. Under Wine on
+// macOS every SetCursorPos warp makes the system drop mouse movement for a
+// moment and shows the cursor, so the cursor is pinned with a 1x1 ClipCursor
+// instead and movement comes from here. File "mouse_warp" next to the exe =
+// the old way (read the cursor position, warp it back to the middle).
+std::atomic<long> g_raw_dx{0}, g_raw_dy{0};
+std::atomic<bool> g_raw_ready{false};
+
+LRESULT CALLBACK RawMouseProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_INPUT) {
+    RAWINPUT in{};
+    UINT size = sizeof(in);
+    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &in, &size, sizeof(RAWINPUTHEADER)) !=
+            UINT(-1) &&
+        in.header.dwType == RIM_TYPEMOUSE && !(in.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
+      g_raw_dx.fetch_add(in.data.mouse.lLastX, std::memory_order_relaxed);
+      g_raw_dy.fetch_add(in.data.mouse.lLastY, std::memory_order_relaxed);
+    }
+  }
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void StartRawMouse() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    std::thread([] {
+      WNDCLASSW wc{};
+      wc.lpfnWndProc = RawMouseProc;
+      wc.hInstance = GetModuleHandleW(nullptr);
+      wc.lpszClassName = L"SaintsRebornRawMouse";
+      RegisterClassW(&wc);
+      HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                                  wc.hInstance, nullptr);
+      RAWINPUTDEVICE dev{1, 2, RIDEV_INPUTSINK, hwnd};
+      if (!hwnd || !RegisterRawInputDevices(&dev, 1, sizeof(dev))) {
+        REXLOG_INFO("KBM: raw mouse input not available, using cursor warping");
+        return;
+      }
+      g_raw_ready = true;
+      REXLOG_INFO("KBM: raw mouse input on");
+      MSG msg;
+      while (GetMessageW(&msg, nullptr, 0, 0) > 0) DispatchMessageW(&msg);
+    }).detach();
+  });
+}
+
+bool MouseWarpForced() {
+  static const bool forced = [] {
+    FILE* f = std::fopen("mouse_warp", "rb");
+    if (f) std::fclose(f);
+    return f != nullptr;
+  }();
+  return forced;
+}
+
+// Collects mouse movement since the last call and keeps the cursor in the
 // middle of the game window. Returns the movement in pixels.
 void PollMouseLocked(double& dx, double& dy) {
   dx = dy = 0;
@@ -184,6 +241,24 @@ void PollMouseLocked(double& dx, double& dy) {
   ClientToScreen(window, &bottom_right);
   RECT screen{top_left.x, top_left.y, bottom_right.x, bottom_right.y};
   POINT center{(screen.left + screen.right) / 2, (screen.top + screen.bottom) / 2};
+  if (!MouseWarpForced()) StartRawMouse();
+  if (g_raw_ready.load(std::memory_order_relaxed) && !MouseWarpForced()) {
+    static POINT pinned{-1, -1};
+    if (!g_mouse.captured || pinned.x != center.x || pinned.y != center.y) {
+      const bool first = !g_mouse.captured;
+      g_mouse.captured = true;
+      pinned = center;
+      SetCursorPos(center.x, center.y);
+      RECT pin{center.x, center.y, center.x + 1, center.y + 1};
+      ClipCursor(&pin);
+      g_raw_dx.store(0, std::memory_order_relaxed);
+      g_raw_dy.store(0, std::memory_order_relaxed);
+      if (first) return;
+    }
+    dx = double(g_raw_dx.exchange(0, std::memory_order_relaxed));
+    dy = double(g_raw_dy.exchange(0, std::memory_order_relaxed));
+    return;
+  }
   POINT cursor;
   GetCursorPos(&cursor);
   ClipCursor(&screen);  // cheap, and follows window moves / resizes

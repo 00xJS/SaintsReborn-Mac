@@ -105,6 +105,23 @@ Mozilla Public License 2.0. It is not compiled into the editor; if you ship
 its executable next to the editor, ship (or link to) its source as the MPL
 requires.
 
+## macOS setup (`scripts/setup-mac.sh`)
+
+Nothing below is included in this repository. The macOS setup script downloads
+these to your Mac, from their own publishers, and each stays under its own
+license:
+
+| Software | Publisher | License |
+|---|---|---|
+| [Game Porting Toolkit](https://developer.apple.com/games) (Wine with D3DMetal), [packaged by Gcenx](https://github.com/Gcenx/game-porting-toolkit) | Apple; Wine by the Wine project | Apple's Game Porting Toolkit license (D3DMetal); LGPL-2.1-or-later (Wine) |
+| Microsoft C++ headers and libraries, fetched by [xwin](https://github.com/Jake-Shadle/xwin) | Microsoft | [Microsoft Visual Studio license terms](https://visualstudio.microsoft.com/license-terms/) |
+| Microsoft Visual C++ Redistributable | Microsoft | [Microsoft Visual Studio license terms](https://visualstudio.microsoft.com/license-terms/) |
+| [LLVM](https://llvm.org) (clang, lld), [CMake](https://cmake.org), [Ninja](https://ninja-build.org), xwin | their projects | Apache-2.0 with LLVM exceptions; BSD-3-Clause; Apache-2.0; Apache-2.0 or MIT |
+
+Running the script with `--accept-license` accepts Microsoft's license terms
+for the Microsoft files. The Game Porting Toolkit may only be used on
+Apple-branded hardware, under Apple's license.
+
 ## Game data
 
 Nothing in this repository comes from the game. The map tools read the files of

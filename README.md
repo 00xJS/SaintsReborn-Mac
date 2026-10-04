@@ -1,174 +1,76 @@
-# Saints Reborn (formerly SaintsRowPC)
+# Saints Reborn on Mac
 
-Saints Reborn is the new name of the SaintsRowPC project. Nothing else has
-changed: old links to the SaintsRowPC repository lead here, and existing
-installs keep updating as before.
+Play **Saints Row** (Xbox 360, 2006) on an Apple silicon Mac, free.
 
-An unofficial native Windows port of **Saints Row** (Xbox 360, 2006). The game's
-PowerPC code is statically recompiled to x86-64 with the
-[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), so it runs as a normal
-Windows program rather than under an emulator.
+This is a Mac setup for [Saints Reborn](https://github.com/whompay/SaintsReborn)
+by whompay. It builds the game on your own Mac from your own disc and adds a
+**Saints Reborn** app that opens the mod loader, where you pick your mods and
+press Play.
 
 **This repository contains no game code or data.** You build the game yourself,
-on your own PC, from your own disc.
+on your own Mac, from your own disc.
 
 > Saints Reborn is a fan project. It is not affiliated with, endorsed by or
-> sponsored by Volition, THQ Nordic, Deep Silver, Plaion or Microsoft.
+> sponsored by Volition, THQ Nordic, Deep Silver, Plaion or Microsoft. Saints
+> Reborn on Mac is not affiliated with, endorsed by or sponsored by Apple
+> either.
 
-## Status
+## What you need
 
-Fully playable from start to finish. The intro videos, character creator, the
-whole story, side missions and free roam all work, with sound. Co-op is built
-in: play the story or free roam together over LAN, by direct IP, or online with
-a join code. The game runs at 60 FPS and above with the bundled 60 FPS mod (or
-at its original 30), renders at 2x its original resolution by default, and has
-its own Pause > Options menu for resolution scale, shadows and mouse
-sensitivity. Keyboard and mouse are fully supported, the on-screen button
-prompts switch between controller and keyboard pictures to match what you use,
-and there is a first-person view (V). Older PCs are covered too: CPUs without
-AVX2 automatically get a compatible build, and laptops with two graphics chips
-use the faster one.
+- A Mac with Apple silicon (M1 or newer), macOS 14 or newer
+- Your own Saints Row (Xbox 360) disc image (`.iso`)
+- About 15 GB of free disk space
+- [Homebrew](https://brew.sh)
 
-### Known issues
+## Install
 
-- Some textures on the character flicker slightly while rotating them in the
-  character creator.
-- Only the disc version this port was made with is supported. Setup warns if
-  your `default.xex` is different.
+1. Open **Terminal** and download this repository:
 
-## Easy install
+   ```bash
+   git clone https://github.com/00xJS/SaintsReborn-Mac.git ~/SaintsReborn
+   ```
 
-Download **SaintsReborn-Setup.exe** from the
-[latest release](https://github.com/whompay/SaintsReborn/releases/latest), run
-it, choose your `.iso` or a folder with your game files (the one with
-`default.xex` and `packfiles` in it), and press **Install**.
+2. Run setup with the path to your disc image:
 
-Setup downloads the build tools it needs: clang, CMake, Ninja and Microsoft's
-C++ headers and libraries. That is about 1.5 GB, all kept in one folder, and
-no Visual Studio is needed. Windows only asks for permission if the Visual C++
-runtime is missing. Setup then builds the game and adds a Saints Reborn
-shortcut. The first build takes 10–60 minutes, depending on your CPU.
+   ```bash
+   ~/SaintsReborn/scripts/setup-mac.sh --iso "/path/to/Saints Row.iso" --accept-license
+   ```
 
-To update, run Setup again or use the **Update Saints Reborn** shortcut. Only
-what changed is rebuilt, and your saves and mod list are kept. Installs made
-with the old Setup can be updated the same way.
+   Setup downloads the free tools it needs, builds the game and creates the
+   app. The first run takes about an hour. `--accept-license` accepts
+   Microsoft's license for the C++ files the build uses.
 
-Co-op and multiplayer are built in, so they don't appear in the mod loader's
-list. They are always on.
+3. Open **Saints Reborn** in the `~/SaintsReborn` folder. Tick the mods you
+   want and press **Play**.
 
-### Linux (Steam Deck, desktop Linux)
+You can drag the app to your Dock or Applications folder.
 
-Coming soon: Setup will build the game on Linux, and you'll play it with
-Proton.
+## Update
 
-## Requirements (manual build with setup.bat)
+```bash
+cd ~/SaintsReborn && git pull && ./scripts/setup-mac.sh --accept-license
+```
 
-- Your own Saints Row (Xbox 360) disc, dumped to an `.iso` file.
-- Windows 10 or 11 (64-bit) and a GPU with Direct3D 12 support.
-- [Visual Studio 2022](https://visualstudio.microsoft.com/downloads/)
-  (Community or Build Tools, both free) with the **Desktop development with
-  C++** workload and these individual components:
-  - C++ Clang Compiler for Windows
-  - C++ CMake tools for Windows
-- [Git for Windows](https://git-scm.com/download/win).
-- About 15 GB of free disk space and 16 GB of RAM. The first build takes
-  30–90 minutes depending on your CPU.
-
-## Building manually
-
-1. Download this repository to a short path, for example `C:\SaintsReborn`.
-2. Run `setup.bat`.
-3. Select your Saints Row `.iso` when asked.
-
-When it finishes, the game is in the `dist` folder. If a step fails, fix the
-cause and run `setup.bat` again; finished steps are skipped. See
-[docs/BUILDING.md](docs/BUILDING.md) for what each step does and for
-troubleshooting.
+Your saves and mod list are kept.
 
 ## Playing
 
-Run `dist\WhompaysModLoader.exe` to pick mods and play, or `dist\saintsrow.exe`
-to play directly.
+An Xbox controller works as on the console, and keyboard and mouse are fully
+supported. Controls, mods and co-op are the same as in Saints Reborn: see the
+[Saints Reborn README](https://github.com/whompay/SaintsReborn#playing).
 
-An Xbox controller works as on the console. Keyboard and mouse controls follow
-Saints Row 2 on PC:
+Useful keys: **F11** fullscreen / window, **F1** frame rate counter,
+**V** first person view.
 
-| On foot | | In a vehicle | |
-|---|---|---|---|
-| Move | W A S D | Accelerate / brake | W / S |
-| Camera | Mouse | Steer | A / D |
-| Attack / secondary | Left / right mouse button | Drive-by | Left mouse button |
-| Jump / sprint | Space / Shift | Handbrake / nitrous | Space / Shift |
-| Action, enter vehicle | E | Exit vehicle | E |
-| Reload, pick up weapon | R | Look left / right / back | Z / C / X |
-| Kick / crouch | F / C | Hydraulics | Ctrl |
+Saves are in `~/SaintsReborn/dist/game`.
 
-Everywhere: hold Q for the weapon wheel (point with the mouse), Esc or M for
-the pause menu and map, Tab for back, the arrow keys for the D-pad, Enter and
-Backspace for A and B in menus. In the pause menu the mouse pans the map, the
-wheel zooms and the left button sets a waypoint; Q and E switch tabs. A mouse
-click skips cutscenes. When tagging, move the mouse in circles the way the
-arrows show.
+## Credits
 
-| Key | Effect |
-|---|---|
-| F11 | Fullscreen / window |
-| F10 | Frame rate cap: 30, 60, 90, 120 or off (above 30 needs the 60 FPS mod) |
-| F1 | Frame rate counter |
-| V | First person view on foot, swimming and in vehicles (switches back by itself in shops, cutscenes and scripted scenes). Settings: `dist\core\FirstPerson\mod.ini` |
-
-Input is ignored while the game window is not focused. Saves and profile data
-are stored in `dist\game`. Setup makes the keyboard button pictures from your
-own game files (see [tools/glyphgen](tools/glyphgen/README.md)); if that step
-fails, the game shows controller buttons.
-
-Options, set by creating a file next to `saintsrow.exe`:
-
-| File | Effect |
-|---|---|
-| `res_scale.txt` | Internal resolution scale: `1` (720p), `2` (default) or `3`. |
-| `start_windowed` | Start in a window instead of fullscreen. The file can be empty. |
-| `mouse_sensitivity.txt` | Mouse sensitivity, `1.0` by default. |
-| `fps_cap.txt` | Frame rate cap. F10 writes it for you. |
-| `ram_cache_mb.txt` | Memory for caching reads from the game's packfiles, in MB (`0` turns it off). The default depends on your RAM. |
-| `gpu_queue.txt` | How many GPU command buffers may be queued, `4` by default. `0` waits for every buffer (slower, for troubleshooting). |
-| `gpu_max_lag.txt` | How far the GPU thread may fall behind the game, in microseconds, `4000` by default. `0` means no limit. |
-| `gpu_timing` | An empty file with this name logs the GPU time per frame by kind of work (draws, render target copies, texture loads, resolves, uploads) every 2 seconds. |
-| `replay_thread.off`, `upload_batching.off`, `upload_check.off`, `bg_verify.off`, `direct_resolve_off`, `direct_resolve_skip_memory.off`, `rt_fast.off`, `texture_lookup_cache.off`, `keep_cross_transfers`, `msaa_tiling` | Troubleshooting: each empty file turns one performance optimization off. Only useful when looking for the cause of a graphics problem. |
-
-## Mods
-
-Saints Reborn comes with **Whompay's Mod Loader**. Run
-`dist\WhompaysModLoader.exe` to turn mods on or off and change their load
-order, then press Play. Mods can replace game files, run Lua scripts, or load
-C/C++ code that hooks the game's functions. See
-[modding/README.md](modding/README.md) to use or make mods.
-
-## How it works
-
-The ReXGlue SDK translates every PowerPC function in the game's executable to
-C++ and reimplements the Xbox 360 kernel, GPU (on Direct3D 12), audio and
-input. This repository adds the Saints Row-specific parts:
-
-| Path | Contents |
-|---|---|
-| `config/saintsrow_manifest.toml` | Recompiler configuration: ABI helpers, functions static analysis misses, mid-function hooks |
-| `project/src/stubs.cpp` | Game-specific replacements for recompiled functions and kernel calls |
-| `project/src/main.cpp` | Program entry: memory setup, window, runtime |
-| `project/src/render_fixes.cpp` | Rendering setup changes for PC (single-pass rendering) |
-| `project/src/kbm.cpp`, `project/src/glyphs.cpp` | Keyboard and mouse controls; controller / keyboard button prompts |
-| `tools/glyphgen` | Makes the keyboard button pictures from your game files during setup |
-| `project/src/wml`, `project/launcher` | Whompay's Mod Loader and its launcher |
-| `modding` | Mod API header, examples and documentation |
-| `patches/rexglue-sdk.patch` | Changes to the SDK that the game needs |
-| `tools/xiso_extract` | Xbox disc image (XDVDFS) extractor |
-| `scripts/setup.ps1` | The build script behind `setup.bat` |
-
-[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) explains the individual fixes.
-
-## Contributing
-
-Bug reports and fixes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- [Saints Reborn](https://github.com/whompay/SaintsReborn) by whompay
+- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) by Tom Clay and contributors
+- [Xenia](https://xenia.jp) by Ben Vanik and contributors
+- [Game Porting Toolkit](https://developer.apple.com/games) by Apple, packaged by [Gcenx](https://github.com/Gcenx/game-porting-toolkit)
+- Volition, for the game
 
 ## Legal
 
@@ -183,11 +85,3 @@ and the libraries it downloads during the build are covered by their own
 licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). "Saints Row" is
 a trademark of its owner and is used here only to name the game this project
 works with.
-
-## Credits
-
-- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) by Tom Clay and
-  contributors.
-- [Xenia](https://xenia.jp) by Ben Vanik and contributors, which the SDK is
-  derived from.
-- Volition, for the game.

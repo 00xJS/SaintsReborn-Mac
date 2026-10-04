@@ -29,6 +29,7 @@
 #include <rex/system/gpu_plugin.h>
 #endif
 #include <rex/audio/sdl/sdl_audio_system.h>
+#include <rex/audio/downmix.h>
 #include <rex/input/input_system.h>
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
@@ -56,6 +57,40 @@ void StartPgoWriter() {
     }).detach();
     REXLOG_INFO("PGO: instrumented build, profile -> pgo_saintsrow.profraw every 30 s");
 }
+}  // namespace
+#endif
+
+// Under Wine (macOS / Linux) SDL's WASAPI output leaves sub-millisecond gaps in
+// the sound, about ten a second (heard as crackle, worst in the menu music).
+// DirectSound output has none. SDL reads its environment once, at its first
+// use, so this runs before main(). File "audio_wasapi" next to the exe = SDL's
+// default output.
+static bool g_wine_directsound = false;
+#ifdef _WIN32
+#include <windows.h>
+namespace {
+struct WineAudioSetup {
+    WineAudioSetup() {
+        if (!GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) return;
+        if (GetFileAttributesW(L"audio_wasapi") != INVALID_FILE_ATTRIBUTES) return;
+        if (GetEnvironmentVariableA("SDL_AUDIO_DRIVER", nullptr, 0)) {
+            g_wine_directsound = true;
+            return;
+        }
+        // The audio library lives in rexruntime.dll, which has already read
+        // the environment by now: start the game again with the variable set
+        // and hand over to that copy.
+        SetEnvironmentVariableA("SDL_AUDIO_DRIVER", "directsound");
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(nullptr, GetCommandLineW(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) return;
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        ExitProcess(code);
+    }
+} g_wine_audio_setup;
 }  // namespace
 #endif
 
@@ -525,6 +560,7 @@ public:
         rex::InitLogging(log_config);
         rex::RegisterLogLevelCallback();
         REXLOG_INFO("Saints Row starting");
+        if (g_wine_directsound) REXLOG_INFO("Audio: running under Wine, using DirectSound output");
         REXLOG_INFO("  Game directory: {}", game_dir.string());
         if (FILE* ff = std::fopen("fma_crt", "rb")) {
             std::fclose(ff);
@@ -632,6 +668,36 @@ public:
                 std::fclose(mf);
             }
             sr::SetMouseSensitivity(sensitivity);
+        }
+        {
+            // Output volume from "audio_gain.txt" next to the exe (1.0 = as the
+            // game mixes it). The stereo fold clamps at full scale, so a mix
+            // that runs hot distorts; a gain below 1 leaves headroom.
+            double gain = 1.0;
+            if (FILE* gf = std::fopen("audio_gain.txt", "rb")) {
+                double v = 0;
+                if (std::fscanf(gf, "%lf", &v) == 1 && v >= 0.05 && v <= 2.0) gain = v;
+                std::fclose(gf);
+            }
+            rex::audio::SetOutputGain(float(gain));
+            // Stereo fold weights from "audio_fold.txt": centre surround lfe
+            // (defaults 0.707 0.707 0). The game's menu music is spread over
+            // the centre and surround channels; folding those onto the fronts
+            // can colour the sound on stereo speakers.
+            if (FILE* ff = std::fopen("audio_fold.txt", "rb")) {
+                double c = 0, sr_w = 0, l = 0;
+                if (std::fscanf(ff, "%lf %lf %lf", &c, &sr_w, &l) == 3 && c >= 0 && c <= 2 && sr_w >= 0 && sr_w <= 2 &&
+                    l >= 0 && l <= 2) {
+                    rex::audio::StereoFold fold;
+                    fold.center = float(c);
+                    fold.surround = float(sr_w);
+                    fold.lfe = float(l);
+                    rex::audio::SetStereoFold(fold);
+                    REXLOG_INFO("Audio stereo fold: centre {:.2f} surround {:.2f} lfe {:.2f}", c, sr_w, l);
+                }
+                std::fclose(ff);
+            }
+            REXLOG_INFO("Audio output gain: {:.2f}", gain);
         }
         // Xbox Live sign-in: the game's Xbox Live menus (Quick / Custom Match,
         // party, leaderboards) run over Epic Online Services, so the profile
