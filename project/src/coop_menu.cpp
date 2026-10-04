@@ -27,6 +27,7 @@
 #include "saintsrow_init.h"
 
 #include <algorithm>
+#include <map>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -840,6 +841,17 @@ PPC_FUNC(sub_822B7D68) {
 // handler would only play the select sound for it).
 extern "C" void __imp__sub_82349018(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_82349018) {
+  if (sr::LobbiesCurrent(base)) {
+    // MULTIPLAYER > LOBBIES: refresh the list; A joins the lobby under the
+    // cursor (the OPTIONS handler would open Controls / Display / Audio).
+    sr::LobbiesUpdate(ctx, base);
+    if (MainConfirmPressed(ctx, base)) {
+      sr::LobbiesConfirm(base);
+      return;
+    }
+    __imp__sub_82349018(ctx, base);
+    return;
+  }
   if (sr::PlayersCurrent(base)) {
     // MULTIPLAYER > PLAYERS: refresh the list; A on a greyed info row would
     // open the OPTIONS sub menus (Controls / Display / Audio), so it's eaten.
@@ -1409,7 +1421,57 @@ void SoloStartPoll(uint8_t* base) {
   REXLOG_INFO("Matchmaking: {} player(s), {} needed: match starts in 5 s (start time was {})", players, need, start_at);
 }
 
+// Map packs online: in a public lobby (Player Match / Ranked, lobby kind 1 /
+// 2) only disc maps can be picked, so a public match never lands on a map
+// another player doesn't have. Level tables (built once, flag 0x8370F22F):
+// per mode slot 0..6 a count ([0x83074B1C] + 4 * slot) and 60-byte records
+// ([0x83074B20] + 4 * slot); +29 Disabled byte, +32 downloadable-content index
+// (-1 = on the disc), +36 id. Map pack levels are switched off while in a
+// public lobby and back on outside it (Private Party, System Link, custom).
+std::map<uint32_t, uint8_t> g_custom_levels_off;  // record -> its Disabled byte before
+uint32_t g_custom_levels_table = 0;
+bool CustomLevel(uint8_t* base, uint32_t rec) {
+  const int32_t dlc = int32_t(R32(base, rec + 32));
+  const uint16_t id = R16(base, rec + 36);
+  return dlc != -1 || id >= 1000;  // disc levels: no content index, ids below 1000
+}
+void PublicLevelFilter(uint8_t* base) {
+  const uint32_t kind = R32(base, 0x827AD564u);
+  const bool is_public = kind == 1 || kind == 2;
+  const bool built = Host(base, 0x8370F22Fu)[0] != 0;
+  const uint32_t counts = R32(base, 0x83074B1Cu), records = R32(base, 0x83074B20u);
+  if (!built || !counts || !records) return;
+  if (records != g_custom_levels_table) {  // the table was built again: old records are gone
+    g_custom_levels_off.clear();
+    g_custom_levels_table = records;
+  }
+  if (!is_public) {
+    if (g_custom_levels_off.empty()) return;
+    for (auto& [rec, was] : g_custom_levels_off)
+      if (CustomLevel(base, rec)) Host(base, rec + 29)[0] = was;
+    REXLOG_INFO("Map packs: {} level(s) usable again (not a public lobby)", g_custom_levels_off.size());
+    g_custom_levels_off.clear();
+    return;
+  }
+  size_t added = 0;
+  for (uint32_t slot = 0; slot < 7; ++slot) {
+    const uint32_t n = R32(base, counts + slot * 4), recs = R32(base, records + slot * 4);
+    if (!recs || n > 128) continue;
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint32_t rec = recs + i * 60;
+      if (!CustomLevel(base, rec)) continue;
+      if (!g_custom_levels_off.count(rec)) {
+        g_custom_levels_off[rec] = Host(base, rec + 29)[0];
+        ++added;
+      }
+      Host(base, rec + 29)[0] = 1;
+    }
+  }
+  if (added) REXLOG_INFO("Map packs: {} level(s) off in this public lobby (disc maps only)", added);
+}
+
 void sr::CoopMenuPoll(uint8_t* base) {
+  PublicLevelFilter(base);
   sr::PlayersActivityPoll(base);  // what others see this player doing (PLAYERS tab)
   SoloStartPoll(base);
   std::lock_guard<std::recursive_mutex> lock(g_mutex);

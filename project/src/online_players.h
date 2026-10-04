@@ -22,6 +22,11 @@ void PlayersFillList(PPCContext& ctx, uint8_t* base);
 void PlayersUpdate(PPCContext& ctx, uint8_t* base);
 // After the list finisher: puts the cursor back where it was.
 void PlayersAfterFinish(PPCContext& ctx, uint8_t* base);
+// MULTIPLAYER > LOBBIES (menu id 46): the current menu; every frame before the
+// OPTIONS update (rebuilds when the list changed); A on a row (joins it).
+bool LobbiesCurrent(uint8_t* base);
+void LobbiesUpdate(PPCContext& ctx, uint8_t* base);
+void LobbiesConfirm(uint8_t* base);
 // Often (input hook): tells the runtime what this player is doing.
 void PlayersActivityPoll(uint8_t* base);
 }  // namespace sr

@@ -17,7 +17,8 @@
 // Settings are saved next to the exe and read at start-up:
 //   res_scale.txt (1-3), start_windowed (file = windowed), vsync (file = on),
 //   fps_cap.txt, show_fps (file = shown), aspect.txt (4:3 ... 21:9, read at
-//   start-up; the old widescreen_off file counts as 4:3), mouse_sensitivity.txt.
+//   start-up; the old widescreen_off file counts as 4:3), mouse_sensitivity.txt,
+//   aim_assist_off (file = aim assist off).
 
 #include "options_menu.h"
 
@@ -153,6 +154,21 @@ void SetGuestShadowSetting(uint32_t v) {
   std::memcpy(base + kShadowSetting, &be, 4);
 }
 
+// Aim assist (controller): the game's console toggles aim_assist_slow (the
+// crosshair slows down over a target, byte 0x827ACBD5) and aim_assist_steer
+// (it is pulled toward the target, byte 0x827ACBD6), handlers sub_82486738 /
+// sub_82486868; both on by default. Off = the file aim_assist_off next to the exe.
+constexpr uint32_t kAimAssistSlow = 0x827ACBD5u, kAimAssistSteer = 0x827ACBD6u;
+int g_aim_assist = -1;  // -1 = not read yet
+bool AimAssistOn() {
+  if (g_aim_assist < 0) g_aim_assist = FileExists("aim_assist_off") ? 0 : 1;
+  return g_aim_assist == 1;
+}
+void SetGuestAimAssist(uint8_t* base, bool on) {
+  base[kAimAssistSlow] = on ? 1 : 0;
+  base[kAimAssistSteer] = on ? 1 : 0;
+}
+
 struct Row {
   const char* label;
   std::vector<std::string> choices;
@@ -258,6 +274,18 @@ std::vector<Row>& Rows() {
            std::fclose(f);
          }
          SetGuestShadowSetting(v);
+       },
+       false},
+      {"Aim Assist", {"Off", "On"},
+       [] { return AimAssistOn() ? 1 : 0; },
+       [](int c) {
+         g_aim_assist = c == 1 ? 1 : 0;
+         if (g_aim_assist) {
+           std::remove("aim_assist_off");
+         } else if (FILE* f = std::fopen("aim_assist_off", "wb")) {
+           std::fclose(f);
+         }
+         SetGuestAimAssist(REX_KERNEL_STATE()->memory()->virtual_membase(), g_aim_assist == 1);
        },
        false},
       {"Mouse Sensitivity", {"0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "2.5", "3.0", "4.0"},
@@ -366,6 +394,8 @@ void sr::ApplyStartupGraphics(bool weak_gpu) {
     std::fclose(f);
   }
   SetGuestShadowSetting(uint32_t(shadows));
+  SetGuestAimAssist(REX_KERNEL_STATE()->memory()->virtual_membase(), AimAssistOn());
+  REXLOG_INFO("Aim assist: {}", AimAssistOn() ? "on" : "off (aim_assist_off)");
   REXLOG_INFO("Shadows: {} ({})",
               shadows == 2 ? "High" : shadows == 3 ? "Low (shadow maps only)" : shadows == 1 ? "stencil only" : "Off",
               from_file ? "shadows.txt" : weak_gpu ? "default for weak GPUs" : "default");
@@ -436,6 +466,8 @@ PPC_FUNC(sub_82347478) {
 
 void sr::OptionsMenuPoll(uint8_t* base) {
   std::lock_guard<std::recursive_mutex> lock(g_mutex);
+  // Aim assist off stays off (also if the console toggles were used).
+  if (!AimAssistOn() && (base[kAimAssistSlow] || base[kAimAssistSteer])) SetGuestAimAssist(base, false);
   // The window shows the frame at the chosen shape (once).
   static bool presenter_set = false;
   if (!presenter_set) {

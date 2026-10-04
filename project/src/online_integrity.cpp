@@ -10,10 +10,14 @@
 //  - any enabled mod that is not part of the standard game (kOnlineSafeMods)
 //    and changes more than how the game looks (wml/fair_play.cpp decides:
 //    textures, fonts and fair lighting are fine; approved code mods too),
-//  - custom map packs in maps\ (other players may not have them),
 //  - the World Studio editor host,
 //  - cheat tools or debuggers (checked every few seconds; once seen, the game
 //    stays modded until it is restarted without them).
+//
+// Custom map packs (maps\) don't count: public Player / Ranked lobbies only
+// pick disc maps (coop_menu.cpp PublicLevelFilter), and a lobby whose host
+// picks a map another player doesn't have sends that player back (map check,
+// runtime SrMapCheck).
 //
 // It also shows the runtime's online notices (cvar online_notice) over the
 // game for a few seconds.
@@ -162,7 +166,7 @@ void sr::StartOnlineIntegrity(const std::filesystem::path& exe_dir) {
     return s;
   };
   std::string other;
-  if (!maps.empty()) other = "custom maps " + join(maps);
+  if (!maps.empty()) REXLOG_INFO("Online fair play: map packs {} (fine online; public lobbies use disc maps)", join(maps));
   if (sr::world_studio::EditorHostEnabled()) other += (other.empty() ? "" : "; ") + std::string("World Studio");
 
   // Mods: the fair play check runs in the background (packfiles are big);

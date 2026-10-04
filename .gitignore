@@ -26,9 +26,3 @@ server/gangs/*.db
 server/gangs/*.log
 server/gangs/.wrangler/
 server/gangs/node_modules/
-
-# macOS setup (scripts/setup-mac.sh)
-/prefix/
-/Saints Reborn.app/
-/config/generated/
-.DS_Store
