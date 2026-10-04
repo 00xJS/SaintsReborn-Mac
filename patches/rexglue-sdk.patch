@@ -8580,7 +8580,7 @@ index 3f9422d..943eea5 100644
  
  void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
 diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
-index 2b222da..9ed0edf 100644
+index 2b222da..1b58324 100644
 --- a/src/kernel/xam/apps/xgi_app.cpp
 +++ b/src/kernel/xam/apps/xgi_app.cpp
 @@ -10,9 +10,38 @@
@@ -8663,7 +8663,7 @@ index 2b222da..9ed0edf 100644
        REXKRNL_DEBUG("XGIUserSetPropertyEx({:08X}, {:08X}, {}, {:08X})", user_index, property_id,
                      value_size, value_ptr);
        return X_E_SUCCESS;
-@@ -113,6 +162,73 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -113,6 +162,76 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            "{:08X})",
            session_ptr, flags, num_slots_public, num_slots_private, user_xuid, session_info_ptr,
            nonce_ptr);
@@ -8694,6 +8694,7 @@ index 2b222da..9ed0edf 100644
 +        std::lock_guard<std::mutex> l(g_live.mutex);
 +        LiveState::Session entry;
 +        entry.nonce = nonce;
++        entry.obj = session_ptr;
 +        entry.host = live_host;
 +        entry.flags = flags;
 +        entry.public_slots = num_slots_public;
@@ -8709,6 +8710,8 @@ index 2b222da..9ed0edf 100644
 +          g_live.public_slots = num_slots_public;
 +          g_live.private_slots = num_slots_private;
 +          g_live.flags = flags;
++          g_live.obj = session_ptr;
++          g_live.remote = 0;
 +          g_live.hosting = true;
 +          PublishAdvertLocked();
 +        }
@@ -8737,7 +8740,7 @@ index 2b222da..9ed0edf 100644
        return X_E_SUCCESS;
      }
      case 0x000B0011: {
-@@ -123,7 +239,45 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -123,7 +242,47 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        uint64_t session_nonce = memory::load_and_swap<uint64_t>(buffer + 8);
  
        REXKRNL_DEBUG("XGISessionDelete({:08X}, {:08X}, {:016X})", obj_ptr, flags, session_nonce);
@@ -8768,6 +8771,8 @@ index 2b222da..9ed0edf 100644
 +              g_live.flags = host->flags;
 +              g_live.public_slots = host->public_slots;
 +              g_live.private_slots = host->private_slots;
++              g_live.obj = host->obj;
++              g_live.remote = host->remote;
 +              g_live.hosting = true;
 +              rex::system::eoslan::SetInviteSession(host->info);
 +              PublishAdvertLocked();
@@ -8784,10 +8789,13 @@ index 2b222da..9ed0edf 100644
        return X_E_SUCCESS;
      }
      case 0x000B0012: {
-@@ -140,6 +294,18 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -138,6 +297,20 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       REXKRNL_DEBUG("{}({:08X}, {}, {}, {:08X}, {:08X})",
+                     is_local ? "XGISessionJoinLocal" : "XGISessionJoinRemote", session_ptr,
                      user_count, xuid_array_ptr, user_index_array, private_slots_array);
-       return X_E_SUCCESS;
-     }
++      if (!is_local) LiveCountRemote(session_ptr, int(std::min<uint32_t>(user_count, 16)));
++      return X_E_SUCCESS;
++    }
 +    case 0x000B0013: {
 +      // XSessionLeaveLocal / XSessionLeaveRemote (same layout as the joins
 +      // above): the game moves players between its sessions when a match is
@@ -8798,12 +8806,11 @@ index 2b222da..9ed0edf 100644
 +      uint32_t xuid_array_ptr = buffer ? memory::load_and_swap<uint32_t>(buffer + 8) : 0;
 +      REXLOG_INFO("LIVE {}({:08X}, {} player(s))", xuid_array_ptr ? "XSessionLeaveRemote" : "XSessionLeaveLocal",
 +                  session_ptr, user_count);
-+      return X_E_SUCCESS;
-+    }
++      if (xuid_array_ptr) LiveCountRemote(session_ptr, -int(std::min<uint32_t>(user_count, 16)));
+       return X_E_SUCCESS;
+     }
      case 0x000B0014: {
-       assert_true(!buffer_length || buffer_length == 16);
- 
-@@ -179,6 +345,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -179,6 +352,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        REXKRNL_DEBUG("XSessionSearch({}, {}, {}, {}, {}, {:08X}, {:08X}, {}, {:08X})", proc_index,
                      user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
                      results_buffer_size, search_results_ptr);
@@ -8813,7 +8820,7 @@ index 2b222da..9ed0edf 100644
        return X_E_SUCCESS;
      }
      case 0x000B0018: {
-@@ -214,6 +383,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -214,6 +390,9 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                      proc_index, user_index, num_results, num_props, num_ctx, props_ptr, ctx_ptr,
                      results_buffer_size, search_results_ptr, num_users);
  
@@ -8823,7 +8830,7 @@ index 2b222da..9ed0edf 100644
        return X_E_SUCCESS;
      }
      case 0x000B001D: {
-@@ -271,24 +443,69 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -271,24 +450,69 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                      obj_ptr, flags, session_nonce, session_duration_sec, results_buffer_size,
                      results_ptr);
  
@@ -8908,7 +8915,7 @@ index 2b222da..9ed0edf 100644
        return X_E_SUCCESS;
      }
      case 0x000B001F: {
-@@ -439,6 +656,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -439,6 +663,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
            non_weighted_search_properties_ptr, non_weighted_search_contexts_ptr, results_buffer_size,
            search_results_ptr, num_users, weighted_search);
  
@@ -8921,10 +8928,10 @@ index 2b222da..9ed0edf 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..600c158
+index 0000000..6ca2795
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,395 @@
 +// Saints Reborn: Xbox Live sessions over Epic Online Services (included by
 +// xgi_app.cpp; only active with the cvar xam_signed_in_to_live).
 +//
@@ -8962,6 +8969,9 @@ index 0000000..600c158
 +void SetPrivateSession(bool on);
 +void SetInviteSession(const uint8_t* info);  // lobby invites (xlivebase_app.cpp)
 +void SetSessionHost(const uint8_t* info, bool is_host);  // map check (eos_lan.cpp)
++bool LiveReady();
++std::string SessionHostWhere(const uint8_t kid[8], std::string& host_puid);  // LOBBIES list
++bool JoinAdvertisedSession(const std::string& session_hex, const std::string& name);
 +}  // namespace rex::system::eoslan
 +namespace rex::system::online {
 +std::string SafeName(const std::string& wanted);
@@ -8981,6 +8991,8 @@ index 0000000..600c158
 +  // them in any order. The newest hosted one is the one advertised.
 +  struct Session {
 +    uint64_t nonce = 0;
++    uint32_t obj = 0;   // the game's session object (XSessionCreate / Join / Leave pass it)
++    int remote = 0;     // players joined with XSessionJoinRemote (minus leaves)
 +    bool host = false;
 +    uint8_t info[60] = {};
 +    uint32_t flags = 0, public_slots = 0, private_slots = 0;
@@ -8991,6 +9003,8 @@ index 0000000..600c158
 +  uint32_t flags = 0;  // XSessionCreate flags of the hosted session
 +  uint8_t info[60] = {};
 +  uint32_t public_slots = 0, private_slots = 0;
++  uint32_t obj = 0;  // session object of the advertised session
++  int remote = 0;    // its other players (the advert's filled slots = 1 + remote)
 +} g_live;
 +std::atomic<int> g_session_depth{0};  // sessions open (any kind), for the map check
 +
@@ -9053,7 +9067,7 @@ index 0000000..600c158
 +  std::vector<uint8_t> v;
 +  v.push_back(2);
 +  v.insert(v.end(), g_live.info, g_live.info + 60);
-+  const uint32_t filled = 1;
++  const uint32_t filled = 1 + uint32_t(std::max(0, g_live.remote));
 +  v.push_back(uint8_t(std::min<uint32_t>(g_live.public_slots > filled ? g_live.public_slots - filled : 0, 255)));
 +  v.push_back(uint8_t(std::min<uint32_t>(g_live.private_slots, 255)));
 +  v.push_back(uint8_t(filled));
@@ -9231,6 +9245,22 @@ index 0000000..600c158
 +  return count;
 +}
 +
++// XSessionJoinRemote / XSessionLeaveRemote: players in a session this game
++// created. For the hosted (advertised) one the advert's player count follows.
++void LiveCountRemote(uint32_t obj, int delta) {
++  std::lock_guard<std::mutex> l(g_live.mutex);
++  for (auto& e : g_live.sessions) {
++    if (e.obj != obj) continue;
++    e.remote = std::clamp(e.remote + delta, 0, 64);
++    if (g_live.hosting && g_live.obj == obj && g_live.remote != e.remote) {
++      g_live.remote = e.remote;
++      PublishAdvertLocked();
++      REXLOG_INFO("LIVE: hosted session now has {} player(s)", 1 + g_live.remote);
++    }
++    return;
++  }
++}
++
 +// The host's advert for this session id says it is a Private Party (joining).
 +bool AdvertIsPrivate(const uint8_t* info) {
 +  for (const auto& t : rex::system::eoslan::LiveAdverts(0)) {
@@ -9241,6 +9271,62 @@ index 0000000..600c158
 +}
 +
 +}  // namespace
++
++// MULTIPLAYER > LOBBIES (game: online_players.cpp). SrPublicLobbies: first line
++// "#ready" / "#connecting" / "#modded" / "#off", then one line per public
++// lobby another unmodded game hosts:
++//   <XSESSION_INFO hex 120>|<host name>|<r = ranked, else s>|<mode (context
++//   0x800B: 0 GB, 1 TGB, 2 BAC, 3 TBAC, 4 BOR, 5 PTP, 6 Co-op, -1 unknown)>|
++//   <players>|<max players>|<0 = in the lobby (joinable), 1 = a match is running,
++//   2 = searching for players / anything else (joins only work in the lobby)>
++// Private Parties and modded games never show (fair play, as in the search).
++extern "C" __declspec(dllexport) int SrPublicLobbies(char* out, int size) {
++  if (!out || size <= 1) return 0;
++  std::string text;
++  const auto adverts = rex::system::eoslan::LiveAdverts(0);  // also starts Epic
++  if (rex::system::online::Modded()) text = "#modded\n";
++  else if (!rex::system::eoslan::LiveReady()) text = "#connecting\n";
++  else {
++    text = "#ready\n";
++    for (const auto& t : adverts) {
++      Advert a;
++      if (!ParseAdvert(t.text, a)) continue;
++      if (a.modded || t.modded || a.priv) continue;
++      int mode = -1;
++      for (auto& [id, value] : a.contexts)
++        if (id == 0x800B) mode = int(value);
++      std::string puid;
++      const std::string where = rex::system::eoslan::SessionHostWhere(a.info, puid);
++      std::string name = a.name.empty() ? t.name : a.name;
++      for (char& c : name)
++        if (c == '|' || c == '\n' || c == '\r') c = ' ';
++      const uint32_t filled = a.filled_pub + a.filled_priv;
++      const uint32_t total = filled + a.open_pub + a.open_priv;
++      text += Hex(std::vector<uint8_t>(a.info, a.info + 60)) + "|" + name + "|" + (a.ranked ? "r" : "s") + "|" +
++              std::to_string(mode) + "|" + std::to_string(std::max<uint32_t>(filled, 1)) + "|" +
++              std::to_string(std::max<uint32_t>(total, 1)) + "|" +
++              (where.find("lobby") != std::string::npos ? "0" : where.find("match") != std::string::npos ? "1" : "2") + "\n";
++    }
++  }
++  const int n = std::min<int>(int(text.size()), size - 1);
++  std::memcpy(out, text.data(), size_t(n));
++  out[n] = 0;
++  return n;
++}
++// A on a lobby in MULTIPLAYER > LOBBIES: join that host's session.
++extern "C" __declspec(dllexport) int SrJoinLobby(const char* session_hex) {
++  if (!session_hex) return 0;
++  const std::string want(session_hex);
++  if (want.size() != 120) return 0;
++  for (const auto& t : rex::system::eoslan::LiveAdverts(0)) {
++    Advert a;
++    if (!ParseAdvert(t.text, a) || a.modded || t.modded || a.priv) continue;
++    if (Hex(std::vector<uint8_t>(a.info, a.info + 60)) != want) continue;
++    return rex::system::eoslan::JoinAdvertisedSession(want, a.name.empty() ? t.name : a.name) ? 1 : 0;
++  }
++  rex::system::online::Notice("That lobby is gone.");
++  return 0;
++}
 diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
 index 3593403..6f9486b 100644
 --- a/src/kernel/xam/apps/xlivebase_app.cpp
@@ -10786,10 +10872,10 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..f2957d3
+index 0000000..2b589ae
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,1973 @@
+@@ -0,0 +1,2007 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -12583,6 +12669,40 @@ index 0000000..f2957d3
 +  return true;
 +}
 +
++// MULTIPLAYER > LOBBIES (game: online_players.cpp, export SrPublicLobbies in
++// xgi_live.inc): the host of an advertised session is the player whose own
++// advert carries that session id. Its activity ("In a multiplayer match"...).
++std::string SessionHostWhere(const uint8_t kid[8], std::string& host_puid) {
++  std::lock_guard<std::mutex> il(invite_mutex);
++  for (const auto& p : players_snapshot)
++    if (p.in_session && std::memcmp(p.session_id, kid, 8) == 0) {
++      host_puid = p.puid;
++      return p.where;
++    }
++  host_puid.clear();
++  return {};
++}
++// A on a lobby: join it the way an accepted invite does (the game gets
++// XN_LIVE_INVITE_ACCEPTED, asks XInviteGetAcceptedInfo for the host's session
++// info and joins), like "Join Session In Progress" on the console.
++bool JoinAdvertisedSession(const std::string& session_hex, const std::string& name) {
++  if (session_hex.size() != 120) return false;
++  {
++    std::lock_guard<std::mutex> il(invite_mutex);
++    const std::vector<uint8_t> kid = UnhexBytes(session_hex.substr(0, 16));
++    std::string puid;
++    for (const auto& p : players_snapshot)
++      if (p.in_session && kid.size() == 8 && std::memcmp(p.session_id, kid.data(), 8) == 0) puid = p.puid;
++    accepted_invite = Invite{puid, name.empty() ? std::string("Player") : name, session_hex,
++                             puid.empty() ? 0 : XuidFromPuid(puid), int64_t(std::time(nullptr))};
++    has_accepted = true;
++    REXSYS_INFO("EOS LAN: joining {}'s public lobby from the LOBBIES list", accepted_invite.name);
++    rex::system::online::Notice("Joining " + accepted_invite.name + "...");
++  }
++  if (auto* ks = REX_KERNEL_STATE()) ks->BroadcastNotification(0x02000002, 0);
++  return true;
++}
++
 +// In a Private Party (hosted or joined) modded and unmodded games play
 +// together; everywhere else game packets only flow between unmodded games.
 +void SetPrivateSession(bool on) {
@@ -12765,10 +12885,10 @@ index 0000000..f2957d3
 +}
 diff --git a/src/system/eos_lan_off.cpp b/src/system/eos_lan_off.cpp
 new file mode 100644
-index 0000000..2e1b538
+index 0000000..cb3fee7
 --- /dev/null
 +++ b/src/system/eos_lan_off.cpp
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,76 @@
 +// Built instead of eos_lan.cpp when the Epic Online Services SDK headers
 +// aren't available (REX_EOS_SDK_INCLUDE not set / not found). Online play
 +// over Epic (Live lobbies, PLAYERS list, invites, chat) is then off; System
@@ -12806,6 +12926,8 @@ index 0000000..2e1b538
 +void SetLiveAdvert(const std::string&) {}
 +std::vector<LiveAdvertEntry> LiveAdverts(uint32_t) { return {}; }
 +bool LiveReady() { return false; }
++std::string SessionHostWhere(const uint8_t[8], std::string& host_puid) { host_puid.clear(); return {}; }
++bool JoinAdvertisedSession(const std::string&, const std::string&) { return false; }
 +uint64_t XuidForPuid(const std::string&) { return 0; }
 +void SetQosData(const uint8_t[8], const uint8_t*, size_t) {}
 +bool QosData(const uint8_t[8], std::vector<uint8_t>&) { return false; }
