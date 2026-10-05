@@ -81,8 +81,19 @@ used to distribute, any part of Saints Row: no disc images, game files,
 recompiled code or built executables. Dump your own disc. Requests for or links
 to game files will be removed.
 
-The project's own code is released under the [MIT License](LICENSE). The SDK
+The project's own code is released under the [Apache License 2.0](LICENSE).
+If you share, re-upload or build on it, you must keep the [NOTICE](NOTICE) file
+and credit it as **Saints Reborn by Whompay**. The SDK
 and the libraries it downloads during the build are covered by their own
 licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). "Saints Row" is
 a trademark of its owner and is used here only to name the game this project
 works with.
+
+## Credits
+
+- **Saints Reborn by Whompay**: the project itself.
+- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) by Tom Clay and
+  contributors.
+- [Xenia](https://xenia.jp) by Ben Vanik and contributors, which the SDK is
+  derived from.
+- Volition, for the game.
