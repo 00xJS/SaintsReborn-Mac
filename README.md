@@ -2,8 +2,8 @@
 
 Play **Saints Row** (Xbox 360, 2006) on an Apple silicon Mac, free.
 
-This is a Mac setup for [Saints Reborn](https://github.com/whompay/SaintsReborn)
-by whompay. It builds the game on your own Mac from your own disc and adds a
+This is a Mac setup for
+[**Saints Reborn by Whompay**](https://github.com/whompay/SaintsReborn). It builds the game on your own Mac from your own disc and adds a
 **Saints Reborn** app that opens the mod loader, where you pick your mods and
 press Play.
 
@@ -65,14 +65,6 @@ Useful keys: **F11** fullscreen / window, **F1** frame rate counter,
 
 Saves are in `~/SaintsReborn/dist/game`.
 
-## Credits
-
-- [Saints Reborn](https://github.com/whompay/SaintsReborn) by whompay
-- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) by Tom Clay and contributors
-- [Xenia](https://xenia.jp) by Ben Vanik and contributors
-- [Game Porting Toolkit](https://developer.apple.com/games) by Apple, packaged by [Gcenx](https://github.com/Gcenx/game-porting-toolkit)
-- Volition, for the game
-
 ## Legal
 
 This project distributes only original source code, configuration files and a
@@ -91,9 +83,12 @@ works with.
 
 ## Credits
 
-- **Saints Reborn by Whompay**: the project itself.
+- **Saints Reborn by Whompay**: the project itself. Saints Reborn on Mac is
+  built on it and changes only what the Mac setup needs.
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) by Tom Clay and
   contributors.
 - [Xenia](https://xenia.jp) by Ben Vanik and contributors, which the SDK is
   derived from.
+- [Game Porting Toolkit](https://developer.apple.com/games) by Apple, packaged
+  by [Gcenx](https://github.com/Gcenx/game-porting-toolkit).
 - Volition, for the game.

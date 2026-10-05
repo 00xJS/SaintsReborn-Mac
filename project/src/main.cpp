@@ -1,3 +1,6 @@
+// Modified for Saints Reborn on Mac (github.com/00xJS/SaintsReborn-Mac): DirectSound audio output under Wine; audio_gain.txt / audio_fold.txt.
+// Original file from Saints Reborn by Whompay (Apache License 2.0).
+//
 // Saints Row (Xbox 360, 2006) - ReXGlue recompiled project.
 // Bootstraps the runtime, creates the window and launches the XEX module.
 

@@ -1,3 +1,6 @@
+// Modified for Saints Reborn on Mac (github.com/00xJS/SaintsReborn-Mac): raw mouse input (WM_INPUT) with the cursor pinned, for Wine on macOS.
+// Original file from Saints Reborn by Whompay (Apache License 2.0).
+//
 // Keyboard and mouse controls, laid out like Saints Row 2 on PC.
 //
 // The game only knows the Xbox 360 controller, so keys are turned into
