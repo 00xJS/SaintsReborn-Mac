@@ -25,7 +25,9 @@ A work based on Saints Reborn by Whompay, under the same Apache License,
 Version 2.0. Changes from Saints Reborn (Apache License 2.0, section 4(b)):
 
 - Added: scripts/setup-mac.sh, scripts/mac/, "Install Saints Reborn.command",
-  "Update Saints Reborn.command" (macOS setup, launcher app and updater).
+  "Update Saints Reborn.command" (macOS setup, launcher app and updater),
+  patches/mac/ (macOS-only changes to the ReXGlue SDK, applied after
+  patches/rexglue-sdk.patch).
 - Changed: project/src/kbm.cpp (raw mouse input under Wine),
   project/src/main.cpp (DirectSound audio output under Wine, optional audio
   settings), README.md (rewritten for the Mac setup), THIRD_PARTY_NOTICES.md

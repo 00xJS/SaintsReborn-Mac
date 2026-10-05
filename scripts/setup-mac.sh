@@ -197,7 +197,13 @@ fi
 # ---------------------------------------------------------------------------
 step "ReXGlue SDK source ($(printf '%.7s' "$SDK_COMMIT")) + the Saints Row patch"
 PATCH="$ROOT/patches/rexglue-sdk.patch"
-SDK_KEY="$SDK_COMMIT $(sha1_of "$PATCH") mac1"
+# macOS-only changes to the SDK (patches/mac/*.patch), applied after the
+# Saints Row patch.
+MAC_PATCHES=()
+for mp in "$ROOT"/patches/mac/*.patch; do [ -f "$mp" ] && MAC_PATCHES+=("$mp"); done
+MAC_PATCH_KEY=""
+for mp in ${MAC_PATCHES[@]+"${MAC_PATCHES[@]}"}; do MAC_PATCH_KEY="$MAC_PATCH_KEY $(sha1_of "$mp")"; done
+SDK_KEY="$SDK_COMMIT $(sha1_of "$PATCH") mac1$MAC_PATCH_KEY"
 if ! done_stamp sdk-source "$SDK_KEY"; then
   if [ ! -d "$SDK_SRC/.git" ]; then
     rm -rf "${SDK_SRC:?}"
@@ -207,6 +213,10 @@ if ! done_stamp sdk-source "$SDK_KEY"; then
   run git -C "$SDK_SRC" clean -fdq -- include src resources cmake
   run git -C "$SDK_SRC" submodule update --init --recursive --force --depth 1
   run git -C "$SDK_SRC" apply --whitespace=nowarn "$PATCH"
+  for mp in ${MAC_PATCHES[@]+"${MAC_PATCHES[@]}"}; do
+    note "macOS patch: $(basename "$mp")"
+    run git -C "$SDK_SRC" apply --whitespace=nowarn "$mp"
+  done
   # The SDK turns Objective-C on when the build host is a Mac, also for the
   # Windows cross build (where no Objective-C compiler exists).
   run sed -i '' '4s/^if(APPLE)$/if(APPLE AND NOT CMAKE_TOOLCHAIN_FILE)/' "$SDK_SRC/CMakeLists.txt"
@@ -306,9 +316,10 @@ ONLINE_OK=0
 for d in "$SDK_INSTALL"/bin/*.dll; do
   # The online pack's Epic-enabled runtime stays when it is installed.
   if [ "$ONLINE_OK" = "1" ] && [ "$(basename "$d")" = "rexruntime.dll" ]; then continue; fi
-  cp "$d" "$DIST/"
+  # Copy, then rename: a game that is still running keeps its old file.
+  cp "$d" "$DIST/$(basename "$d").new" && mv "$DIST/$(basename "$d").new" "$DIST/$(basename "$d")"
 done
-cp "$GAME_BUILD/WhompaysModLoader.exe" "$DIST/"
+cp "$GAME_BUILD/WhompaysModLoader.exe" "$DIST/WhompaysModLoader.exe.new" && mv "$DIST/WhompaysModLoader.exe.new" "$DIST/WhompaysModLoader.exe"
 mkdir -p "$DIST/mods" "$DIST/core"
 for parent in "$ROOT/modding/examples" "$ROOT/modding/mods"; do
   run rsync -a --exclude '*.c' --exclude '*.cpp' --exclude '*.ps1' "$parent/" "$DIST/mods/"

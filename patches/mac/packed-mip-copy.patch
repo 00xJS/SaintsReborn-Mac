@@ -1,0 +1,40 @@
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 8a7e4e5..a44759a 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -2032,6 +2032,35 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+                      host_block_height);
+       source_box.back = source_box.front + std::max(depth >> level, uint32_t(1));
+       source_box_ptr = &source_box;
++      // macOS (Wine with D3DMetal): copying a sub-box out of a block-compressed
++      // buffer footprint returns partly empty data there, so the smallest
++      // levels (which share one packed tile) had black blocks: stripes on
++      // distant roads, blocks on distant walls. Address the level's blocks in
++      // the buffer directly instead - the same data, without a source box.
++      // File "packed_mip_fix_off" next to the exe = the usual copy.
++      static const bool packed_mip_fix = [] {
++        if (GetFileAttributesW(L"packed_mip_fix_off") != INVALID_FILE_ATTRIBUTES) return false;
++        typedef void(__cdecl * WineGetHostVersion)(const char** sysname, const char** release);
++        auto host_version = reinterpret_cast<WineGetHostVersion>(
++            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_host_version"));
++        if (!host_version) return false;
++        const char* sysname = nullptr;
++        const char* release = nullptr;
++        host_version(&sysname, &release);
++        const bool on = sysname && std::strcmp(sysname, "Darwin") == 0;
++        if (on) REXLOG_INFO("Textures: packed level copy without a source box (macOS)");
++        return on;
++      }();
++      if (packed_mip_fix && !is_3d) {
++        location_source.PlacedFootprint.Offset +=
++            UINT64(source_box.top / host_block_height) *
++                location_source.PlacedFootprint.Footprint.RowPitch +
++            UINT64(source_box.left / host_block_width) * load_shader_info.bytes_per_host_block;
++        location_source.PlacedFootprint.Footprint.Width = source_box.right - source_box.left;
++        location_source.PlacedFootprint.Footprint.Height = source_box.bottom - source_box.top;
++        location_source.PlacedFootprint.Footprint.Depth = 1;
++        source_box_ptr = nullptr;
++      }
+     } else {
+       source_box_ptr = nullptr;
+     }

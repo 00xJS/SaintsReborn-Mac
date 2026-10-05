@@ -88,10 +88,10 @@ struct WineAudioSetup {
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi{};
         if (!CreateProcessW(nullptr, GetCommandLineW(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) return;
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD code = 0;
-        GetExitCodeProcess(pi.hProcess, &code);
-        ExitProcess(code);
+        // Leave at once instead of waiting for that copy: a second process
+        // named saintsrow.exe counts as "another copy of the game on this PC",
+        // which holds the game at 30 fps whenever its window is not in front.
+        ExitProcess(0);
     }
 } g_wine_audio_setup;
 }  // namespace
