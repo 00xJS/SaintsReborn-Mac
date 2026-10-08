@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 #ifdef _WIN32
@@ -104,6 +105,22 @@ HwProfile Detect() {
   }
   // "Dedicated" memory under 512 MB = a carve-out of system RAM (iGPU / APU).
   p.integrated = p.adapter_index >= 0 && p.dedicated_vram_mb < 512;
+  // Saints Reborn on Mac: Apple silicon shares one pool of memory between the
+  // CPU and the GPU, but the toolkit's Direct3D reports most of it as
+  // "dedicated VRAM". Size the GPU budgets as for an integrated GPU, so the
+  // texture cache leaves room for the game itself.
+  {
+    typedef void(__cdecl * WineGetHostVersion)(const char** sysname, const char** release);
+    auto host_version = reinterpret_cast<WineGetHostVersion>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_host_version"));
+    const char* sysname = nullptr;
+    const char* release = nullptr;
+    if (host_version) host_version(&sysname, &release);
+    if (sysname && std::strcmp(sysname, "Darwin") == 0 && p.adapter_index >= 0) {
+      p.integrated = true;
+      if (p.shared_mem_mb < p.total_ram_mb) p.shared_mem_mb = p.total_ram_mb;
+    }
+  }
 #endif
   return p;
 }

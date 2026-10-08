@@ -489,19 +489,23 @@ class SaintsRowApp : public rex::ui::WindowedApp,
                      public rex::ui::WindowInputListener {
 public:
     // F11 toggles between fullscreen and windowed, F1 shows the frame rate,
-    // F10 cycles the frame rate cap (30/60/90/120/off).
+    // F10 cycles the frame rate cap (30/60/90/120/off). On a Mac keyboard the
+    // function keys need fn, so the same things are also on Alt+Enter, ` and P.
     void OnKeyDown(rex::ui::KeyEvent& e) override {
-        if (e.virtual_key() == rex::ui::VirtualKey::kF11 && !e.prev_state() && window_) {
+        using rex::ui::VirtualKey;
+        const VirtualKey key = e.virtual_key();
+        if (e.prev_state()) return;
+        if ((key == VirtualKey::kF11 || (key == VirtualKey::kReturn && e.is_alt_pressed())) && window_) {
             window_->SetFullscreen(!window_->IsFullscreen());
             fullscreen_ = window_->IsFullscreen();
             e.set_handled(true);
         }
-        if (e.virtual_key() == rex::ui::VirtualKey::kF1 && !e.prev_state()) {
+        if (key == VirtualKey::kF1 || key == VirtualKey::kOem3) {
             fps_overlay_.Toggle();
             fps_shown_ = fps_overlay_.IsVisible();
             e.set_handled(true);
         }
-        if (e.virtual_key() == rex::ui::VirtualKey::kF10 && !e.prev_state()) {
+        if (key == VirtualKey::kF10 || key == VirtualKey::kP) {
             fps_overlay_.ShowNotice(sr::CycleFpsCap());
             e.set_handled(true);
         }
