@@ -681,8 +681,29 @@ static void InviteKeyPoll() {
   rex::cvar::SetFlagByName("online_invite_accept", "true");
 }
 
+// The PLAYERS / LOBBIES subtitle (kSubtitle) used to be put back only when
+// the OPTIONS tab was built again. Leaving LOBBIES for the tabs next to it
+// (and from there Wardrobe, Purchase Clothing, Purchase Tattoos, which don't
+// set a subtitle of their own) kept "N public lobbies - select one to join"
+// on screen over those menus. Now it goes back as soon as neither tab is
+// shown or being built - unless the next menu already wrote its own.
+static void RestoreSubtitle(uint8_t* base) {
+  std::lock_guard<std::recursive_mutex> lock(g_mutex);
+  if (!g_subtitle_swapped) return;
+  const uint32_t current = R32(base, kMenuCurrent), requested = R32(base, kMenuRequested);
+  if (current == kPlayersId || current == kLobbiesId || requested == kPlayersId || requested == kLobbiesId) return;
+  const uint32_t shown = R32(base, kSubtitle);
+  if ((g_subtitle && shown == g_subtitle) || (g_lob_subtitle && shown == g_lob_subtitle)) {
+    W32(base, kSubtitle, g_saved_subtitle);
+    Host(base, kSubtitle - 4)[0] = g_saved_subtitle_flag;
+  }
+  g_subtitle_swapped = false;
+  REXLOG_INFO("MP TABS: list subtitle put back (menu {})", current);
+}
+
 void sr::PlayersActivityPoll(uint8_t* base) {
   InviteKeyPoll();
+  RestoreSubtitle(base);
   {
     static uint32_t last[6] = {};
     static int logs = 0;

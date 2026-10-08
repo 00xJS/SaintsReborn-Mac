@@ -28,6 +28,7 @@
 #include "saintsrow_config.h"
 #include "saintsrow_init.h"
 #include "options_menu.h"
+#include "wml/mod_loader.h"
 
 #include <rex/logging.h>
 #include <rex/ppc/function.h>
@@ -78,6 +79,29 @@ bool FileExists(const char* name) {
 // 2026-09-30: the air-view diagnostics of 2026-09-29 (per-object AIRFLICKER reasons, FRUSTUM CHECK double test)
 // cost CPU while flying; only with dist\air_diagnostics now. IO trace only with dist\io_trace.
 bool AirDiag() { static const bool on = FileExists("air_diagnostics"); return on; }
+// 2026-10-08: the air view (2. rooftop visibility, 3. far clip regions and
+// everything keyed on far_clip::g_air_view) is for flying with the
+// Superpowers mod. Without it the switch also fired on rooftops, bridges and
+// overpasses and raised parts of the multiplayer maps, drawing far more than
+// the original game (missing road textures, glitches, frame drops). Now it is
+// only on while the Superpowers mod is enabled; file "air_view_always" turns
+// it on without the mod (the files pvs_original / far_clip_original still
+// turn it off with the mod).
+bool AirViewEnabled() {
+    static bool on = false, forced = FileExists("air_view_always"), logged = false;
+    static auto next = std::chrono::steady_clock::time_point{};
+    if (on || forced) return true;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next) return false;
+    next = now + std::chrono::seconds(2);
+    for (const auto& id : wml::EnabledModIds())
+        if (_stricmp(id.c_str(), "Superpowers") == 0) on = true;
+    if (!logged || on) {
+        logged = true;
+        REXLOG_INFO("Air view (rooftop PVS / far clip): {}", on ? "on (Superpowers mod enabled)" : "off (no Superpowers mod)");
+    }
+    return on;
+}
 
 constexpr uint32_t kRenderConfigs = 0x827D6D38;
 
@@ -1051,7 +1075,7 @@ PPC_FUNC(sub_825C2F38) {
 extern "C" void __imp__sub_825C1B18(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_825C1B18) {
     static const bool original = FileExists("pvs_original");
-    if (original) {
+    if (original || !AirViewEnabled()) {
         __imp__sub_825C1B18(ctx, base);
         return;
     }
@@ -1620,7 +1644,7 @@ PPC_FUNC(sub_82121F60) {
     static const bool original = FileExists("far_clip_original");
     const uint32_t pos = ctx.r3.u32;
     __imp__sub_82121F60(ctx, base);
-    if (original || !pos) return;
+    if (original || !pos || !AirViewEnabled()) return;
     if (!far_clip::High(base, RdF(base, pos + 0), RdF(base, pos + 4), RdF(base, pos + 8))) return;
     {
         // Diagnostic for the remaining air holes: every 3 s while high, the
