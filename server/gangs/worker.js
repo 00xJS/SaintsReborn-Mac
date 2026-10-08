@@ -16,6 +16,9 @@ const WIDTH = { 1: 1, 2: 8, 3: 8, 5: 16, 6: 16, 7: 32, 8: 32, 9: 64, 10: 64, 13:
 
 // DemonWare error codes the game knows (others show "Demonware gang creation failed").
 const ERR = { OK: 0, GENERIC: 1, NAME_TAKEN: 301, NOT_ALLOWED: 2, NO_TEAM: 3, NOT_INVITED: 4, ALREADY: 5 };
+// Accept-invite errors the game turns into its own messages (sub_82333C70): 306 "The gang no longer
+// exists.", 309 "You were not invited to this gang.", 313 "You are already a member of this gang."
+const INVITE_ERR = { NO_TEAM: 306, NOT_INVITED: 309, ALREADY: 313 };
 // Member roles (u8 in member lists / memberships). Adjust here if the game shows them wrong.
 const ROLE = { MEMBER: 0, ADMIN: 1, OWNER: 2 };
 const MSG_TEAM_INVITE = 13;
@@ -298,9 +301,9 @@ async function handleTask(env, me, service, payload) {
         const inv = await one(db, 'SELECT * FROM invites WHERE team_id = ? AND xuid = ?', team, me.xuid);
         await run(db, 'DELETE FROM invites WHERE team_id = ? AND xuid = ?', team, me.xuid);
         if (task === 7) { await note(db, me.xuid, `decline ${team}`); return ok(); }
-        if (!await teamRow(team)) return fail(ERR.NO_TEAM);
-        if (!inv) return fail(ERR.NOT_INVITED);
-        if (await one(db, 'SELECT team_id FROM members WHERE xuid = ?', me.xuid)) return fail(ERR.ALREADY);
+        if (!await teamRow(team)) return fail(INVITE_ERR.NO_TEAM);
+        if (!inv) return fail(INVITE_ERR.NOT_INVITED);
+        if (await one(db, 'SELECT team_id FROM members WHERE xuid = ?', me.xuid)) return fail(INVITE_ERR.ALREADY);
         await run(db, 'INSERT INTO members (team_id, xuid, role, joined) VALUES (?, ?, ?, ?)', team, me.xuid, ROLE.MEMBER, now());
         await note(db, me.xuid, `join ${team}`);
         return ok();

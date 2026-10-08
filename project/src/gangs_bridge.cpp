@@ -34,6 +34,7 @@
 #include <thread>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc/function.h>
@@ -438,8 +439,62 @@ PPC_FUNC(sub_826B8F48) {  // bdLobbyService::getStatus (pumps messages)
   if (g_session && ++n % 300 == 1) REXLOG_INFO("GANGS diag: lobby status {} (x{}) from {:08X}", ctx.r3.u32, n, uint32_t(ctx.lr));
 }
 
+// ---- gang invites: fetch mail sooner, tell the player ----
+// The game asks for its mail (task 6/1, where gang invites arrive as message
+// type 13) when the lobby connects and then only every 20 minutes: timer
+// [0x8282B68C] = game clock [0x827AA6E4] + 1,200,000 ms (sub_82356998 at
+// 0x82356EF8), counting on DemonWare's "new mail" push in between. Our server
+// has no push, so an invite sent to a player who was already online showed
+// up 20 minutes later or after a restart. While the bridge is connected the
+// timer is pulled in to "now" every kMailPollSeconds (the game skips the poll
+// while the previous one is still out; -1 = off, not connected yet).
+// The invite the game keeps (sub_82356998 0x823571AC, struct 0x830634D8:
+// +0 inviter XUID, +8 inviter name[64], +72 gang id, +80 gang name[64]) has no
+// pop-up of its own (only MULTIPLAYER > GANGS shows it), so a notice is shown
+// when a new one comes in.
+namespace {
+constexpr uint32_t kMailTimer = 0x8282B68Cu, kGameClock = 0x827AA6E4u;
+constexpr int kMailPollSeconds = 15;
+constexpr uint32_t kInvite = 0x830634D8u;
+
+void MailPollSooner(uint8_t* base) {
+  static auto next = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next) return;
+  next = now + std::chrono::seconds(kMailPollSeconds);
+  if (int32_t(R32(base, kMailTimer)) < 0) return;
+  W32(base, kMailTimer, R32(base, kGameClock));
+}
+
+std::string GuestText(uint8_t* base, uint32_t a, size_t max) {
+  std::string s;
+  const uint8_t* p = Host(base, a);
+  for (size_t i = 0; i < max && p[i]; ++i) s.push_back(p[i] >= 32 && p[i] < 127 ? char(p[i]) : '?');
+  return s;
+}
+
+void InviteNotice(uint8_t* base) {
+  static uint64_t shown = 0;
+  const uint64_t team = (uint64_t(R32(base, kInvite + 72)) << 32) | R32(base, kInvite + 76);
+  if (team == 0) {
+    shown = 0;  // answered (or none): the next invite gets its notice again
+    return;
+  }
+  if (team == shown) return;
+  shown = team;
+  std::string who = GuestText(base, kInvite + 8, 63), gang = GuestText(base, kInvite + 80, 63);
+  if (who.empty()) who = "A player";
+  const std::string text = "\"" + who + "\" invited you to join the gang " + (gang.empty() ? std::string("") : gang + " ") +
+                           "- accept or decline it in MULTIPLAYER > GANGS > Gang Invitations.";
+  REXLOG_INFO("GANGS: invite from '{}' to gang '{}' ({:016X})", who, gang, team);
+  rex::cvar::SetFlagByName("online_notice", text);
+}
+}  // namespace
+
 PPC_FUNC(sub_82356998) {  // game DemonWare manager tick
   static int n = 0;
   if (g_session && ++n % 300 == 1) REXLOG_INFO("GANGS diag: manager tick x{}", n);
+  if (g_session && Enabled()) MailPollSooner(base);
   __imp__sub_82356998(ctx, base);
+  if (Enabled()) InviteNotice(base);
 }
