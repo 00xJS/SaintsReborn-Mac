@@ -60,8 +60,9 @@ An Xbox controller works as on the console, and keyboard and mouse are fully
 supported. Controls, mods and co-op are the same as in Saints Reborn: see the
 [Saints Reborn README](https://github.com/whompay/SaintsReborn#playing).
 
-Useful keys: **Option+Return** (or F11) fullscreen / window, **`** (or F1)
-frame rate counter, **P** (or F10) frame rate cap, **V** first person view.
+Useful keys, no fn needed: **Option+Enter** fullscreen / window, **`** (the key
+under Esc) frame rate counter, **P** frame rate cap (30 / 60 / 90 / 120 / off),
+**V** first person view. F11, F1 and F10 do the same as on Windows.
 
 Saves are in `~/SaintsReborn/dist/game`.
 
