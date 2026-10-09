@@ -792,6 +792,21 @@ public:
                 REXLOG_INFO("Texture cache limits: {} / {} MB (GPU budget {} MB)", soft, hard, budget);
             }
             rex::cvar::SetFlagByName("d3d12_tiled_shared_memory", "false");
+            // Anti-aliasing of the finished frame. The 2x draw resolution smooths
+            // edges on PCs; on Apple silicon the game draws at 1x (see above), so
+            // the GPU backend's FXAA pass is on there instead. "aa.txt" next to
+            // the exe: none, fxaa or fxaa_extreme.
+            {
+                std::string aa = hw.unified_memory ? "fxaa" : "none";
+                if (FILE* af = std::fopen("aa.txt", "rb")) {
+                    char buf[32] = {};
+                    if (std::fscanf(af, "%31s", buf) == 1) aa = buf;
+                    std::fclose(af);
+                }
+                if (aa != "none" && aa != "fxaa" && aa != "fxaa_extreme") aa = "none";
+                rex::cvar::SetFlagByName("swap_post_effect", aa);
+                REXLOG_INFO("Anti-aliasing: {}", aa);
+            }
             // Host RAM cache for repeated immutable packfile reads. Grow on
             // demand, keeping the Xbox guest address space and GPU budgets intact.
             int ram_cache_mb = 256;
