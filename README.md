@@ -66,9 +66,10 @@ under Esc) frame rate counter, **P** frame rate cap (30 / 60 / 90 / 120 / off),
 
 Saves are in `~/SaintsReborn/dist/game`.
 
-On a Mac the game draws at its native resolution with anti-aliasing (FXAA).
-To change that, put a file named `aa.txt` next to `saintsrow.exe` in `dist`
-containing `none`, `fxaa` or `fxaa_extreme`.
+On a Mac the game draws at its native resolution with anti-aliasing (FXAA)
+and a little sharpening. To change that, put files next to `saintsrow.exe` in
+`dist`: `aa.txt` containing `none`, `fxaa` or `fxaa_extreme`, and `look.txt`
+containing `off` (or the 14 picture values that mods use with `set_look`).
 
 ## Legal
 

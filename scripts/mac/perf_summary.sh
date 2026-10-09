@@ -8,7 +8,7 @@ LOG="$ROOT/dist/saintsrow_sdk.log"
 [ -f "$LOG" ] || { echo "No log at $LOG"; exit 1; }
 if [ "${1:-}" = "all" ]; then DATA="$(cat "$LOG")"; else
   START="$(grep -n "Saints Row starting" "$LOG" | tail -1 | cut -d: -f1)"; DATA="$(tail -n +"${START:-1}" "$LOG")"; fi
-echo "$DATA" | grep -h "Draw resolution\|Anti-aliasing\|Shadows:\|Texture cache limits" | sed 's/.*\] //' | sort -u
+echo "$DATA" | grep -h "Draw resolution\|Anti-aliasing\|Picture:\|Shadows:\|Texture cache limits" | sed 's/.*\] //' | sort -u
 echo "$DATA" | grep -o "FPS cap: [a-z0-9]*" | tail -1 | sed 's/^/Ended with /' 
 echo "$DATA" | grep -o "PERF fps [0-9.]*" | awk '$3>0{print $3}' | sort -n | awk '{a[++n]=$1; s+=$1} END{ if(!n){print "No frame rate samples (is perf_log present?)"; exit}
   printf "Frame rate: %d samples of 2 s | average %.1f | median %.1f | slowest 10%% under %.1f | fastest %.1f\n", n, s/n, a[int(n/2)+1], a[int(n/10)+1], a[n] }'

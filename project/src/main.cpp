@@ -19,6 +19,7 @@
 #include "perf_monitor.h"
 #include "profiler.h"
 #include "wml/mod_loader.h"
+#include "wml/wml_internal.h"
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -948,6 +949,32 @@ public:
 #endif
         // Code and script mods start once the executable is in memory.
         wml::Start(runtime_->memory()->virtual_membase());
+        // Picture (the GPU backend's Modern Look pass, as mods use with
+        // set_look). On Apple silicon the game draws at 1x with FXAA, so a
+        // little sharpening and contrast are on by default there. "look.txt"
+        // next to the exe sets the 14 values (see wml.h set_look), "off" = none.
+        {
+            const sr::HwProfile& hw = sr::GetHwProfile();
+            std::vector<float> look;
+            if (hw.unified_memory) look = {0.5f, 0.0f, 0.7f, 0.0f, 1.04f, 1.0f, 0.12f, 0.15f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 8.0f};
+            if (FILE* lf = std::fopen("look.txt", "rb")) {
+                char word[16] = {};
+                if (std::fscanf(lf, "%15s", word) == 1 && std::strcmp(word, "off") == 0) {
+                    look.clear();
+                } else {
+                    std::rewind(lf);
+                    std::vector<float> values;
+                    float v = 0.0f;
+                    while (values.size() < 14 && std::fscanf(lf, "%f", &v) == 1) values.push_back(v);
+                    if (values.size() >= 13) look = values;
+                }
+                std::fclose(lf);
+            }
+            if (!look.empty()) {
+                wml::SetLook(look.data(), int(look.size()));
+                REXLOG_INFO("Picture: sharpen {:.2f} contrast {:.2f} vibrance {:.2f}", look[0], look[4], look[6]);
+            }
+        }
         // Online fair play: modded or not, cheat-tool watch, online notices.
         sr::StartOnlineIntegrity(exe_dir);
         // Discord status ("Playing Saints Reborn", what and how long).

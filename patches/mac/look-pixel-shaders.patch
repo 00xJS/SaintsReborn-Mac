@@ -1,0 +1,370 @@
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -216,6 +216,12 @@
+       look_final_pipeline_;
+   Microsoft::WRL::ComPtr<ID3D12Resource> look_copy_, look_bloom_a_, look_bloom_b_;
+   uint64_t look_textures_submission_ = 0;
++  // macOS (Wine with D3DMetal): its shader compiler builds no compute shaders,
++  // so the passes run as full-screen pixel shaders into render targets
++  // instead, and the result is copied into the guest output.
++  bool look_graphics_ = false;
++  Microsoft::WRL::ComPtr<ID3D12Resource> look_out_;
++  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> look_rtv_heap_;
+   void BeamCapture(uint32_t zfunc);
+   void BeamCheckExact();
+   uint32_t beam_diag_lines_ = 0, beam_diag_frame_ = 0;
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -6964,6 +6964,107 @@
+   float2 d = (uv - 0.5) * float2(float(size.x) / float(size.y), 1.0);
+   g *= 1.0 - p2.z * smoothstep(0.45, 1.05, length(d) * 1.35);
+   dst[p] = float4(g, 1.0);
++}
++)";
++
++// The same passes as pixel shaders (see look_graphics_ in the header).
++static const char kLookShaderPS[] = R"(
++cbuffer LookConstants : register(b0) {
++  uint2 size;
++  uint2 bloom_size;
++  float4 p0;  // sharpen, bloom, bloom threshold, exposure
++  float4 p1;  // contrast, saturation, vibrance, filmic
++  float4 p2;  // temperature, tint, vignette, black level
++  float4 p3;  // x = blur step (bloom texels)
++};
++Texture2D<float4> src0 : register(t0);
++Texture2D<float4> src1 : register(t1);
++SamplerState lin_clamp : register(s0);
++
++// Wine's HLSL compiler (macOS) has no user functions, loops, lerp, exp, sqrt,
++// smoothstep, dot, SampleLevel or ?:, so everything is written out with what
++// it has: pow, max, min, saturate, clamp and arithmetic.
++#define LUMA(c) ((c).r * 0.2126 + (c).g * 0.7152 + (c).b * 0.0722)
++#define TO_LINEAR(c) pow(max((c), 0.0), 2.2)
++#define TO_GAMMA(c) pow(max((c), 0.0), 1.0 / 2.2)
++#define LERP(a, b, t) ((a) + ((b) - (a)) * (t))
++
++float4 vs_fs(uint id : SV_VertexID) : SV_Position {
++  float2 uv = float2((id << 1) & 2, id & 2);
++  return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
++}
++
++float4 bright_ps(float4 pos : SV_Position) : SV_Target {
++  float2 uv = pos.xy / float2(bloom_size);
++  float2 px = 1.0 / float2(size);
++  float3 c = TO_LINEAR(src0.Sample(lin_clamp, uv + px * float2(-1, -1)).rgb) +
++             TO_LINEAR(src0.Sample(lin_clamp, uv + px * float2(1, -1)).rgb) +
++             TO_LINEAR(src0.Sample(lin_clamp, uv + px * float2(-1, 1)).rgb) +
++             TO_LINEAR(src0.Sample(lin_clamp, uv + px * float2(1, 1)).rgb);
++  c *= 0.25;
++  float k = saturate((LUMA(c) - p0.z) / max(1.0 - p0.z, 1e-3));
++  return float4(c * k * k, 1.0);
++}
++
++#define RING(dx, dy) \
++  c += src0.Sample(lin_clamp, uv + float2(dx, dy) * t * 1.2).rgb * 0.065; \
++  c += src0.Sample(lin_clamp, uv + float2(dx, dy) * t * 2.8).rgb * 0.04;
++
++float4 blur_ps(float4 pos : SV_Position) : SV_Target {
++  float2 t = p3.x / float2(bloom_size);
++  float2 uv = pos.xy / float2(bloom_size);
++  float3 c = src0.Sample(lin_clamp, uv).rgb * 0.16;
++  RING(1, 0) RING(-1, 0) RING(0, 1) RING(0, -1)
++  RING(0.7071, 0.7071) RING(-0.7071, 0.7071) RING(0.7071, -0.7071) RING(-0.7071, -0.7071)
++  return float4(c, 1.0);
++}
++
++float4 final_ps(float4 pos : SV_Position) : SV_Target {
++  int2 p = int2(pos.xy);
++  int2 lim = int2(size) - 1;
++  float3 c = src0.Load(int3(p, 0)).rgb;
++  if (p0.x > 0.0) {
++    float3 n = src0.Load(int3(clamp(p + int2(0, -1), 0, lim), 0)).rgb;
++    float3 s = src0.Load(int3(clamp(p + int2(0, 1), 0, lim), 0)).rgb;
++    float3 e = src0.Load(int3(clamp(p + int2(1, 0), 0, lim), 0)).rgb;
++    float3 w = src0.Load(int3(clamp(p + int2(-1, 0), 0, lim), 0)).rgb;
++    float3 mn = min(c, min(min(n, s), min(e, w)));
++    float3 mx = max(c, max(max(n, s), max(e, w)));
++    float3 amp = pow(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)), 0.5);
++    float3 wgt = amp * (-1.0 / LERP(8.0, 4.5, saturate(p0.x)));
++    c = saturate((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt));
++  }
++  float2 uv = pos.xy / float2(size);
++  float3 l = TO_LINEAR(c) * pow(2.0, p0.w);
++  if (p0.y > 0.0) l += src1.Sample(lin_clamp, uv).rgb * p0.y;
++  l *= float3(1.0 + 0.08 * p2.x, 1.0 - 0.05 * p2.y, 1.0 - 0.08 * p2.x);
++  float y = LUMA(l);
++  l = LERP(y.xxx, l, p1.y);
++  float hi_c = max(l.r, max(l.g, l.b));
++  float lo_c = min(l.r, min(l.g, l.b));
++  float sat = (hi_c - lo_c) / max(hi_c, 1e-4);
++  float y2 = LUMA(l);
++  l = LERP(y2.xxx, l, 1.0 + p1.z * (1.0 - sat));
++  l = max(l, 0.0);
++  // Shoulder: everything below 0.8 stays, the rest rolls off towards 1.
++  float3 over = max(l - 0.8, 0.0);
++  l = min(l, 0.8) + 0.2 * (1.0 - pow(2.718281828, -over / 0.2));
++  l = max(l - p2.w, 0.0) / (1.0 - p2.w);
++  float3 g = TO_GAMMA(l);
++  float pv = 0.42;
++  float a_hi = 1.0 + 0.6 * p1.w;
++  float a_lo = 1.0 + 0.1 * p1.w;
++  float3 lo = pv * pow(saturate(g) / pv, a_lo);
++  float3 hi = 1.0 - (1.0 - pv) * pow(saturate(1.0 - g) / (1.0 - pv), a_hi);
++  float3 below = saturate((pv - g) * 1e5);  // 1 where g < pv
++  g = LERP(hi, lo, below);
++  float3 k = LERP(p1.x, 1.0 + (p1.x - 1.0) * 0.3, below);
++  g = saturate(pv + (g - pv) * k);
++  float2 d = (uv - 0.5) * float2(float(size.x) / float(size.y), 1.0);
++  float dl = pow(d.x * d.x + d.y * d.y, 0.5) * 1.35;
++  float st = saturate((dl - 0.45) / 0.6);
++  g *= 1.0 - p2.z * st * st * (3.0 - 2.0 * st);
++  return float4(g, 1.0);
+ }
+ )";
+ 
+@@ -7046,11 +7147,75 @@
+     code->Release();
+     return out != nullptr;
+   };
+-  if (!build("bright_cs", look_bright_pipeline_) || !build("blur_cs", look_blur_pipeline_) ||
+-      !build("final_cs", look_final_pipeline_)) {
++  if (build("bright_cs", look_bright_pipeline_) && build("blur_cs", look_blur_pipeline_) &&
++      build("final_cs", look_final_pipeline_)) {
++    REXGPU_INFO("Modern look: initialized");
++    return true;
++  }
++  // No compute shaders from this compiler (Wine on macOS): pixel shaders instead.
++  look_bright_pipeline_.Reset();
++  look_blur_pipeline_.Reset();
++  look_final_pipeline_.Reset();
++  std::vector<uint8_t> vs;
++  auto build_ps = [&](const char* entry, const char* target, std::vector<uint8_t>& out) {
++    ID3DBlob* code = nullptr;
++    ID3DBlob* errors = nullptr;
++    HRESULT hr = compile(kLookShaderPS, sizeof(kLookShaderPS) - 1, "modern_look_ps", nullptr, nullptr,
++                         entry, target, 1u << 15, 0, &code, &errors);
++    if (errors) {
++      REXGPU_ERROR("Modern look: {} compiler output: {}", entry,
++                   std::string(static_cast<const char*>(errors->GetBufferPointer()),
++                               errors->GetBufferSize()));
++      errors->Release();
++    }
++    if (FAILED(hr) || !code) {
++      REXGPU_ERROR("Modern look: failed to compile {} (0x{:08X})", entry, uint32_t(hr));
++      return false;
++    }
++    out.assign(static_cast<const uint8_t*>(code->GetBufferPointer()),
++               static_cast<const uint8_t*>(code->GetBufferPointer()) + code->GetBufferSize());
++    code->Release();
++    return true;
++  };
++  std::vector<uint8_t> bright, blur, final_ps;
++  if (!build_ps("vs_fs", "vs_5_0", vs) || !build_ps("bright_ps", "ps_5_0", bright) ||
++      !build_ps("blur_ps", "ps_5_0", blur) || !build_ps("final_ps", "ps_5_0", final_ps)) {
+     return false;
+   }
+-  REXGPU_INFO("Modern look: initialized");
++  auto make = [&](const std::vector<uint8_t>& ps, DXGI_FORMAT format,
++                  Microsoft::WRL::ComPtr<ID3D12PipelineState>& out) {
++    D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
++    d.pRootSignature = look_root_signature_.Get();
++    d.VS.pShaderBytecode = vs.data();
++    d.VS.BytecodeLength = vs.size();
++    d.PS.pShaderBytecode = ps.data();
++    d.PS.BytecodeLength = ps.size();
++    d.SampleMask = UINT_MAX;
++    d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++    d.RasterizerState.DepthClipEnable = TRUE;
++    d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++    d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++    d.NumRenderTargets = 1;
++    d.RTVFormats[0] = format;
++    d.SampleDesc.Count = 1;
++    return SUCCEEDED(device->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&out)));
++  };
++  if (!make(bright, DXGI_FORMAT_R16G16B16A16_FLOAT, look_bright_pipeline_) ||
++      !make(blur, DXGI_FORMAT_R16G16B16A16_FLOAT, look_blur_pipeline_) ||
++      !make(final_ps, ui::d3d12::D3D12Presenter::kGuestOutputFormat, look_final_pipeline_)) {
++    REXGPU_ERROR("Modern look: failed to create the graphics pipelines");
++    return false;
++  }
++  D3D12_DESCRIPTOR_HEAP_DESC heap = {};
++  heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
++  heap.NumDescriptors = 3;
++  if (FAILED(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&look_rtv_heap_)))) {
++    REXGPU_ERROR("Modern look: failed to create the render target descriptors");
++    return false;
++  }
++  look_graphics_ = true;
++  REXGPU_INFO("Modern look: initialized (pixel shaders)");
+   return true;
+ }
+ 
+@@ -7087,8 +7252,14 @@
+       retire(look_copy_);
+       retire(look_bloom_a_);
+       retire(look_bloom_b_);
++      retire(look_out_);
+     }
+   }
++  // Pixel shader path: the passes read in pixel shaders and write render targets.
++  const D3D12_RESOURCE_STATES read_state = look_graphics_ ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
++                                                          : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
++  const D3D12_RESOURCE_STATES write_state =
++      look_graphics_ ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+   auto create = [&](Microsoft::WRL::ComPtr<ID3D12Resource>& r, uint32_t w, uint32_t h, DXGI_FORMAT format,
+                     bool uav) {
+     D3D12_RESOURCE_DESC d = {};
+@@ -7100,23 +7271,38 @@
+     d.Format = format;
+     d.SampleDesc.Count = 1;
+     d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+-    d.Flags = uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
++    d.Flags = !uav ? D3D12_RESOURCE_FLAG_NONE
++              : look_graphics_ ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
++                               : D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+     return SUCCEEDED(device->CreateCommittedResource(
+         &ui::d3d12::util::kHeapPropertiesDefault, provider.GetHeapFlagCreateNotZeroed(), &d,
+-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&r)));
++        read_state, nullptr, IID_PPV_ARGS(&r)));
+   };
+   if (!look_copy_) {
+     if (!create(look_copy_, width, height, ui::d3d12::D3D12Presenter::kGuestOutputFormat, false) ||
+         !create(look_bloom_a_, bw, bh, DXGI_FORMAT_R16G16B16A16_FLOAT, true) ||
+-        !create(look_bloom_b_, bw, bh, DXGI_FORMAT_R16G16B16A16_FLOAT, true)) {
++        !create(look_bloom_b_, bw, bh, DXGI_FORMAT_R16G16B16A16_FLOAT, true) ||
++        (look_graphics_ &&
++         !create(look_out_, width, height, ui::d3d12::D3D12Presenter::kGuestOutputFormat, true))) {
+       REXGPU_ERROR("Modern look: could not create its textures; switched off");
+       look_copy_.Reset();
+       look_bloom_a_.Reset();
+       look_bloom_b_.Reset();
++      look_out_.Reset();
+       look_init_ok_ = false;
+       return;
+     }
+   }
++  D3D12_CPU_DESCRIPTOR_HANDLE rtv[3] = {};
++  if (look_graphics_) {
++    const UINT rtv_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
++    ID3D12Resource* targets[3] = {look_bloom_a_.Get(), look_bloom_b_.Get(), look_out_.Get()};
++    for (int i = 0; i < 3; ++i) {
++      rtv[i] = look_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
++      rtv[i].ptr += SIZE_T(rtv_size) * i;
++      device->CreateRenderTargetView(targets[i], nullptr, rtv[i]);
++    }
++  }
+ 
+   // Descriptors for the four passes: (dst, src0, src1) each.
+   ui::d3d12::util::DescriptorCpuGpuHandlePair h[12];
+@@ -7157,14 +7343,14 @@
+   // The frame so far -> look_copy_.
+   const D3D12_RESOURCE_STATES out_state = ui::d3d12::D3D12Presenter::kGuestOutputInternalState;
+   PushTransitionBarrier(guest_output, out_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+-  PushTransitionBarrier(look_copy_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+-                        D3D12_RESOURCE_STATE_COPY_DEST);
++  PushTransitionBarrier(look_copy_.Get(), read_state, D3D12_RESOURCE_STATE_COPY_DEST);
+   SubmitBarriers();
+   deferred_command_list_.D3DCopyResource(look_copy_.Get(), guest_output);
+-  PushTransitionBarrier(look_copy_.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+-                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+-  PushTransitionBarrier(guest_output, D3D12_RESOURCE_STATE_COPY_SOURCE,
+-                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++  PushTransitionBarrier(look_copy_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, read_state);
++  if (!look_graphics_) {
++    PushTransitionBarrier(guest_output, D3D12_RESOURCE_STATE_COPY_SOURCE,
++                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++  }
+ 
+   struct {
+     uint32_t size[2], bloom_size[2];
+@@ -7175,36 +7361,68 @@
+   k.bloom_size[0] = bw;
+   k.bloom_size[1] = bh;
+   for (size_t i = 0; i < 12; ++i) k.p[i] = v[i];
+-  deferred_command_list_.D3DSetComputeRootSignature(look_root_signature_.Get());
+-  auto pass = [&](ID3D12PipelineState* pipeline, int first, float step, uint32_t w, uint32_t hgt) {
++  if (look_graphics_) {
++    SetExternalGraphicsRootSignature(look_root_signature_.Get());
++  } else {
++    deferred_command_list_.D3DSetComputeRootSignature(look_root_signature_.Get());
++  }
++  // target: 0 bloom A, 1 bloom B, 2 output copy (pixel shader path only).
++  auto pass = [&](ID3D12PipelineState* pipeline, int first, float step, uint32_t w, uint32_t hgt,
++                  int target) {
+     k.p[12] = step;
++    SetExternalPipeline(pipeline);
++    if (look_graphics_) {
++      deferred_command_list_.D3DSetGraphicsRoot32BitConstants(0, 20, &k, 0);
++      deferred_command_list_.D3DSetGraphicsRootDescriptorTable(2, h[first + 1].second);
++      deferred_command_list_.D3DSetGraphicsRootDescriptorTable(3, h[first + 2].second);
++      deferred_command_list_.D3DOMSetRenderTargets(1, &rtv[target], FALSE, nullptr);
++      D3D12_VIEWPORT viewport = {0.0f, 0.0f, float(w), float(hgt), 0.0f, 1.0f};
++      D3D12_RECT scissor = {0, 0, LONG(w), LONG(hgt)};
++      deferred_command_list_.RSSetViewport(viewport);
++      deferred_command_list_.RSSetScissorRect(scissor);
++      ff_viewport_update_needed_ = true;
++      ff_scissor_update_needed_ = true;
++      SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++      SubmitBarriers();
++      deferred_command_list_.D3DDrawInstanced(3, 1, 0, 0);
++      return;
++    }
+     deferred_command_list_.D3DSetComputeRoot32BitConstants(0, 20, &k, 0);
+     deferred_command_list_.D3DSetComputeRootDescriptorTable(1, h[first].second);
+     deferred_command_list_.D3DSetComputeRootDescriptorTable(2, h[first + 1].second);
+     deferred_command_list_.D3DSetComputeRootDescriptorTable(3, h[first + 2].second);
+-    SetExternalPipeline(pipeline);
+     SubmitBarriers();
+     deferred_command_list_.D3DDispatch((w + 7) / 8, (hgt + 7) / 8, 1);
+   };
+   const bool bloom = v[1] > 0.0f;
+   if (bloom) {
+-    PushTransitionBarrier(look_bloom_a_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+-                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+-    pass(look_bright_pipeline_.Get(), 0, 1.0f, bw, bh);
+-    PushTransitionBarrier(look_bloom_a_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+-                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+-    PushTransitionBarrier(look_bloom_b_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+-                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+-    pass(look_blur_pipeline_.Get(), 3, 1.0f, bw, bh);
+-    PushTransitionBarrier(look_bloom_b_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+-                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+-    PushTransitionBarrier(look_bloom_a_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+-                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+-    pass(look_blur_pipeline_.Get(), 6, 2.5f, bw, bh);
+-    PushTransitionBarrier(look_bloom_a_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+-                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    PushTransitionBarrier(look_bloom_a_.Get(), read_state, write_state);
++    pass(look_bright_pipeline_.Get(), 0, 1.0f, bw, bh, 0);
++    PushTransitionBarrier(look_bloom_a_.Get(), write_state, read_state);
++    PushTransitionBarrier(look_bloom_b_.Get(), read_state, write_state);
++    pass(look_blur_pipeline_.Get(), 3, 1.0f, bw, bh, 1);
++    PushTransitionBarrier(look_bloom_b_.Get(), write_state, read_state);
++    PushTransitionBarrier(look_bloom_a_.Get(), read_state, write_state);
++    pass(look_blur_pipeline_.Get(), 6, 2.5f, bw, bh, 0);
++    PushTransitionBarrier(look_bloom_a_.Get(), write_state, read_state);
+   }
+-  pass(look_final_pipeline_.Get(), 9, 0.0f, width, height);
++  if (look_graphics_) {
++    // Render the result into look_out_, then copy it over the guest output
++    // (which allows no render target use).
++    PushTransitionBarrier(look_out_.Get(), read_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
++    pass(look_final_pipeline_.Get(), 9, 0.0f, width, height, 2);
++    PushTransitionBarrier(look_out_.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
++                          D3D12_RESOURCE_STATE_COPY_SOURCE);
++    PushTransitionBarrier(guest_output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
++    SubmitBarriers();
++    deferred_command_list_.D3DCopyResource(guest_output, look_out_.Get());
++    PushTransitionBarrier(look_out_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, read_state);
++    PushTransitionBarrier(guest_output, D3D12_RESOURCE_STATE_COPY_DEST, out_state);
++    // The game's own render targets must be bound again before its next draw.
++    render_target_cache_->InvalidateCommandListRenderTargets();
++    return;
++  }
++  pass(look_final_pipeline_.Get(), 9, 0.0f, width, height, 2);
+   PushTransitionBarrier(guest_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, out_state);
+ }
+ 
