@@ -25,7 +25,7 @@ namespace sr {
 
 uint64_t HwProfile::gpu_budget_mb() const {
   // Integrated GPUs report a small "dedicated" carve-out and use system RAM.
-  if (integrated) return std::min<uint64_t>(shared_mem_mb / 2, 2048);
+  if (integrated || unified_memory) return std::min<uint64_t>(shared_mem_mb / 2, 2048);
   return dedicated_vram_mb;
 }
 
@@ -117,7 +117,7 @@ HwProfile Detect() {
     const char* release = nullptr;
     if (host_version) host_version(&sysname, &release);
     if (sysname && std::strcmp(sysname, "Darwin") == 0 && p.adapter_index >= 0) {
-      p.integrated = true;
+      p.unified_memory = true;   // budget like an iGPU; the GPU itself is not weak
       if (p.shared_mem_mb < p.total_ram_mb) p.shared_mem_mb = p.total_ram_mb;
     }
   }

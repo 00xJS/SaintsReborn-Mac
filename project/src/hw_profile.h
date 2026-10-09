@@ -17,6 +17,7 @@ struct HwProfile {
   uint64_t dedicated_vram_mb = 0;
   uint64_t shared_mem_mb = 0;
   bool integrated = false;     // little or no dedicated VRAM (iGPU / APU)
+  bool unified_memory = false; // Apple silicon under Wine: one pool for CPU and GPU
   uint32_t logical_cpus = 0;
   uint32_t physical_cores = 0;
   uint64_t total_ram_mb = 0;

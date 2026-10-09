@@ -587,7 +587,7 @@ public:
             REXLOG_INFO("Hardware: CPU {} cores / {} threads, RAM {} MB | GPU '{}' (vendor {:04X}), {} MB VRAM, "
                         "{} MB shared{} | {} Direct3D 12 adapter(s)",
                         hw.physical_cores, hw.logical_cpus, hw.total_ram_mb, hw.adapter_name, hw.vendor_id,
-                        hw.dedicated_vram_mb, hw.shared_mem_mb, hw.integrated ? " (integrated)" : "",
+                        hw.dedicated_vram_mb, hw.shared_mem_mb, hw.integrated ? " (integrated)" : hw.unified_memory ? " (unified)" : "",
                         hw.adapter_count);
             // Two GPUs (hybrid laptop): render on the one with the most VRAM,
             // not simply the first one DXGI lists (usually the integrated one).
@@ -757,7 +757,8 @@ public:
             // Without the file: 1x on weak GPUs (less than 3 GB VRAM or
             // integrated), 2x otherwise.
             const sr::HwProfile& hw = sr::GetHwProfile();
-            int scale = hw.weak_gpu() ? 1 : 2;
+            // 1x on Apple silicon too: measured on an M2 Pro, 2x is GPU-bound at ~40 fps.
+            int scale = hw.weak_gpu() || hw.unified_memory ? 1 : 2;
             bool scale_from_file = false;
             if (FILE* rf = std::fopen("res_scale.txt", "rb")) {
                 int v = 0;
