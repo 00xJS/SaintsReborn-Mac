@@ -25,6 +25,7 @@
 
 #include <rex/logging.h>
 #include <rex/ppc/function.h>
+#include <rex/system/kernel_state.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -161,6 +162,11 @@ PPC_FUNC(sub_827172F8) {
     g_press_xuid = friends[size_t(i)].xuid;
     g_pressed = true;
     REXLOG_INFO("Friends UI: invite {} ({:016X})", friends[size_t(i)].name, g_press_xuid);
+    // The game reads the press only when the Guide says one happened: its
+    // notification loop (sub_8235DEB8) calls XCustomGetLastActionPress on
+    // XN_CUSTOM_ACTIONPRESSED (0x06000003). Without it the choice was never
+    // picked up and no gang invite was ever sent.
+    if (auto* ks = REX_KERNEL_STATE()) ks->BroadcastNotification(0x06000003u, 0);
   });
   ctx.r3.u64 = 0;
 }
