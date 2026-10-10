@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -42,6 +43,8 @@
 #include <rex/logging.h>
 #include <rex/ppc/function.h>
 #include <rex/system/kernel_state.h>
+#include <rex/filesystem.h>
+#include <rex/system/xam/content_manager.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -67,6 +70,7 @@ constexpr uint32_t kOptionsTitle = 0x840BBF1Cu;       // OPTIONS list title (str
 constexpr uint32_t kSubtitle = 0x82FFE3E0u;           // text under the list title
 constexpr uint32_t kTopMode = 0x827D578Cu;            // 4 free roam, 5 mission, 6 multiplayer lobby, 13+ match
 constexpr uint32_t kMpMenusFlag = 0x8370E927u;        // byte, set while the MULTIPLAYER screen is up
+constexpr uint32_t kEmptyMenuFunc = 0x826BA8E0u;      // blr: the original entries of menus 46 / 47
 constexpr int kHeaderRows = 3, kMaxPlayerRows = 16;
 constexpr uint32_t kChars = 72;  // per text
 
@@ -306,6 +310,22 @@ bool sr::PlayersCurrent(uint8_t* base) { return R32(base, kMenuCurrent) == kPlay
 PPC_FUNC(sub_823487B8) {
   std::lock_guard<std::recursive_mutex> lock(g_mutex);
   const uint32_t requested = R32(base, kMenuRequested);
+  // Menu 46 is not unused: the game itself requests it as an EMPTY menu (all
+  // four entries nop 0x826BA8E0) while the crib's Wardrobe, Purchase Clothing
+  // and Purchase Tattoos run their own UI (MULTIPLAYER > CUSTOMIZATION; log
+  // 2026-10-09: "current 0 requested 46 tab 10 ... mp 0"). With the OPTIONS
+  // functions in that slot the whole PUBLIC LOBBIES page was drawn over the
+  // wardrobe. Outside the MULTIPLAYER screen, 46 / 47 get the empty entries
+  // back (build, exit, update and draw are read from the table on every
+  // call, so the rest of the store's use is empty too) and this build does
+  // nothing, as the original entry did. Adding the LOBBIES / PLAYERS tabs
+  // (PlayersAfterTabAdded) puts our functions back for the MULTIPLAYER tabs.
+  if ((requested == kLobbiesId || requested == kPlayersId) && !Host(base, kMpMenusFlag)[0]) {
+    for (uint32_t i = 0; i < 4; ++i) W32(base, kMenuTable + requested * 16 + i * 4, kEmptyMenuFunc);
+    static int logs = 0;
+    if (logs++ < 20) REXLOG_INFO("MP TABS: menu {} requested outside MULTIPLAYER - left empty (store / wardrobe)", requested);
+    return;
+  }
   const bool lobbies = requested == kLobbiesId && EnsureLobbyTexts(base);
   const bool players = lobbies || (requested == kPlayersId && EnsureTexts(base));
   if (players) {
@@ -591,8 +611,64 @@ PPC_FUNC(sub_8265C6E0) {
   ctx.r3.u64 = upload(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
 }
 
+// The multiplayer character (with its cash) and the profile settings live in
+// <game>\545107D1\profile\<player name>\ (ContentManager::
+// ResolveGameUserContentPath), so a new Player Name (CO-OP tab, or a first
+// name after playing as the Windows user name) used to start from an empty
+// character: $0, default clothes. Before the game loads the character, a
+// name without one gets a copy of the save it used last (profile_last.txt
+// next to the exe), or, the first time, of the newest character in the
+// other profile folders. Nothing is moved or overwritten.
+static void CarryMultiplayerSave() {
+  namespace fs = std::filesystem;
+  auto* ks = REX_KERNEL_STATE();
+  if (!ks || !ks->content_manager()) return;
+  std::error_code ec;
+  const fs::path now = ks->content_manager()->ResolveGameUserContentPath();
+  const fs::path character = fs::path("storage") / "3_MPStorage";
+  auto remember = [&] {
+    if (FILE* f = std::fopen("profile_last.txt", "wb")) {
+      const std::string t = rex::path_to_utf8(now);
+      std::fwrite(t.data(), 1, t.size(), f);
+      std::fclose(f);
+    }
+  };
+  if (fs::exists(now / character, ec)) {
+    remember();
+    return;
+  }
+  fs::path from;
+  bool had_last = false;
+  if (FILE* f = std::fopen("profile_last.txt", "rb")) {
+    char buf[1024] = {};
+    const size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+    std::fclose(f);
+    had_last = n > 0;
+    const fs::path last = rex::to_path(std::string(buf, n));
+    if (had_last && last != now && fs::exists(last / character, ec)) from = last;
+  }
+  if (from.empty() && !had_last) {
+    fs::file_time_type newest{};
+    for (const auto& e : fs::directory_iterator(now.parent_path(), ec)) {
+      if (!e.is_directory(ec) || e.path() == now) continue;
+      const auto t = fs::last_write_time(e.path() / character, ec);
+      if (ec) { ec.clear(); continue; }
+      if (from.empty() || t > newest) { from = e.path(); newest = t; }
+    }
+  }
+  if (!from.empty()) {
+    fs::create_directories(now, ec);
+    fs::copy(from, now, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+    REXLOG_INFO("Online save: '{}' had no multiplayer character - copied it from '{}'{}",
+                rex::path_to_utf8(now.filename()), rex::path_to_utf8(from.filename()),
+                ec ? " (FAILED: " + ec.message() + ")" : std::string());
+  }
+  remember();
+}
+
 extern "C" void __imp__sub_8265C400(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_8265C400) {
+  CarryMultiplayerSave();
   using Download = uint32_t (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
   static const Download download = [] {
     HMODULE m = GetModuleHandleW(L"rexruntime.dll");

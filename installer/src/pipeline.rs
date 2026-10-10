@@ -832,7 +832,101 @@ fn host_tool(
     }
 }
 
+/// The players' saves live inside dist/game: `545107D1/profile/<name>` (the
+/// multiplayer character with its cash, profile settings) and the content
+/// folders named by a 16-digit profile id (single-player saves). Replacing the
+/// game files (a disc image or game folder chosen during an update) used to
+/// delete them with the rest of dist/game. They are moved aside first and put
+/// back afterwards, also when copying or extracting fails.
+struct KeptSaves {
+    game_dir: PathBuf,
+    keep: PathBuf,
+    names: Vec<std::ffi::OsString>,
+}
+
+impl KeptSaves {
+    fn take(r: &Reporter, game_dir: &Path) -> Result<Self> {
+        let keep = game_dir.with_file_name("game_saves_kept");
+        let mut names = Vec::new();
+        if let Ok(rd) = fs::read_dir(game_dir) {
+            for e in rd.flatten() {
+                let name = e.file_name();
+                let n = name.to_string_lossy();
+                let save_dir = (n.len() == 8 || n.len() == 16) && n.chars().all(|c| c.is_ascii_hexdigit());
+                if !save_dir || !e.path().is_dir() {
+                    continue;
+                }
+                fs::create_dir_all(&keep)?;
+                let to = keep.join(&name);
+                if to.exists() {
+                    // Left over from an earlier run that stopped: that copy is the player's.
+                    fsx::remove_dir(&e.path())?;
+                } else {
+                    fs::rename(e.path(), &to)
+                        .with_context(|| format!("could not keep your saves ({})", e.path().display()))?;
+                }
+                names.push(name);
+            }
+        }
+        if let Ok(rd) = fs::read_dir(&keep) {
+            for e in rd.flatten() {
+                if !names.contains(&e.file_name()) {
+                    names.push(e.file_name());
+                }
+            }
+        }
+        if !names.is_empty() {
+            r.log("Keeping your saves (online character and money, profile, story saves).");
+        }
+        Ok(Self { game_dir: game_dir.to_path_buf(), keep, names })
+    }
+
+    fn put_back(&self, r: &Reporter) -> Result<()> {
+        if self.names.is_empty() {
+            return Ok(());
+        }
+        fs::create_dir_all(&self.game_dir)?;
+        for name in &self.names {
+            let from = self.keep.join(name);
+            if !from.exists() {
+                continue;
+            }
+            let to = self.game_dir.join(name);
+            if to.exists() {
+                fsx::remove_dir(&to)?;
+            }
+            fs::rename(&from, &to)
+                .with_context(|| format!("your saves are in {} - copy them back to {}", from.display(), to.display()))?;
+        }
+        let _ = fs::remove_dir(&self.keep);
+        r.log("Saves put back.");
+        Ok(())
+    }
+}
+
 fn get_game_files(
+    r: &Reporter,
+    tc: &Toolchain,
+    o: &Options,
+    root: &Path,
+    game_dir: &Path,
+) -> Result<()> {
+    let replacing = match &o.game {
+        GameSource::None => false,
+        GameSource::Folder(src) => !same_dir(src, game_dir),
+        GameSource::Iso(_) => !game_dir.join("default.xex").is_file(),
+    };
+    if !replacing {
+        return replace_game_files(r, tc, o, root, game_dir);
+    }
+    let kept = KeptSaves::take(r, game_dir)?;
+    let result = replace_game_files(r, tc, o, root, game_dir);
+    let back = kept.put_back(r);
+    result?;
+    back
+}
+
+fn replace_game_files(
     r: &Reporter,
     tc: &Toolchain,
     o: &Options,
