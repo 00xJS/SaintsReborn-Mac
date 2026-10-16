@@ -14,6 +14,7 @@
 #include "eos_connect.h"
 #include "eos_lobby.h"
 #include "eos_p2p.h"
+#include <atomic>
 
 namespace eos {
 
@@ -27,6 +28,8 @@ namespace eos {
   X(EOS_Lobby_CopyLobbyDetailsHandle) X(EOS_LobbyDetails_GetLobbyOwner) X(EOS_LobbyDetails_Release) \
   X(EOS_P2P_SendPacket) X(EOS_P2P_ReceivePacket) X(EOS_P2P_GetNextReceivedPacketSize) \
   X(EOS_P2P_AcceptConnection) X(EOS_P2P_AddNotifyPeerConnectionRequest) X(EOS_P2P_RemoveNotifyPeerConnectionRequest) \
+  X(EOS_P2P_AddNotifyPeerConnectionEstablished) X(EOS_P2P_RemoveNotifyPeerConnectionEstablished) \
+  X(EOS_P2P_SetPacketQueueSize) X(EOS_P2P_GetPacketQueueInfo) \
   X(EOS_Platform_Release)
 #define EOS_PTR(name) inline decltype(&::name) p_##name = nullptr;
 EOS_FUNCS(EOS_PTR)
@@ -42,7 +45,19 @@ inline EOS_HLobby lobby = nullptr;
 inline EOS_HP2P p2p = nullptr;
 inline EOS_ProductUserId me = nullptr;
 inline EOS_NotificationId request_note = EOS_INVALID_NOTIFICATIONID;
+inline EOS_NotificationId established_note = EOS_INVALID_NOTIFICATIONID;
 inline EOS_P2P_SocketId socket_id{};
+// How the link runs (1.71): 0 not yet known, 1 direct (internet or local
+// network), 2 through Epic's relay servers. Packets the full outgoing queue
+// refused. Both read by the Perf line.
+inline std::atomic<int> link_kind{0};
+inline std::atomic<uint32_t> send_refused{0};
+// Outgoing queue cap (1.71): unlimited before, so whatever the link couldn't
+// carry waited in line and everything arrived later and later (in the 1.69
+// test the other player's shots 20-30 s late, their poses 2-3 s old). A full
+// queue refuses new packets instead: a lost pose is better than a late one,
+// and events are sent 3 times.
+constexpr uint64_t kOutgoingQueueBytes = 64 * 1024;
 inline std::string lobby_id, code, error;
 inline std::mutex text_mutex;           // code / error / state text are read by the overlay
 inline std::string status_text;
@@ -162,6 +177,21 @@ inline bool Platform(const std::string& folder) {
   connect = p_EOS_Platform_GetConnectInterface(platform);
   lobby = p_EOS_Platform_GetLobbyInterface(platform);
   p2p = p_EOS_Platform_GetP2PInterface(platform);
+  {
+    // Cap the outgoing queue (see kOutgoingQueueBytes); the incoming one keeps
+    // Epic's size.
+    EOS_P2P_GetPacketQueueInfoOptions qi{}; qi.ApiVersion = EOS_P2P_GETPACKETQUEUEINFO_API_LATEST;
+    EOS_P2P_PacketQueueInfo now{};
+    const bool known = p_EOS_P2P_GetPacketQueueInfo(p2p, &qi, &now) == EOS_EResult::EOS_Success;
+    EOS_P2P_SetPacketQueueSizeOptions q{}; q.ApiVersion = EOS_P2P_SETPACKETQUEUESIZE_API_LATEST;
+    q.IncomingPacketQueueMaxSizeBytes = known ? now.IncomingPacketQueueMaxSizeBytes : EOS_P2P_MAX_QUEUE_SIZE_UNLIMITED;
+    q.OutgoingPacketQueueMaxSizeBytes = kOutgoingQueueBytes;
+    const EOS_EResult r = p_EOS_P2P_SetPacketQueueSize(p2p, &q);
+    Log("packet queues: outgoing capped at " + std::to_string(kOutgoingQueueBytes / 1024) + " KB (was " +
+        (known ? (now.OutgoingPacketQueueMaxSizeBytes ? std::to_string(now.OutgoingPacketQueueMaxSizeBytes / 1024) + " KB" : std::string("unlimited")) : std::string("?")) +
+        "), incoming " + (known ? (now.IncomingPacketQueueMaxSizeBytes ? std::to_string(now.IncomingPacketQueueMaxSizeBytes / 1024) + " KB" : std::string("unlimited")) : std::string("?")) +
+        ": " + R(r));
+  }
   std::snprintf(socket_id.SocketName, sizeof(socket_id.SocketName), "WHOMPAYSCOOP");
   socket_id.ApiVersion = EOS_P2P_SOCKETID_API_LATEST;
   platform_ok = true;
@@ -245,6 +275,18 @@ inline void Online() {
     AcceptFrom(i->RemoteUserId);
     Log("accepted a connection");
   });
+  // How each connection runs (1.71): directly, or through Epic's relay
+  // servers (more delay; on a Mac without the Local Network permission the
+  // direct path between two machines at home can't be used).
+  EOS_P2P_AddNotifyPeerConnectionEstablishedOptions e{};
+  e.ApiVersion = EOS_P2P_ADDNOTIFYPEERCONNECTIONESTABLISHED_API_LATEST; e.LocalUserId = me; e.SocketId = &socket_id;
+  established_note = p_EOS_P2P_AddNotifyPeerConnectionEstablished(p2p, &e, nullptr, [](const EOS_P2P_OnPeerConnectionEstablishedInfo* i) {
+    const bool direct = i->NetworkType == EOS_ENetworkConnectionType::EOS_NCT_DirectConnection;
+    const bool relayed = i->NetworkType == EOS_ENetworkConnectionType::EOS_NCT_RelayedConnection;
+    link_kind.store(direct ? 1 : relayed ? 2 : 0);
+    Log(std::string(i->ConnectionType == EOS_EConnectionEstablishedType::EOS_CET_Reconnection ? "reconnected" : "connected") +
+        (direct ? " directly" : relayed ? " through Epic's relay servers" : " (no connection type)"));
+  });
   if (is_host) {
     state = State::MakingLobby; SetText("Creating the lobby...");
     { std::lock_guard l(text_mutex); code = NewCode(); }
@@ -301,7 +343,16 @@ inline int Send(const void* data, int length, const sockaddr_in& to) {
   s.bAllowDelayedDelivery = EOS_TRUE;
   s.Reliability = EOS_EPacketReliability::EOS_PR_UnreliableUnordered;
   s.bDisableAutoAcceptConnection = EOS_FALSE;
-  return p_EOS_P2P_SendPacket(p2p, &s) == EOS_EResult::EOS_Success ? length : -1;
+  const EOS_EResult r = p_EOS_P2P_SendPacket(p2p, &s);
+  if (r == EOS_EResult::EOS_LimitExceeded) ++send_refused;  // the capped queue is full
+  return r == EOS_EResult::EOS_Success ? length : -1;
+}
+
+// Current queue sizes (network thread): what waits to be sent / to be read.
+inline bool QueueInfo(EOS_P2P_PacketQueueInfo& out) {
+  if (!platform_ok || !p2p) return false;
+  EOS_P2P_GetPacketQueueInfoOptions o{}; o.ApiVersion = EOS_P2P_GETPACKETQUEUEINFO_API_LATEST;
+  return p_EOS_P2P_GetPacketQueueInfo(p2p, &o, &out) == EOS_EResult::EOS_Success;
 }
 
 inline int Receive(char* buffer, int capacity, sockaddr_in& from) {
@@ -319,6 +370,8 @@ inline int Receive(char* buffer, int capacity, sockaddr_in& from) {
 inline void End() {
   if (!platform_ok) { GiveBack(); state = State::Off; return; }
   if (request_note != EOS_INVALID_NOTIFICATIONID) { p_EOS_P2P_RemoveNotifyPeerConnectionRequest(p2p, request_note); request_note = EOS_INVALID_NOTIFICATIONID; }
+  if (established_note != EOS_INVALID_NOTIFICATIONID) { p_EOS_P2P_RemoveNotifyPeerConnectionEstablished(p2p, established_note); established_note = EOS_INVALID_NOTIFICATIONID; }
+  link_kind.store(0);
   if (me && !lobby_id.empty()) {
     if (is_host) {
       EOS_Lobby_DestroyLobbyOptions d{}; d.ApiVersion = EOS_LOBBY_DESTROYLOBBY_API_LATEST; d.LocalUserId = me; d.LobbyId = lobby_id.c_str();
