@@ -1994,22 +1994,46 @@ void BulletHitHook(WmlContext* c,uint8_t* b) {
 // or thrown object (its pointer, 0 when the pool is full); 8241EFE0 flies it;
 // 825BF418(proj) explodes it (fuse, contact, or chained by an explosion);
 // 8241EE80(proj, 0, 0) ends it (explodes first in single player, then
-// deletes it). proj +20 position, +228 owner handle (R 2.4/2.5).
+// deletes it). The fuse and range ends of 8241EFE0 explode / delete it
+// without 8241EE80. proj +20 position, +68 handle (each one made gets a new
+// one: the 36-slot pool reuses its pointers), +76 last position (the
+// explosion's ray starts there), +208 weapon info, +228 owner handle
+// (R 2.4/2.5, I A.2-A.4).
 #pragma pack(push,1)
-struct ProjPacket { char magic[4]; uint32_t kind, id; int32_t weapon; float pos[3], rows[9], vel[3]; };  // WPJ1: kind 1 made, 2 exploded
+struct ProjPacket { char magic[4]; uint32_t kind, id; int32_t weapon; float pos[3], rows[9], vel[3]; };  // WPJ1: kind 1 made, 2 exploded; id = the owner's handle for it
 #pragma pack(pop)
 std::vector<ProjPacket> proj_out;                  // game thread -> network (event_mutex)
 struct ProjIn { uint8_t origin; ProjPacket p; };
 std::vector<ProjIn> proj_in;                       // network -> game thread (event_mutex)
-std::unordered_map<uint32_t,int32_t> own_projectiles;  // our player's live projectiles -> weapon (game thread)
-struct ProjCopy { uint32_t proj=0, owner=0; int32_t weapon=-1; uint64_t made=0; };
-std::unordered_map<uint64_t,ProjCopy> proj_copies; // (sender slot, their id) -> copy here
-int making_copy=0, explosion_replay=0, ending_copy=0, explosion_depth=0;
+struct ProjCopy { uint32_t proj=0, handle=0, owner=0; int32_t weapon=-1; uint64_t made=0; };
+std::unordered_map<uint64_t,ProjCopy> proj_copies; // (sender slot, their handle) -> copy here
+int making_copy=0, explosion_depth=0, fire_update_depth=0;
+uint32_t replaying_proj=0;   // the copy whose owner's explosion is being played here
 std::atomic<uint32_t> projs_sent{0}, projs_copied{0}, projs_refused{0}, booms_sent{0}, booms_played{0}, booms_held{0};
+// A live projectile (in the active list *0x8309A494, next at +204).
+bool LiveProjectile(uint32_t proj) {
+  const uint32_t head=api->read_u32(0x8309A494);
+  unsigned guard=0;
+  for(uint32_t p=head;p && Readable(p,232) && guard++<256;) {
+    if(p==proj) return true;
+    p=api->read_u32(p+204);
+    if(p==head) break;
+  }
+  return false;
+}
+uint32_t ProjHandle(uint32_t proj) { return proj && Readable(proj,72) ? api->read_u32(proj+68) : 0; }
+// One of our copies (by pointer and handle: a pointer of a copy the game
+// ended without telling us can come back as another projectile).
 bool IsProjCopy(uint32_t proj) {
   if(!proj) return false;
-  for(auto& [key,c]:proj_copies) if(c.proj==proj) return true;
-  return false;
+  const uint32_t h=ProjHandle(proj);
+  bool copy=false;
+  for(auto it=proj_copies.begin();it!=proj_copies.end();) {
+    if(it->second.proj!=proj) { ++it; continue; }
+    if(h && it->second.handle==h) { copy=true; ++it; }
+    else it=proj_copies.erase(it);   // that slot is something else now
+  }
+  return copy;
 }
 WmlGuestFunction original_proj_create=nullptr;
 void ProjectileCreateHook(WmlContext* c,uint8_t* b) {
@@ -2029,21 +2053,28 @@ void ProjectileCreateHook(WmlContext* c,uint8_t* b) {
   }
   original_proj_create(c,b);
   const uint32_t proj=uint32_t(api->get_r(c,3));
-  if(!readable || !proj || p.weapon<0) return;
-  p.id=proj;
-  if(own_projectiles.size()>256) own_projectiles.clear();
-  own_projectiles[proj]=p.weapon;
+  // A new projectile in a reused slot: whatever we kept for that pointer is stale.
+  if(proj) for(auto it=proj_copies.begin();it!=proj_copies.end();) it=it->second.proj==proj ? proj_copies.erase(it) : std::next(it);
+  // (Ended already inside the call - a point-blank rocket - : nothing to send;
+  // its explosion was sent before its creation would be.)
+  if(!readable || !proj || p.weapon<0 || !LiveProjectile(proj)) return;
+  p.id=ProjHandle(proj);
+  if(!p.id) return;
   { std::lock_guard lock(event_mutex); if(proj_out.size()<256) proj_out.push_back(p); }
   ++projs_sent;
 }
 WmlGuestFunction original_proj_detonate=nullptr;
 void ProjectileDetonateHook(WmlContext* c,uint8_t* b) {
   const uint32_t proj=uint32_t(api->get_r(c,3));
-  if(connected.load() && !explosion_replay && (ending_copy || IsProjCopy(proj))) { ++booms_held; return; }  // copies: the owner's comes
+  // Copies never explode by themselves (also not one made right now, and not
+  // when an explosion played here sets them off): the owner's comes. Only the
+  // copy whose owner's explosion is being played explodes.
+  if(proj && proj!=replaying_proj && (making_copy || IsProjCopy(proj))) { ++booms_held; return; }
   const uint32_t player=api->read_u32(0x8309ABEC);
-  if(connected.load() && !explosion_replay && proj && Readable(proj,240) && Readable(player,72) && api->read_u32(proj+228)==api->read_u32(player+68)) {
-    auto it=own_projectiles.find(proj);
-    ProjPacket p{{'W','P','J','1'},2,proj,it!=own_projectiles.end() ? it->second : WeaponIndex(api->read_u32(proj+208)),{},{},{}};
+  // Ours (also when another player's explosion set it off): sent.
+  if(connected.load() && proj && Readable(proj,240) && Readable(player,72) && api->read_u32(proj+228)==api->read_u32(player+68)) {
+    // (its weapon from its own info: set at creation, before anything can end it)
+    ProjPacket p{{'W','P','J','1'},2,ProjHandle(proj),WeaponIndex(api->read_u32(proj+208)),{},{},{}};
     for(int i=0;i<3;++i) p.pos[i]=api->read_f32(proj+20+i*4);
     for(int i=0;i<9;++i) p.rows[i]=api->read_f32(proj+32+i*4);
     { std::lock_guard lock(event_mutex); if(proj_out.size()<256) proj_out.push_back(p); }
@@ -2055,13 +2086,8 @@ WmlGuestFunction original_proj_end=nullptr;
 void ProjectileEndHook(WmlContext* c,uint8_t* b) {
   const uint32_t proj=uint32_t(api->get_r(c,3));
   const bool copy=IsProjCopy(proj);
-  if(copy) ++ending_copy;
-  original_proj_end(c,b);
-  if(copy) {
-    --ending_copy;
-    for(auto it=proj_copies.begin();it!=proj_copies.end();) it=it->second.proj==proj ? proj_copies.erase(it) : std::next(it);
-  }
-  own_projectiles.erase(proj);
+  original_proj_end(c,b);   // (a copy's own explosion inside is held by ProjectileDetonateHook)
+  if(copy) for(auto it=proj_copies.begin();it!=proj_copies.end();) it=it->second.proj==proj ? proj_copies.erase(it) : std::next(it);
 }
 // 82138AE8(def, source, attacker, rows, pos, ...): an explosion. Its damage to
 // copies of the host's people isn't sent from a client (the host plays the
@@ -2072,6 +2098,17 @@ void ExplosionHook(WmlContext* c,uint8_t* b) {
   ++explosion_depth;
   original_explosion(c,b);
   --explosion_depth;
+}
+// 8245ED40 (world update): burning people. Each tick hurts the burning one
+// (returning to 8245F11C); in single player it also sets people within 1.1 m
+// alight through 8245E3A0, which hurts them itself (8245EC38), then adds a
+// tick (8245F374), with the burning character as the attacker. Each game
+// plays fire on its own (R 3.0), so none of it is sent.
+WmlGuestFunction original_fire_update=nullptr;
+void FireUpdateHook(WmlContext* c,uint8_t* b) {
+  ++fire_update_depth;
+  original_fire_update(c,b);
+  --fire_update_depth;
 }
 WmlGuestFunction original_damage=nullptr;
 void DamageHook(WmlContext* c,uint8_t* b) {
@@ -2089,8 +2126,10 @@ void DamageHook(WmlContext* c,uint8_t* b) {
      (api->read_u32(attacker+120)&0x08000000u)) { api->set_f(c,1,0.0); return; }
   if(connected.load() && !hosting.load() && !replicated_depth && victim && Readable(victim,4252)) {
     if(const uint32_t host_handle=SharedPedHostHandle(api->read_u32(victim+68))) {
-      // (Not from an explosion: the host plays the same explosion, R 3.0.)
-      if(attacker && attacker==api->read_u32(0x8309ABEC) && !explosion_depth) {
+      // (Not from an explosion, nor from the burning people update 8245ED40 -
+      // burn ticks and the fire spreading to people nearby: each game plays
+      // the same explosion and its fire, R 3.0.)
+      if(attacker && attacker==api->read_u32(0x8309ABEC) && !explosion_depth && !fire_update_depth) {
         Event e{kEventPedDamage,{host_handle,uint32_t(api->get_r(c,5)),uint32_t(api->get_r(c,6)),uint32_t(api->get_r(c,7)),
                                  uint32_t(api->get_r(c,8)),uint32_t(api->get_r(c,9)),uint32_t(api->get_r(c,10)),
                                  uint32_t(api->read_u8(sp+87))|uint32_t(api->read_u8(sp+95))<<8},float(api->get_f(c,1))};
@@ -2112,7 +2151,7 @@ void DamageHook(WmlContext* c,uint8_t* b) {
       api->set_f(c,1,0.0);
       return;
     }
-    if(forward_damage && attacker==api->read_u32(0x8309ABEC)) {
+    if(forward_damage && attacker==api->read_u32(0x8309ABEC) && !explosion_depth && !fire_update_depth) {   // (their game plays explosions and fire on its own player)
       Event e{kEventDamage,{uint32_t(api->get_r(c,5)),uint32_t(api->get_r(c,6)),uint32_t(api->get_r(c,7)),
                             uint32_t(api->get_r(c,8)),uint32_t(api->get_r(c,9)),uint32_t(api->get_r(c,10)),
                             api->read_u8(sp+87),api->read_u8(sp+95)},float(api->get_f(c,1))};
@@ -2396,6 +2435,7 @@ void InstallEventHooks() {
   api->hook(0x825BF418,ProjectileDetonateHook,&original_proj_detonate);
   api->hook(0x8241EE80,ProjectileEndHook,&original_proj_end);
   api->hook(0x82138AE8,ExplosionHook,&original_explosion);
+  api->hook(0x8245ED40,FireUpdateHook,&original_fire_update);
   api->hook(0x82449FE0,GetUpHook,&original_get_up);
   api->hook(0x82540780,EjectCheckHook,&original_eject_check);
   // v2: a client's own parked cars and gang members while the host's world is shown.
@@ -2757,6 +2797,13 @@ bool PlayerSitsIn(uint32_t car_handle) {
   if(Readable(player,4252) && api->read_u32(player+2496)==car_handle) return true;
   for(int s=0;s<kSlots;++s) if(remotes[s].avatar && AvatarCar(s)==car_handle) return true;
   return false;
+}
+// This game's player drives that car (seated at the wheel, not still getting in).
+bool LocalDrives(uint32_t car_handle) {
+  const uint32_t pl=api->read_u32(0x8309ABEC);
+  if(!car_handle || !Readable(pl,4252) || api->read_u32(pl+2496)!=car_handle || api->read_u32(pl+2500)!=0) return false;
+  const uint32_t task=api->read_u32(pl+2556);
+  return !(task>=3 && task<=0xE) && task!=0x13;
 }
 // Another player is getting into that car here right now.
 bool PlayerGettingIn(uint32_t car_handle,uint64_t now) {
@@ -3126,11 +3173,13 @@ bool UpdateRemoteCar(GuestScratch& scratch,Remote& r,uint32_t avatar,const Playe
   uint32_t want_seat=p.seat;
   const uint32_t player=api->read_u32(0x8309ABEC);
   const bool local_driving=api->read_u32(player+2496)==target_handle && api->read_u32(player+2500)==0 && api->read_u32(player+2556)==0x12;
+  const int their_slot=int(&r-remotes.data()), mine=int(my_slot.load());
   if(p.seat==0 && local_driving) {
-    // Both in the driver's seat: whoever got in first keeps it (the game
-    // put the one getting in at the wheel even when asked for the passenger
-    // seat, and both sat there: the car couldn't be driven).
-    const bool they_first=r.enter_car==target_handle && r.enter_time && r.enter_time<local_enter_time;
+    // Both in the driver's seat (the game put the one getting in at the
+    // wheel even when asked for the passenger seat): the car's own game keeps
+    // its driver, otherwise the lower slot - a rule every game works out the
+    // same way (v1 compared arrival times, which each game saw differently).
+    const bool they_first=int(p.vowner)==their_slot ? true : int(p.vowner)==mine ? false : their_slot<mine;
     if(they_first) {
       if(now>=car.next_swap) {
         car.next_swap=now+1000;
@@ -3197,15 +3246,28 @@ bool UpdateRemoteCar(GuestScratch& scratch,Remote& r,uint32_t avatar,const Playe
       // host's passenger removed Troy, and his drop-off mission couldn't be
       // finished).
       uint32_t seat=want_seat;
-      if(const uint32_t occ=SeatedIn(target_handle,seat)) if(occ!=api->read_u32(avatar+68) && ResolveHuman(occ) && occ!=api->read_u32(player+68)) {
-        if(seat==0 && OurCharacter(occ)) {
+      const uint32_t me_h=api->read_u32(player+68), av_h=api->read_u32(avatar+68);
+      if(const uint32_t occ=SeatedIn(target_handle,seat)) if(occ!=av_h && (occ==me_h || ResolveHuman(occ))) {
+        if(occ==me_h && seat!=0 && mine>their_slot) {
+          // Both games seated their own player in this passenger seat: the
+          // higher slot moves over (here, this player); the lower keeps it.
+          if(now>=car.next_swap) {
+            car.next_swap=now+1000;
+            uint32_t s3=0;
+            for(uint32_t s2=1;s2<=3 && !s3;++s2) if(s2!=seat && !SeatedIn(target_handle,s2)) s3=s2;
+            if(!(s3 && SeatInVehicle(scratch,player,target,s3,false))) car.next_swap=now+5000;
+          }
+          car.next_enter=now+200;
+          return true;
+        }
+        if(seat==0 && occ!=me_h && OurCharacter(occ)) {
           DestroyObject(scratch,occ);   // the driver they pulled out is still sitting here
           ProbeLog("Driver still in the seat the other player took: removed");
         } else {
           seat=~0u;
           for(uint32_t s2=1;s2<6 && seat==~0u;++s2) {
             const uint32_t o2=SeatedIn(target_handle,s2);
-            if(!o2 || o2==api->read_u32(avatar+68)) seat=s2;
+            if(!o2 || o2==av_h) seat=s2;
           }
           static unsigned logged=0;
           if(logged++<20) { char line[140]; std::snprintf(line,sizeof(line),"Seat %u here holds %08X (kept): the other player %s",want_seat,occ,seat==~0u?"waits outside":"takes a free seat"); ProbeLog(line); }
@@ -3397,7 +3459,8 @@ void EjectCheckHook(WmlContext* c,uint8_t* b) {
   const uint32_t v=uint32_t(api->get_r(c,3));
   if(connected.load() && Readable(v,kVehicleSize) && api->read_u32(v+72)==5) {
     const uint32_t h=api->read_u32(v+68);
-    bool other=IsOtherGamesCopy(h) || (!hosting.load() && SharedCarHostHandle(h));
+    // (A copy this player drives: this game decides for it now.)
+    bool other=!LocalDrives(h) && (IsOtherGamesCopy(h) || (!hosting.load() && SharedCarHostHandle(h)));
     for(uint32_t seat=0;seat<4 && !other;++seat) {
       const uint32_t occ=OccupantHandle(v,seat);
       other=occ && (IsAvatarHandle(occ) || SharedPedHostHandle(occ));
@@ -3406,17 +3469,6 @@ void EjectCheckHook(WmlContext* c,uint8_t* b) {
     if(other) { ++ejections_skipped; return; }
   }
   original_eject_check(c,b);
-}
-// A live projectile (in the active list *0x8309A494, next at +204), else 0.
-bool LiveProjectile(uint32_t proj) {
-  const uint32_t head=api->read_u32(0x8309A494);
-  unsigned guard=0;
-  for(uint32_t p=head;p && Readable(p,232) && guard++<256;) {
-    if(p==proj) return true;
-    p=api->read_u32(p+204);
-    if(p==head) break;
-  }
-  return false;
 }
 // Other players' projectiles: a copy made here (owner: their character) that
 // flies like theirs and never explodes by itself; when theirs explodes, the
@@ -3430,15 +3482,27 @@ void ApplyProjectiles(GuestScratch& scratch,uint64_t now) {
     if(m.origin>=kSlots || m.origin==my_slot.load()) continue;
     Remote& r=remotes[m.origin];
     const uint64_t key=CarKey(m.origin,p.id);
-    auto make=[&](int32_t weapon,const float* vel)->uint32_t {
-      if(!AvatarObjOf(m.origin) || weapon<0 || !base || uint32_t(weapon)>=count || count>255) return 0;
+    // Owner: their character here (kills credited to it, and the copy doesn't
+    // hit it), or nobody when it isn't here: the copy and its explosion still
+    // happen (a rocket from 300 m away, people the host shares near it).
+    const uint32_t credit=AvatarObjOf(m.origin) ? r.avatar : 0;
+    auto make=[&](int32_t weapon,const float* vel,uint32_t owner)->uint32_t {
+      if(weapon<0 || !base || uint32_t(weapon)>=count || count>255) return 0;
+      const uint32_t info=base+uint32_t(weapon)*kWeaponInfoSize;
+      const uint32_t type=api->read_u32(info+100);
+      if((type!=1 && type!=2) || !api->read_u32(info+144)) return 0;   // projectiles with an explosion only (I A.4)
       const uint32_t d=scratch.data()+2420, rp=d+16, vp=d+56;
       for(int i=0;i<3;++i) { api->write_f32(d+i*4,p.pos[i]); api->write_f32(vp+i*4,vel[i]); }
       for(int i=0;i<9;++i) api->write_f32(rp+i*4,p.rows[i]);
-      scratch.ctx.r3.u64=r.avatar; scratch.ctx.r4.u64=base+uint32_t(weapon)*kWeaponInfoSize;
+      scratch.ctx.r3.u64=owner; scratch.ctx.r4.u64=info;
       scratch.ctx.r5.u64=d; scratch.ctx.r6.u64=rp; scratch.ctx.r7.u64=vp;
       ++making_copy; const bool ok=scratch.Call(0x8241FCB0); --making_copy;
-      return ok ? scratch.ctx.r3.u32 : 0;
+      const uint32_t proj=ok ? scratch.ctx.r3.u32 : 0;
+      // A rocket can end inside the call (its owner-to-muzzle ray hit
+      // something): it was held, deleted, and isn't a copy.
+      if(!proj || !LiveProjectile(proj)) return 0;
+      if(!owner && credit) api->write_u32(proj+228,credit);
+      return proj;
     };
     bool finite=true;
     for(float v:p.pos) finite=finite && std::isfinite(v) && std::abs(v)<100000;
@@ -3446,40 +3510,56 @@ void ApplyProjectiles(GuestScratch& scratch,uint64_t now) {
     for(float v:p.vel) finite=finite && std::isfinite(v) && std::abs(v)<1000;
     if(!finite) continue;
     if(p.kind==1) {
-      const uint32_t proj=make(p.weapon,p.vel);
-      if(proj) { proj_copies[key]=ProjCopy{proj,r.avatar,p.weapon,now}; ++projs_copied; }
+      // Not when their character isn't here and it is far away: far players
+      // mustn't fill the shared pool (36) and leave our own rockets none.
+      const float dx=p.pos[0]-local_x.load(), dz=p.pos[2]-local_z.load();
+      if(!credit && dx*dx+dz*dz>250.0f*250.0f) continue;
+      const uint32_t proj=make(p.weapon,p.vel,credit);
+      if(proj) { proj_copies[key]=ProjCopy{proj,ProjHandle(proj),credit,p.weapon,now}; ++projs_copied; }
       static unsigned logged=0;
-      if(logged++<30) { char line[140]; std::snprintf(line,sizeof(line),"%s's projectile (weapon %d): %s",r.tag,p.weapon,proj?"copy made here":"no copy (character not here or pool full)"); ProbeLog(line); }
+      if(logged++<30) { char line[140]; std::snprintf(line,sizeof(line),"%s's projectile (weapon %d): %s",r.tag,p.weapon,proj?"copy made here":"no copy (pool full or not a projectile)"); ProbeLog(line); }
     } else if(p.kind==2) {
       uint32_t proj=0; int32_t weapon=p.weapon;
       if(auto it=proj_copies.find(key); it!=proj_copies.end()) {
         if(weapon<0) weapon=it->second.weapon;
-        if(LiveProjectile(it->second.proj) && api->read_u32(it->second.proj+228)==it->second.owner) proj=it->second.proj;
+        if(LiveProjectile(it->second.proj) && ProjHandle(it->second.proj)==it->second.handle) proj=it->second.proj;
         else proj_copies.erase(it);
       }
       if(!proj) {
-        // Ended here already (its own fuse or contact), or never made: a
-        // copy at the spot, exploded at once.
-        static const float still[3]={0,0,0};
-        proj=make(weapon,still);
-        if(proj) proj_copies[key]=ProjCopy{proj,r.avatar,weapon,now};
+        // Ended here already (its own fuse, contact or range, or set off by an
+        // explosion here), or never made: a still copy at the spot, exploded
+        // at once (owner 0 while making it: no ray from the character).
+        // (A tiny velocity along its heading, not zero: a rocket's orientation
+        // is built from its velocity.)
+        float still[3]={p.rows[6]*0.01f,p.rows[7]*0.01f,p.rows[8]*0.01f};
+        if(still[0]*still[0]+still[1]*still[1]+still[2]*still[2]<1e-8f) { still[0]=0; still[1]=0; still[2]=0.01f; }
+        proj=make(weapon,still,0);
+        if(proj) proj_copies[key]=ProjCopy{proj,ProjHandle(proj),credit,weapon,now};
       }
       if(!proj) continue;
-      for(int i=0;i<3;++i) api->write_f32(proj+20+i*4,p.pos[i]);
-      ++explosion_replay;
+      // At their spot: the explosion's ray (from +76 to +20) starts there too.
+      for(int i=0;i<3;++i) { api->write_f32(proj+20+i*4,p.pos[i]); api->write_f32(proj+76+i*4,p.pos[i]); }
+      replaying_proj=proj;
       scratch.ctx.r3.u64=proj; scratch.ctx.r4.u64=0; scratch.ctx.r5.u64=0;
       scratch.Call(0x8241EE80);
-      --explosion_replay;
+      replaying_proj=0;
       proj_copies.erase(key);
       ++booms_played;
     }
   }
-  // Copies the game ended without our hook seeing it: forgotten after a minute.
-  for(auto it=proj_copies.begin();it!=proj_copies.end();) it=now-it->second.made>60000 ? proj_copies.erase(it) : std::next(it);
+  // Copies the game ended without our hook (fuse, range): forgotten.
+  for(auto it=proj_copies.begin();it!=proj_copies.end();)
+    it=(now-it->second.made>60000 || !LiveProjectile(it->second.proj) || ProjHandle(it->second.proj)!=it->second.handle) ? proj_copies.erase(it) : std::next(it);
 }
 
+// Making a character (a blocking body-model load the first time, the player
+// object) and its first dressing (waits for the clothes to load) are slow:
+// one of them per 300 ms for all other players together, so joining a full
+// session doesn't stall one update for seconds (game thread).
+uint64_t heavy_avatar_until=0;
 // One other player's character here (v2: called for each slot).
 void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clothing_dump) {
+  bool made_now=false;
   PlayerPose p; bool fresh;
   {
     std::lock_guard lock(pose_mutex);
@@ -3534,8 +3614,10 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
     // Only create close by: a character made far from the camera is built
     // without its body and clothing meshes and never gets them back.
     if(dx*dx+dy*dy+dz*dz>60*60) return;
+    if(MonoMs()<heavy_avatar_until) return;   // (another player's character first)
     if(now<r.next_attempt) return;
     r.next_attempt=now+1000;
+    heavy_avatar_until=MonoMs()+300;
     const char* used=p.model;
     char local_model[64];
     { std::lock_guard lock(pose_mutex); std::memcpy(local_model,local_pose.model,sizeof(local_model)); }
@@ -3563,7 +3645,9 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
       r.avatar=CreateActor(scratch,definition,pos,matrix,r.tag);
     }
     obj=ResolveHuman(r.avatar);
+    heavy_avatar_until=MonoMs()+300;
     if(!obj) { r.avatar=0; r.player_obj=false; return; }
+    made_now=true;
     r.next_item_check=0; r.applied_worn.clear(); r.dress_step=0;
     // A character made again (back in range, after a gap in updates) starts
     // with nothing on: dress it from the last clothing received, the same way
@@ -3690,7 +3774,8 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
     if(CutscenePlaying() || host_cutscene.load()) r.last_cutscene=now;
     const bool quiet=now-r.last_cutscene>10000 && ClothingQueueIdle();
     if(r.dress_step==0 && !r.pending_worn.empty() && r.pending_worn!=r.applied_worn && quiet) {
-      if(first) {
+      if(first && !made_now && MonoMs()<heavy_avatar_until) {}   // another character's turn: next update
+      else if(first) {
         // Colours first, as multiplayer does, so the hair goes on in its colour.
         { std::vector<uint8_t> ex; { std::lock_guard lock(pose_mutex); ex=remote_in[slot].extras; }
           r.extras_at_dress.clear();
@@ -3701,6 +3786,7 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
         ProbeLog(line);
         r.applied_worn=r.pending_worn; r.pending_worn.clear();
         r.dressed_record=api->read_u32(obj+4484);
+        heavy_avatar_until=MonoMs()+300;
       } else {
         const uint32_t custom=api->read_u32(obj+4484);
         const uint32_t cslot=Readable(custom,12) ? api->read_u32(custom+8) : 99;
@@ -3836,15 +3922,17 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
   }
 }
 
-// Every other player in the session (game thread, each update).
+// Every other player in the session (game thread, each update). The record
+// of this game's own slot is emptied too (it was another player's before a
+// rejoin gave this game that slot).
+bool avatars_cleaning=false;   // game thread: the session ended or this game's slot changed; UpdateBody empties everything first
 void UpdateAvatars(GuestScratch& scratch,uint64_t now) {
   const bool clothing_dump=clothing_dump_request.exchange(false);
   const uint8_t me=my_slot.load();
   unsigned shown=0;
   for(int s=0;s<kSlots;++s) {
-    if(s==me) continue;
     Remote& r=remotes[s];
-    const bool present=Present(s);
+    const bool present=s!=me && Present(s);
     uint32_t generation;
     { std::lock_guard lock(pose_mutex); generation=remote_in[s].generation; }
     if(!present || r.generation!=generation) {
@@ -4094,7 +4182,10 @@ void ApplyEvents(GuestScratch& scratch,uint64_t now) {
         std::snprintf(line,sizeof(line),"Action %02X on %s: %s",e.a[0],r.tag,played?"playing":"refused");
         ProbeLog(line);
       }
-    } else if(e.kind==kEventCall && avatar && (api->read_u32(avatar+216)&0x4000)) {
+    } else if(e.kind==kEventCall && avatar && (api->read_u32(avatar+216)&0x4000) &&
+              (e.a[0]==0x82459430u || e.a[0]==0x824497F0u || e.a[0]==0x82458EB8u || e.a[0]==0x82441308u)) {
+      // (Only the calls QueueCall sends: punch, knockdown, melee attack,
+      // movement state. Another game can't make this one call anything else.)
       // Arguments: an offset into the sender's own player (bit i: their
       // character here), into a player character in the sender's game (bit
       // 4+i, slot in bits 8+4i: this game's player when it is us, else that
@@ -4703,12 +4794,17 @@ void CaptureTraffic(GuestScratch& scratch,uint32_t player,uint64_t now) {
   std::sort(found.begin(),found.end(),[](const Found& a,const Found& b){return a.d2<b.d2;});
   if(found.size()>kMaxShared) found.resize(kMaxShared);
   for(auto& f:found) if(const uint32_t v=ResolveVehicle(f.car.id)) ShareCarLook(scratch,v,now);
+  // This game's cars another player sits in (left out of the traffic sent)
+  // keep their paint going out: nobody else sends it.
+  std::vector<uint32_t> ridden;
+  for(uint32_t h:players_cars) if(h && !IsOtherGamesCopy(h)) if(const uint32_t v=ResolveVehicle(h)) { ShareCarLook(scratch,v,now); ridden.push_back(h); }
   {
     // Only the cars still sent keep their looks in the outgoing set.
     std::lock_guard lock(car_look_mutex);
     const uint32_t own_car=api->read_u32(player+2496);
     for(auto it=car_looks_out.begin();it!=car_looks_out.end();)
-      it=(it->first==own_car || std::any_of(found.begin(),found.end(),[&](const Found& f){return f.car.id==it->first;})) ? std::next(it) : car_looks_out.erase(it);
+      it=(it->first==own_car || std::find(ridden.begin(),ridden.end(),it->first)!=ridden.end() ||
+          std::any_of(found.begin(),found.end(),[&](const Found& f){return f.car.id==it->first;})) ? std::next(it) : car_looks_out.erase(it);
   }
   std::lock_guard lock(traffic_mutex);
   traffic_out.clear();
@@ -4933,6 +5029,7 @@ void ApplyCarDamage(GuestScratch& scratch,uint32_t vehicle,uint8_t want) {
 // there, and killed the player riding in it.
 bool DrivenFromOtherGame(uint32_t vehicle) {
   const uint32_t handle=api->read_u32(vehicle+68);
+  if(LocalDrives(handle)) return false;   // this player drives it: this game decides (a copy too)
   if(IsOtherGamesCopy(handle)) return true;
   if(!hosting.load() && SharedCarHostHandle(handle)) return true;
   for(int s=0;s<kSlots;++s) if(const uint32_t av=AvatarObjOf(s)) if(api->read_u32(av+2496)==handle && api->read_u32(av+2500)==0) return true;
@@ -4993,7 +5090,10 @@ void SteerAlongPath(GuestScratch& scratch,uint32_t vehicle,Follower& follow,cons
 // Client: removes this game's own traffic the way the game trims traffic
 // (82410F38 on the list node, as 82411E30 does). The list is circular.
 void RemoveOwnTraffic(GuestScratch& scratch,uint32_t player) {
-  const uint32_t own=api->read_u32(player+2496);
+  // (82410F38 skips the game's own occupied-car checks: never a car another
+  // player's character sits in or gets into here, nor this player's last car.)
+  const uint32_t own=api->read_u32(player+2496), last=api->read_u32(player+22120);
+  const uint64_t now=MonoMs();
   for(unsigned removed=0;removed<32;++removed) {
     const uint32_t head=api->read_u32(kTrafficList);
     uint32_t node=head, target=0;
@@ -5001,7 +5101,7 @@ void RemoveOwnTraffic(GuestScratch& scratch,uint32_t player) {
       const uint32_t handle=api->read_u32(node+8);
       bool ours=false;
       for(auto& [id,sc]:shared_cars) if(sc.car==handle) ours=true;
-      if(handle && !ours && handle!=own && !IsCarCopyHandle(handle)) { target=node; break; }
+      if(handle && !ours && handle!=own && handle!=last && !IsCarCopyHandle(handle) && !PlayerSitsIn(handle) && !PlayerGettingIn(handle,now)) { target=node; break; }
       node=api->read_u32(node);
       if(node==head) break;
     }
@@ -5027,6 +5127,7 @@ void RemoveOwnParked(GuestScratch& scratch,uint32_t player) {
     if(!v) continue;
     const uint32_t handle=api->read_u32(v+68);
     if(handle==own || IsCarCopyHandle(handle) || taken_cars.count(handle)) continue;
+    if(PlayerSitsIn(handle) || PlayerGettingIn(handle,MonoMs()) || handle==api->read_u32(player+22120)) continue;   // another player's character in it / this player's last car
     bool shared=false;
     for(auto& [id,sc]:shared_cars) if(sc.car==handle) { shared=true; break; }
     if(shared) continue;
@@ -6928,22 +7029,55 @@ void UpdateMissionFollow(GuestScratch& scratch,uint32_t player,uint64_t now) {
   // that close all the time, and 1.27 and earlier moved the joiner every
   // few seconds (jumping around on the host's screen).
   static uint64_t overlap_since=0;
-  const bool overlap=d<0.6f && std::abs(dy)<1.5f && p.vehicle<0 && !ResolveVehicle(api->read_u32(player+2496));
+  const bool in_car=ResolveVehicle(api->read_u32(player+2496))!=0;
+  const bool overlap=d<0.6f && std::abs(dy)<1.5f && p.vehicle<0 && !in_car;
   if(!overlap) overlap_since=0; else if(!overlap_since) overlap_since=now;
   const bool step_aside=overlap_since && now-overlap_since>3000;
+  const uint32_t data=scratch.data(), pos=data+1300, matrix=data+1316;
+  // v2: inside another client the same way (both put on one spot): the
+  // higher slot steps 1.5 m to its own right.
+  const int me=my_slot.load();
+  {
+    static uint64_t client_overlap_since=0;
+    bool client_overlap=false;
+    for(int s=1;s<kSlots && !client_overlap && !in_car;++s) {
+      if(s==me || me<=s || !Present(s)) continue;
+      PlayerPose q;
+      { std::lock_guard lock(pose_mutex); q=remote_in[s].pose; }
+      const float qx=q.pos[0]-local_x.load(), qy=q.pos[1]-local_y.load(), qz=q.pos[2]-local_z.load();
+      client_overlap=q.sequence && q.vehicle<0 && qx*qx+qz*qz<0.6f*0.6f && std::abs(qy)<1.5f;
+    }
+    if(!client_overlap) client_overlap_since=0; else if(!client_overlap_since) client_overlap_since=now;
+    if(client_overlap_since && now-client_overlap_since>3000) {
+      client_overlap_since=0;
+      api->write_f32(pos,local_x.load()+api->read_f32(player+32)*1.5f);
+      api->write_f32(pos+4,local_y.load()+0.1f);
+      api->write_f32(pos+8,local_z.load()+api->read_f32(player+40)*1.5f);
+      api->write_f32(pos+12,0);
+      for(unsigned i=0;i<9;++i) api->write_f32(matrix+i*4,api->read_f32(player+32+i*4));
+      const bool ok=MoveHuman(scratch,player,pos,matrix,0,true);
+      ProbeLog(ok?"Standing inside another player for 3 s: stepped aside":"Standing inside another player for 3 s: step aside refused");
+      return;
+    }
+  }
+  // This player's spot by the host: 1.5 m (in a car 4 m) to the host's right
+  // for the first client, left for the second, then further out for the
+  // others (v1 put every client on the same spot), facing the same way.
+  const int k=(me>=1 && me<kSlots) ? me-1 : 0;
+  const float side=(k&1) ? -1.0f : 1.0f, rank=float(1+k/2);
+  const float near_enough=std::max(6.0f,1.5f*rank+2.0f);
+  float target[3]={p.pos[0]+p.rows[0]*1.5f*side*rank, p.pos[1]+0.1f, p.pos[2]+p.rows[2]*1.5f*side*rank};
+  float rows[9]={p.rows[0],0,p.rows[2], 0,1,0, p.rows[6],0,p.rows[8]};
+  if(p.vehicle>=0) { target[0]=p.vpos[0]+p.vrows[0]*4.0f*side*rank; target[1]=p.vpos[1]+0.5f; target[2]=p.vpos[2]+p.vrows[2]*4.0f*side*rank; }
+  const float tx=target[0]-local_x.load(), tz=target[2]-local_z.load(), td=std::sqrt(tx*tx+tz*tz);
   // Joining: brought next to the host once (the host's character only
   // appears within 40 m, so a joiner far away saw nobody).
-  const bool joining=join_move && d>6.0f;
-  if(join_move && d<=6.0f) join_move=false;
+  const bool joining=join_move && d>near_enough;
+  if(join_move && d<=near_enough) join_move=false;
   if(!active && !step_aside && !joining) { pending=false; return; }
   if(!pending && !step_aside && !joining && !(d>150.0f && now>=next_catch_up)) return;
   pending=false; next_catch_up=now+10000; overlap_since=0; join_move=false;
-  if(d<6.0f && d>=0.6f) return;
-  // 1.5 m to the host's right, facing the same way.
-  const uint32_t data=scratch.data(), pos=data+1300, matrix=data+1316;
-  float target[3]={p.pos[0]+p.rows[0]*1.5f, p.pos[1]+0.1f, p.pos[2]+p.rows[2]*1.5f};
-  float rows[9]={p.rows[0],0,p.rows[2], 0,1,0, p.rows[6],0,p.rows[8]};
-  if(p.vehicle>=0) { target[0]=p.vpos[0]+p.vrows[0]*4.0f; target[1]=p.vpos[1]+0.5f; target[2]=p.vpos[2]+p.vrows[2]*4.0f; }
+  if(!step_aside && (td<1.0f || (d>=0.6f && d<near_enough))) return;
   for(unsigned i=0;i<3;++i) api->write_f32(pos+i*4,target[i]);
   api->write_f32(pos+12,0);
   for(unsigned i=0;i<9;++i) api->write_f32(matrix+i*4,rows[i]);
@@ -7613,20 +7747,45 @@ void UpdateBody(WmlContext* raw) {
     next_debug_check=MonoMs()+250;
     debug=GetFileAttributesA((std::string(self->folder)+"\\debug_cmd.txt").c_str())!=INVALID_FILE_ATTRIBUTES;
   }
-  if (!running.load() && !cleanup_requested.load() && !toggle_test && !toggle_copy && !debug && watches.empty()) return;
+  // (After a Stop the shared cars and people, other players' characters and
+  // car copies still go a few at a time: v1 stopped after the first update
+  // and left a client without its own traffic until a restart.)
+  const bool leftovers=traffic_shared || peds_shared || avatars_cleaning || !car_copies.empty() ||
+                       std::any_of(remotes.begin(),remotes.end(),[](const Remote& r){ return r.avatar!=0; });
+  if (!running.load() && !cleanup_requested.load() && !leftovers && !toggle_test && !toggle_copy && !debug && watches.empty()) return;
   const uint32_t sp=static_cast<uint32_t>(api->get_r(raw,1));
   if (sp<0x5000 || !Readable(sp-0x5000,0x5000)) return;
   GuestScratch scratch(raw);
   const uint64_t now=MonoMs();
-  if(cleanup_requested.exchange(false) || !connected.load()) {
-    ShowMissionMarkers(scratch);
-    if(controls_held) { scratch.Call(0x824D92F0); controls_held=false; ProbeLog("Session over: controls back on"); }
-    if(remote_pause_on) ReleaseRemotePause(scratch,"Session over");
-    if(replica_local) DestroyReplica(scratch);
-    bool any=false;
-    for(Remote& r:remotes) if(r.avatar) { DestroyAvatar(scratch,r); any=any || r.avatar; }
-    if(!any && !car_copies.empty()) CleanCarCopies(scratch,now,true);   // (cars after the characters are out of them)
-    avatar_count=0;
+  // Session over, or this game's slot changed (a client that lost the host
+  // can come back with another one): every other player's character and car
+  // copy goes, over as many updates as it takes (one still in a car gets out
+  // first), before players are shown again.
+  {
+    static uint8_t ran_as=coopnet::kNoSlot;
+    const uint8_t me_now=my_slot.load();
+    if(connected.load() && me_now!=coopnet::kNoSlot) {
+      if(ran_as!=coopnet::kNoSlot && me_now!=ran_as) { avatars_cleaning=true; ProbeLog("This game's slot changed: other players' characters made again"); }
+      ran_as=me_now;
+    }
+    const bool over=cleanup_requested.exchange(false) || !connected.load();
+    if(over) {
+      avatars_cleaning=true;
+      ShowMissionMarkers(scratch);
+      if(controls_held) { scratch.Call(0x824D92F0); controls_held=false; ProbeLog("Session over: controls back on"); }
+      if(remote_pause_on) ReleaseRemotePause(scratch,"Session over");
+      if(replica_local) DestroyReplica(scratch);
+    }
+    if(avatars_cleaning) {
+      bool any=false;
+      for(Remote& r:remotes) if(r.avatar) { DestroyAvatar(scratch,r); any=any || r.avatar; }
+      if(!any) {
+        if(!car_copies.empty()) CleanCarCopies(scratch,now,true);   // (cars after the characters are out of them)
+        for(Remote& r:remotes) r.generation=~0u;   // made fresh when shown again
+        avatars_cleaning=false;
+      }
+      avatar_count=0;
+    }
   }
   // The other player's character is a real player object (from the game's
   // player pool). After a cutscene the game can take it for the local player
@@ -7751,7 +7910,7 @@ void UpdateBody(WmlContext* raw) {
       ProbeLog(logged_mission?"Mission started here; the other player is brought over":"Mission ended here");
     }
   }
-  { PERF_SECTION("avatar"); if(connected.load()) UpdateAvatars(scratch,now); }
+  { PERF_SECTION("avatar"); if(connected.load() && !avatars_cleaning) UpdateAvatars(scratch,now); }
   { PERF_SECTION("mission follow"); if(connected.load() && !hosting.load()) UpdateMissionFollow(scratch,player,now); }
   if(connected.load() && !hosting.load() && share_missions) HideMissionMarkers(scratch,now);
   if(!hosting.load()) UpdateHostPause(scratch,now);
@@ -7984,12 +8143,27 @@ std::string SlotName(int slot) {
   return remote_in[slot].name.empty() ? "Player "+std::to_string(slot+1) : remote_in[slot].name;
 }
 
+// The host's world as last received (sequence numbers included): forgotten
+// for a new host, or the next host's packets were dropped as old for as long
+// as the last one had run (network thread; StartSession before it starts).
+uint32_t native_last_received=0;   // network thread
+void ResetHostWorldIn() {
+  {
+    std::lock_guard lock(traffic_mutex);
+    for(auto& part:traffic_in) part=TrafficIn{};
+    peds_in=PedsIn{};
+    traffic_in_names.clear(); ped_looks_in.clear();
+  }
+  { std::lock_guard lock(cutscene_mutex); cutscene_in=CutsceneStart{}; cutscene_in_new=false; }
+  native_last_received=0;
+}
 // Session events: joins, leaves, refusals (network thread).
 void OnSessionMessage(coopnet::Session& sess,const coopnet::Received& m,bool host) {
   const int o=m.origin;
   switch(m.type) {
     case coopnet::kJoinOk: {
       for(int s=0;s<kSlots;++s) ResetRemoteIn(s,sess.Present(s) ? sess.Name(s) : std::string());
+      ResetHostWorldIn();
       char line[120]; std::snprintf(line,sizeof(line),"V2 joined as slot %d (%d players)",int(sess.MySlot()),sess.PlayerCount());
       ProbeLog(line);
       Notify("Co-op: connected. You're in "+sess.Name(0)+"'s game ("+std::to_string(sess.PlayerCount())+" players).");
@@ -8016,6 +8190,7 @@ void OnSessionMessage(coopnet::Session& sess,const coopnet::Received& m,bool hos
       const std::string name=SlotName(o);
       ResetRemoteIn(o,std::string());
       if(!host && o==0) {
+        ResetHostWorldIn();
         ProbeLog("V2 lost the host");
         Notify("Co-op: lost the connection to the host. Trying to get back in...");
         for(int s=1;s<kSlots;++s) ResetRemoteIn(s,std::string());
@@ -8239,9 +8414,8 @@ void OnGameMessage(const coopnet::Received& m,bool host) {
     case kMsgNative: {
       if(count!=sizeof(coop::NativePacket)) return;
       coop::NativePacket p; std::memcpy(&p,packet,sizeof(p));
-      static uint32_t last_received=0;
-      if(!coop::ValidateNpc(p,count) || p.sequence<=last_received) return;
-      last_received=p.sequence;
+      if(!coop::ValidateNpc(p,count) || p.sequence<=native_last_received) return;
+      native_last_received=p.sequence;
       { std::lock_guard lock(probe_mutex); native_in=p; native_pending=true; }
       ++native_received;
       return;
@@ -8534,6 +8708,7 @@ void NetworkLoop(sockaddr_in host_address, bool host) {
       if (show) { status_shown=text; SetStatus(text); }
       // A host that never answers: most likely an older co-op (1.71 or
       // earlier) on the other side, or the wrong address.
+      if (sess.Joined()) told_slow_join=true;   // (only for a first join that never got an answer)
       if (!host && !sess.Joined() && !told_slow_join && now-started>20000 && sess.DenyReason().empty()) {
         told_slow_join=true;
         ProbeLog("V2 no answer from the host after 20 s");
@@ -8622,7 +8797,8 @@ bool StartSession(bool host, bool online = false) {
   { std::lock_guard lock(probe_mutex); native_out={}; native_in={}; native_pending=false; }
   avatar_updates=0;
   for(int s=0;s<kSlots;++s) ResetRemoteIn(s,std::string());
-  { std::lock_guard lock(event_mutex); events_in.clear(); events_out.clear(); }
+  ResetHostWorldIn();
+  { std::lock_guard lock(event_mutex); events_in.clear(); events_out.clear(); proj_in.clear(); proj_out.clear(); }
   npc_follow.Reset(); npc_pending_look.clear();
   WSADATA wsa{};
   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {

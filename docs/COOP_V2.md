@@ -44,10 +44,12 @@ missions and MP modes can't run together; Q section 7). But it is the blueprint,
   speaks the same protocol. The runtime's mod channel (`SrModSend`, used by Zombies) is the fallback option.
 - **Packet**: `{magic 'SRC2', u8 version, u8 sender slot, u16 seq, u16 ack, u32 ack bits}` then messages
   `{u8 type, u16 len, payload}`; at most 1100 bytes (Epic's limit is 1170).
-- **Channels**: reliable-ordered per peer (resent until acked, 32-message window) for joins/leaves, creates,
-  destroys and events; unreliable newest-wins for snapshots.
+- **Channels**: reliable-ordered per peer (resent until acked, at most 1024 messages in flight, a peer more than
+  16384 behind is dropped) for joins/leaves, creates, destroys and events; unreliable newest-wins for snapshots.
 - **Session**: join with a version check (mismatched versions are refused with a clear message), slot
-  assignment by the host, leave and timeout per slot, host relays client messages to the other clients.
+  assignment by the host, leave and timeout per slot, host relays client messages to the other clients. Each join
+  attempt carries an epoch, so a client that lost the host (or left and came back) from the same address is taken
+  as a new join at once instead of being stuck behind its old link.
 - **Budget**: per peer and per tick, filled by the scheduler in priority order; far objects update less often.
 
 ## 4. Identity and ownership
@@ -127,7 +129,8 @@ stand-alone test program that runs several peers over loopback without the game.
 Every player needs 2.0: it speaks a new protocol (a 1.71 game knocking is told so on screen and in the log).
 
 **Session** (`net.h`, tested by `tests/net_test.cpp`: 12 players through 20% loss, refusals, leave/timeout,
-rejoin, a lost join reply): host = slot 0, up to 11 clients, the host relays. Events (actions, calls, car
+rejoin, a lost join reply, a one-way outage, a leave lost before a rejoin, 3000 reliable messages through a 5 s
+outage, an oversized name): host = slot 0, up to 11 clients, the host relays. Events (actions, calls, car
 enter/exit, hits, fire, throws) and projectiles are reliable and in order (v1 sent each event three times);
 poses, traffic and people snapshots are unreliable, newest wins. Epic lobby of 12. Packets up to Epic's 1170 bytes.
 

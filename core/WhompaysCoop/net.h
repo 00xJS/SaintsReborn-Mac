@@ -23,6 +23,8 @@
 #include <winsock2.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -35,7 +37,7 @@
 namespace coopnet {
 
 constexpr int kMaxSlots = 12;            // host + 11 clients (the game's player pool)
-constexpr uint8_t kVersion = 1;          // protocol version: a mismatch is refused at join
+constexpr uint8_t kVersion = 2;          // protocol version: a mismatch is refused at join
 constexpr uint32_t kMagic = 0x32435253;  // "SRC2"
 constexpr int kMaxPacket = 1170;         // Epic's P2P limit (EOS_P2P_MAX_PACKET_SIZE)
 constexpr int kMaxMessage = kMaxPacket - 16 - 8;  // payload of one message (headers below)
@@ -46,6 +48,9 @@ constexpr uint64_t kKeepAliveMs = 200;   // a packet at least this often (carrie
 constexpr uint64_t kJoinRetryMs = 500;
 constexpr int kMaxPacketsPerFlush = 8;   // per link and Pump; the rest waits for the next Pump
 constexpr size_t kMaxUnreliableBacklog = 48 * 1024;  // per link: older unreliable messages beyond this are dropped
+constexpr uint16_t kRelWindow = 1024;    // reliable messages in flight per link (the receiver holds up to twice that)
+constexpr size_t kMaxRelBacklog = 16384; // reliable messages waiting on one link: past this the link is dropped
+constexpr size_t kMaxName = 32;          // bytes of a player name
 
 // Session messages (types below kFirstUserType are the session's own).
 enum : uint8_t {
@@ -62,7 +67,8 @@ enum : uint8_t {
 struct PacketHeader {
   uint32_t magic;
   uint8_t version, slot;   // sender's slot (kNoSlot before a client has one)
-  uint8_t flags, pad;      // flags bit 0: ack / ack_bits are valid (the sender has received something)
+  uint8_t flags;           // bit 0: ack / ack_bits are valid (the sender has received something)
+  uint8_t epoch;           // the client's join attempt (both ways): a client that starts over gets a new one
   uint16_t seq;            // this packet
   uint16_t ack;            // the newest packet received from the other side
   uint32_t ack_bits;       // bit i: packet ack-1-i received too
@@ -76,6 +82,14 @@ struct MessageHeader {
 static_assert(sizeof(PacketHeader) == 16 && sizeof(MessageHeader) == 8, "wire format");
 
 inline bool SeqNewer(uint16_t a, uint16_t b) { return int16_t(uint16_t(a - b)) > 0; }
+
+// Join attempts of this game, each newer than the last (1..255, wrapping; the
+// host compares them as signed differences). A restarted game starts at a
+// random one; the host then waits for the old link to time out at worst.
+inline uint8_t NextEpoch() {
+  static std::atomic<uint32_t> counter{uint32_t(std::chrono::steady_clock::now().time_since_epoch().count())};
+  return uint8_t(1 + counter.fetch_add(1) % 255);
+}
 
 struct Received {
   uint8_t origin = 0, type = 0;
@@ -99,12 +113,15 @@ class Session {
   void StartHost(const std::string& name) {
     std::lock_guard l(m_);
     Reset();
-    host_ = true; my_slot_ = 0; names_[0] = name; present_[0] = true;
+    host_ = true; my_slot_ = 0; names_[0] = name.substr(0, kMaxName); present_[0] = true;
   }
   void StartClient(const sockaddr_in& host, const std::string& name) {
     std::lock_guard l(m_);
     Reset();
-    host_ = false; my_slot_ = kNoSlot; names_[0].clear(); my_name_ = name;
+    host_ = false; my_slot_ = kNoSlot; names_[0].clear(); my_name_ = name.substr(0, kMaxName);
+    // A new join attempt: the same UDP socket or Epic address can come back
+    // while the host still has the last one.
+    epoch_ = NextEpoch();
     Link& k = links_[0]; k.used = true; k.addr = host; k.slot = 0;
   }
   // Leave: a client tells the host (three packets, no acks wait); then everything is cleared.
@@ -159,10 +176,22 @@ class Session {
       if (got <= 0) break;
       OnDatagram(reinterpret_cast<const uint8_t*>(buf), got, from, now);
     }
-    for (int s = 0; s < kMaxSlots; ++s) {
+    // (A different link first each time: with a full outgoing queue the
+    // last ones would never get a turn.)
+    flush_start_ = (flush_start_ + 1) % kMaxSlots;
+    for (int i = 0; i < kMaxSlots; ++i) {
+      const int s = (flush_start_ + i) % kMaxSlots;
       Link& k = links_[s];
       if (!k.used) continue;
-      if (k.last_recv && now - k.last_recv > kTimeoutMs) { Drop(s, "timed out"); continue; }
+      if (k.last_recv && now - k.last_recv > kTimeoutMs) {
+        // A join attempt that has heard nothing yet keeps asking on the same
+        // attempt (same epoch, same packet numbers): a host that still hears
+        // us keeps its link and resends kJoinOk, instead of taking us for a
+        // new player every 6 s (everyone saw "left" / "joined" over and over).
+        if (!host_ && my_slot_ == kNoSlot && !k.recv_any) k.last_recv = now;
+        else { Drop(s, "timed out"); continue; }
+      }
+      if (k.rel_out.size() > kMaxRelBacklog) { Drop(s, "fell too far behind"); continue; }
       if (!host_ && s == 0 && my_slot_ == kNoSlot && (!k.join_sent || now - k.join_sent >= kJoinRetryMs)) {
         k.join_sent = now;
         std::vector<uint8_t> j{kVersion};
@@ -182,12 +211,13 @@ class Session {
     sockaddr_in addr{};
     uint8_t slot = kNoSlot;
     uint64_t last_recv = 0, last_send = 0, join_sent = 0;
+    uint8_t epoch = 0;                                   // host: the client's join attempt this link belongs to
     uint16_t send_seq = 0;
     bool recv_any = false; uint16_t recv_latest = 0; uint32_t recv_bits = 0;
     uint16_t rel_next = 0, rel_expect = 0;
     std::deque<Out> rel_out;
     std::map<uint16_t, std::vector<uint8_t>> rel_hold;  // reliable messages that came early
-    std::array<Sent, 256> sent{};
+    std::vector<Sent> sent = std::vector<Sent>(4096);   // by packet seq & 4095 (outlives a full send window)
     std::vector<uint8_t> unrel;                          // whole messages for the next flush
     float rtt = 150.0f;
   };
@@ -202,6 +232,7 @@ class Session {
   void Log(const std::string& s) { if (log_) log_(s); }
 
   void Queue(Link& k, MessageHeader h, const void* data) {
+    if (h.len > kMaxMessage) return;   // could never be sent (and would block the reliable channel)
     std::vector<uint8_t> m(sizeof(h) + h.len);
     if (h.flags & 1) h.id = k.rel_next++;
     std::memcpy(m.data(), &h, sizeof(h));
@@ -223,7 +254,11 @@ class Session {
     for (;;) {
       std::vector<uint8_t> p(sizeof(PacketHeader));
       std::vector<uint16_t> ids;
+      // At most kRelWindow ids past the oldest unacked one: the receiver holds
+      // only so many early ones (more were lost for good and stalled the link).
+      const uint16_t base = k.rel_out.empty() ? 0 : k.rel_out.front().id;
       for (auto& o : k.rel_out) {
+        if (uint16_t(o.id - base) >= kRelWindow) break;
         if (o.sent_at && now - o.sent_at < resend_after) continue;
         if (p.size() + o.bytes.size() > size_t(kMaxPacket)) break;
         if (o.sent_at) ++stats_.resent;
@@ -242,9 +277,9 @@ class Session {
       if (!content && (packets || now - k.last_send < kKeepAliveMs)) break;
       // No acks before anything arrived: an ack of "packet 0" then dropped a
       // reliable message (the join reply) the other side never got.
-      PacketHeader ph{kMagic, kVersion, my_slot_, uint8_t(k.recv_any ? 1 : 0), 0, k.send_seq, k.recv_latest, k.recv_bits};
+      PacketHeader ph{kMagic, kVersion, my_slot_, uint8_t(k.recv_any ? 1 : 0), host_ ? k.epoch : epoch_, k.send_seq, k.recv_latest, k.recv_bits};
       std::memcpy(p.data(), &ph, sizeof(ph));
-      Sent& s = k.sent[k.send_seq & 255];
+      Sent& s = k.sent[k.send_seq & 4095];
       s.used = true; s.seq = k.send_seq; s.at = now; s.ids = std::move(ids);
       ++k.send_seq;
       send_(p.data(), int(p.size()), k.addr);
@@ -266,7 +301,7 @@ class Session {
 
   // The other side acked packet `seq`: the reliable messages it carried arrived.
   void Acked(Link& k, uint16_t seq, uint64_t now) {
-    Sent& s = k.sent[seq & 255];
+    Sent& s = k.sent[seq & 4095];
     if (!s.used || s.seq != seq) return;
     k.rtt += (float(now - s.at) - k.rtt) * 0.1f;
     for (uint16_t id : s.ids)
@@ -304,15 +339,29 @@ class Session {
     PacketHeader ph; std::memcpy(&ph, d, sizeof(ph));
     if (ph.magic != kMagic) { ++stats_.bad_packets; return; }
     int s = LinkFor(from);
+    if (s > 0 && host_ && ph.epoch != links_[s].epoch) {
+      // A known address on another join attempt: the client started over (it
+      // lost us first, or left and came back before we noticed). A newer
+      // attempt with a join replaces the old link; a delayed packet of an
+      // older attempt is ignored.
+      if (ph.slot == kNoSlot && IsJoin(d, n) && int8_t(uint8_t(ph.epoch - links_[s].epoch)) > 0) {
+        Drop(s, "joined again");
+        s = AcceptJoin(d, n, ph, from, now);
+        if (s < 0) return;
+      } else {
+        return;
+      }
+    }
     if (s < 0) {
       if (!host_) return;  // a client only listens to its host
       s = AcceptJoin(d, n, ph, from, now);
       if (s < 0) return;
     }
+    if (!host_ && ph.epoch != epoch_) return;  // meant for an earlier join attempt
     Link& k = links_[s];
     ++stats_.packets_in; stats_.bytes_in += uint32_t(n);
-    k.last_recv = now;
     if (!MarkReceived(k, ph.seq)) return;
+    k.last_recv = now;   // (only new packets: a dead link's old sequence numbers can't keep it alive)
     if (ph.flags & 1) {
       Acked(k, ph.ack, now);
       for (int i = 0; i < 32; ++i) if (ph.ack_bits & (1u << i)) Acked(k, uint16_t(ph.ack - 1 - i), now);
@@ -320,7 +369,7 @@ class Session {
     for (int o = sizeof(PacketHeader); o + int(sizeof(MessageHeader)) <= n;) {
       MessageHeader h; std::memcpy(&h, d + o, sizeof(h));
       const int total = int(sizeof(h)) + h.len;
-      if (o + total > n) { ++stats_.bad_packets; break; }
+      if (o + total > n || h.len > kMaxMessage) { ++stats_.bad_packets; break; }
       std::vector<uint8_t> msg(d + o, d + o + total);
       o += total;
       if (!(h.flags & 1)) { OnMessage(s, h, std::move(msg)); continue; }
@@ -334,33 +383,38 @@ class Session {
           ++k.rel_expect;
           OnMessage(s, hh, std::move(held));
         }
-      } else if (SeqNewer(h.id, k.rel_expect) && uint16_t(h.id - k.rel_expect) < 2048) {
+      } else if (SeqNewer(h.id, k.rel_expect) && uint16_t(h.id - k.rel_expect) < 2 * kRelWindow) {
         k.rel_hold.emplace(h.id, std::move(msg));
       }  // else: an older copy, already delivered
     }
   }
 
+  // The packet's first message is a well-formed join.
+  static bool IsJoin(const uint8_t* d, int n) {
+    if (n < int(sizeof(PacketHeader) + sizeof(MessageHeader))) return false;
+    MessageHeader h; std::memcpy(&h, d + sizeof(PacketHeader), sizeof(h));
+    return h.type == kJoin && h.len >= 1 && h.len <= kMaxMessage && int(sizeof(PacketHeader) + sizeof(h) + h.len) <= n;
+  }
   // Host: a packet from an unknown address must carry a join.
   int AcceptJoin(const uint8_t* d, int n, const PacketHeader& ph, const sockaddr_in& from, uint64_t now) {
-    if (n < int(sizeof(PacketHeader) + sizeof(MessageHeader)) || ph.slot != kNoSlot) return -1;
+    if (ph.slot != kNoSlot || !IsJoin(d, n)) return -1;
     MessageHeader h; std::memcpy(&h, d + sizeof(PacketHeader), sizeof(h));
-    if (h.type != kJoin || h.len < 1 || int(sizeof(PacketHeader) + sizeof(h) + h.len) > n) return -1;
     const uint8_t* p = d + sizeof(PacketHeader) + sizeof(h);
-    const std::string name(reinterpret_cast<const char*>(p + 1), h.len - 1);
+    const std::string name(reinterpret_cast<const char*>(p + 1), std::min<size_t>(h.len - 1, kMaxName));
     std::string deny;
     if (p[0] != kVersion) deny = "different co-op version (host " + std::to_string(kVersion) + ", you " + std::to_string(p[0]) + ")";
     int slot = -1;
     for (int s = 1; s < kMaxSlots && slot < 0 && deny.empty(); ++s) if (!links_[s].used) slot = s;
     if (deny.empty() && slot < 0) deny = "the game is full (12 players)";
     if (!deny.empty()) {
-      Link tmp; tmp.used = true; tmp.addr = from; tmp.slot = kNoSlot;
+      Link tmp; tmp.used = true; tmp.addr = from; tmp.slot = kNoSlot; tmp.epoch = ph.epoch;
       SendControl(tmp, kJoinDeny, deny.data(), uint16_t(deny.size()), false);
       Flush(tmp, now);
       Log("refused a join from " + name + ": " + deny);
       return -1;
     }
     Link& k = links_[slot];
-    k = Link{}; k.used = true; k.addr = from; k.slot = uint8_t(slot); k.last_recv = now;
+    k = Link{}; k.used = true; k.addr = from; k.slot = uint8_t(slot); k.last_recv = now; k.epoch = ph.epoch;
     names_[slot] = name; present_[slot] = true;
     std::vector<uint8_t> ok{uint8_t(slot), 0};
     for (int s = 0; s < kMaxSlots; ++s)
@@ -450,6 +504,7 @@ class Session {
       const bool was_joined = my_slot_ != kNoSlot;
       present_.fill(false);
       my_slot_ = kNoSlot;
+      epoch_ = NextEpoch();   // a new join attempt
       k.used = true; k.addr = addr; k.slot = 0;
       if (was_joined) inbox_.push_back({0, kPeerLeft, {}});
     }
@@ -461,6 +516,8 @@ class Session {
   mutable std::mutex m_;
   bool host_ = false;
   uint8_t my_slot_ = kNoSlot;
+  uint8_t epoch_ = 1;      // client: this join attempt
+  int flush_start_ = 0;
   std::string my_name_, deny_reason_;
   std::array<Link, kMaxSlots> links_{};  // host: index = client slot; client: index 0 = the host
   std::array<std::string, kMaxSlots> names_{};
