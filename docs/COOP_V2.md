@@ -216,7 +216,8 @@ outside co-op's replays, which include co-op's own seating and exit orders. Hits
 come across as before; since the notoriety round, hits from people it doesn't share as people (its crews, its
 police response's units) come across too (their own hits: not a car hitting the character, explosions or fire),
 whatever mod.ini `police` says.
-Car crews are passive like the people (`MakePassive`); a crew member getting out on its own is logged and counted.
+Car crews are passive like the people (`MakePassive`); a crew member getting out on its own is refused since 2.1.1
+(below; 2.1 logged and counted it).
 
 **Notoriety and arrests, per player** (2.1, round 1; mod.ini `police = 0` turns it all off: no stars sync, crime
 credit, arrests across games or response steering, and a client's own police stay on near the host; the host's
@@ -306,6 +307,34 @@ The "Police:" line adds, on the host, the target, spawn points, pursuits steered
 it now, cars and helicopters called off, target changes, updates with the host off the roads, and the units
 and cars of the response sent; "units told to stop" goes with the forgivings. The client's blocked response
 runs stay in the "Own spawners" line.
+
+**2.1.1** (after the first 2.1 test, 2026-10-16). A car a script or cheat makes for a client (`82569700` with source 7
+or 3; not co-op's own copies, `making_car`) is that player's own (`personal_cars`, at most 8, the oldest forgotten,
+forgotten when the game removes it) and the client's removals of its own parked and traffic cars while it shows the
+host's world leave it alone (the mod menu's car was deleted before it showed); the other players see it as any
+player's car once it is driven. A client's hits on the crews of the host's traffic (drivers, passengers, seat
+stand-ins) are zeroed there like hits on its people and sent to the host as the car's handle and seat
+(`kEventCrewDamage`; the traffic record names their models, not handles), where the real crew member takes the hit
+from the client's character (`824470D0` under the host's own `DamageHook`), so it can die there and the kill is
+credited to the client through `82482098` (2.1 let the copy take the bullets and die on the client alone: the host's
+cop drove on and the client's game asked to remove the body every frame). A crew member's own exit request on a
+client is refused (r3 = 0: `8257B8E0` returns no value of its own, r3 is whatever its last call left, 0 from
+`82448010` when the character isn't in a car, and no caller reads it; the generic exit `8244D5F8` passes it through to
+nine callers that read none), except the driver this player pulls out and co-op's own replays; the asker behind
+`8244D5F8` is logged from its 128-byte frame (the request at r1+80, the saved LR at r1+120). The get-up spots
+(+792/+808) are set where the owner stands, before each knockdown and right before each get-up, when the character
+lies over 3 m from them (the client's car ploughed the host's ragdolled character 42 m along one screen, and it got
+up there): the game's own sub-state-16 pass (`82443808` -> `8243C780`) lerps it to those spots. The "Police:" line
+shows the police points (entry 4's +12) with each game's levels, so credit short of a star is visible (the first
+test's crimes were all Check_Detection ones and none was detected on the client). Seating another player's character
+is retried every 500 ms; from the second refusal in a row the character is reset first (out of any car with `8257C400`
+mode 19, its current action ended with `82445778`, placed at the car - what the game's own seat path does) and after
+five refusals it is made again; and a client moving its own player over to a passenger seat (the car's own game keeps
+its driver) takes it off the wheel with `8257C400` mode 19 first, while the car is slow, because `8257B2C0` refuses
+the local player a direct seat while the driver's seat holds anyone, itself included (`82576D20` at `825771E8`; a
+fast car keeps it at the wheel). Known: why the host refused the seat in the first test is not pinned yet; the
+refusal line names the state (`seat N refused: +508, state, +780, action, melee, weapon, car/seat, +2569; car: list,
++120, +53976, ai, the seat's occupant and reservation`).
 
 Not in 2.1 yet (milestones 2-3): roadblocks for a wanted client, pickups, car hit forwarding, NPC gunfire and NPC
 projectiles, weather, area ownership for players spread across the city, bandwidth scheduling for 12 players.

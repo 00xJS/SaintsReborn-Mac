@@ -37,7 +37,7 @@
 namespace coopnet {
 
 constexpr int kMaxSlots = 12;            // host + 11 clients (the game's player pool)
-constexpr uint8_t kVersion = 3;          // protocol version: a mismatch is refused at join (3: co-op 2.1)
+constexpr uint8_t kVersion = 4;          // protocol version: a mismatch is refused at join (4: co-op 2.1.1)
 constexpr uint32_t kMagic = 0x32435253;  // "SRC2"
 constexpr int kMaxPacket = 1170;         // Epic's P2P limit (EOS_P2P_MAX_PACKET_SIZE)
 constexpr int kMaxMessage = kMaxPacket - 16 - 8;  // payload of one message (headers below)
