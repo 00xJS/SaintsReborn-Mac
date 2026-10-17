@@ -469,7 +469,7 @@ class Registry {
 
 // The owner's view of a member. eye / fwd from its poses (PosePacket.eye,
 // cam row 3); caps, held, chunks and models from its WWA1.
-struct BandStat { uint32_t objects = 0, planned = 0, bytes = 0; };   // summed over ticks; the 10 s line divides
+struct BandStat { uint32_t objects = 0, planned = 0, bytes = 0, rest_objects = 0, rest_planned = 0; };   // summed over ticks; the 10 s line divides (rest_*: the 2 Hz resting ones among them)
 struct Member {
   bool present = false, in_area = false;
   float eye[3] = {0, 0, 0}, fwd[3] = {0, 0, 1};
@@ -554,7 +554,7 @@ class Scheduler {
     Entry* e; Offer* o;
     float priority, d, tag;     // tag: the sort key (its own start tag, a crew member's car's)
     int band; uint16_t bytes, unit; uint32_t anchor, interval;   // unit: a car with its due crew (sent together)
-    bool crew, seated, streams, due, sent; size_t car;
+    bool crew, seated, streams, due, sent, rest; size_t car;
   };
   // Plan order: start-time fair queuing per band (the smallest start tag
   // first; a send moves the tag on by the object's interval, a new object
@@ -590,14 +590,14 @@ class Scheduler {
       const uint64_t age = o.created ? now - o.last_sent : 0;
       float prio = kPrioDist * d + (cone ? kPrioCone : 0) + float(age) / kAgeDiv;
       if (!o.created && !IsCar(e.kind) && m.HasModel(e.model)) prio += kPrioModel;
-      Cand c{&e, &o, prio, d, 0, BandOf(d), 0, 0, e.id, 0, false, false, false, false, false, size_t(-1)};
+      Cand c{&e, &o, prio, d, 0, BandOf(d), 0, 0, e.id, 0, false, false, false, false, false, false, size_t(-1)};
       c.seated = e.car && reg.Find(e.owner, e.car);   // (a car that is gone: on foot until its own hook says otherwise)
       c.bytes = uint16_t(IsCar(e.kind) ? sizeof(CarRec) : c.seated ? sizeof(SeatedRec) : sizeof(PedRec));
       // Streams: created before this tick (the create carries the first record) and not a car a player drives.
       c.streams = o.created && o.offered_at != now && !(IsCar(e.kind) && (e.authority != e.owner || (e.flags & kEntryPlayerCar)));
       if (c.streams) {
-        const bool rest = (e.flags & kEntryRest) && e.changed_at <= o.last_sent;
-        c.interval = rest ? std::max(kRestMs, kBandMs[c.band]) : kBandMs[c.band];
+        c.rest = (e.flags & kEntryRest) && e.changed_at <= o.last_sent;
+        c.interval = c.rest ? std::max(kRestMs, kBandMs[c.band]) : kBandMs[c.band];
         if (o.band != c.band) { o.band = uint8_t(c.band); o.tag = 0; }
         c.tag = o.tag;
         c.due = now + kTickMs / 2 >= o.last_sent + c.interval;
@@ -647,7 +647,7 @@ class Scheduler {
     for (size_t pi = 0; pi < idx.size(); ++pi) {
       Cand& c = cands[idx[pi]];
       if (!c.streams) continue;
-      ++m.band[c.band].objects;
+      ++m.band[c.band].objects; m.band[c.band].rest_objects += c.rest;
       target[c.band] += c.bytes * kTickMs * 16 / c.interval;   // x16: integer shares of a 50 ms tick
       c.unit = c.bytes;
       if (IsCar(c.e->kind)) for (size_t q = pi + 1; q < idx.size(); ++q) { const Cand& k = cands[idx[q]]; if (!k.crew || k.anchor != c.e->id) break; if (k.streams && k.due) c.unit = uint16_t(c.unit + k.bytes); }
@@ -694,7 +694,7 @@ class Scheduler {
       msg += c.bytes; used[c.band] += c.bytes; bytes += c.bytes;
       vnow[c.band] = std::max(vnow[c.band], c.tag);
       c.o->last_sent = now; c.o->tag = std::max(c.o->tag + float(c.interval), vnow[c.band]);
-      ++m.band[c.band].planned; m.band[c.band].bytes += c.bytes;
+      ++m.band[c.band].planned; m.band[c.band].bytes += c.bytes; m.band[c.band].rest_planned += c.rest;
       p.updates.push_back({MakeKey(c.e->owner, c.e->id), c.e->kind, uint8_t(c.band), c.bytes, c.priority});
     }
     // Rebase every band's tags on its virtual now (0 next tick): only the differences matter.

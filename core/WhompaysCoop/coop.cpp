@@ -10783,12 +10783,14 @@ void WorldAuthority(const cw::Entry& e,bool driven,uint8_t was) {
   }
 }
 // A fade the game began on one of its objects (82537D40: +53976 0x40000000,
-// clock +54436, ms +54444; 824517A0: +212 0x80, clock +2488, ms +2492; the
-// clock both read is *0x827AA6E0): the time left, for the members' fade.
+// clock +54436, ms +54444, and every occupant's below; 824517A0: +212 0x80,
+// clock +2488, ms +2492; the clock both store is *0x827AA6E0, less
+// 1800000000 past that): the time left, for the members' fade.
 uint16_t FadeLeft(uint32_t start,uint32_t ms) {
   if(!ms || ms>30000) return cw::kDefaultFadeMs;
-  const int32_t left=int32_t(ms)-int32_t(api->read_u32(0x827AA6E0)-start);
-  return uint16_t(std::clamp<int32_t>(left,0,int32_t(ms)));
+  int32_t clock=int32_t(api->read_u32(0x827AA6E0));
+  if(clock>1800000000) clock-=1800000000;
+  return uint16_t(std::clamp<int32_t>(int32_t(ms)-(clock-int32_t(start)),0,int32_t(ms)));
 }
 // The registry's positions, flags, crews and authority, from the game objects (the owner, every tick).
 void WorldRefresh(uint32_t player,uint64_t now) {
@@ -11137,15 +11139,18 @@ void WorldLog(uint64_t now) {
         else if(o.declined_until>now) ++declined;
         else if(e.Streams() && m.in_area) ++waiting;
       }
-      auto hz=[&](int b) { return m.band[b].objects ? 20.0*m.band[b].planned/m.band[b].objects : 0.0; };
+      // Achieved rates per band for the moving objects (targets 20 / 10 / 2 Hz), and the resting ones (2 Hz) apart.
+      auto hz=[&](int b) { const uint32_t n=m.band[b].objects-m.band[b].rest_objects; return n ? 20.0*(m.band[b].planned-m.band[b].rest_planned)/n : 0.0; };
+      const uint32_t rest_n=m.band[0].rest_objects+m.band[1].rest_objects+m.band[2].rest_objects;
+      const double rest_hz=rest_n ? 20.0*(m.band[0].rest_planned+m.band[1].rest_planned+m.band[2].rest_planned)/rest_n : 0.0;
       char held[80];
       if(m.cars_cap==0xFFFF) std::snprintf(held,sizeof(held),"? (no WWA1 yet)");
       else std::snprintf(held,sizeof(held),"cars %u/%u, people %u/%u",m.cars_held,m.cars_cap,m.people_held,m.people_cap);
       const unsigned bytes=sent.create_bytes+sent.record_bytes+sent.other_bytes;
       std::snprintf(line,sizeof(line),"World (owner) slot %d: offered %u (cars %u, people %u), held %s, declined %u (re-offered %u), created %u (%.1f KB; catch-up left %u, deferred for the budget %u), removed %u (gone %u, area %u), "
-                    "near %.1f Hz / mid %.1f Hz / far %.1f Hz, %u records in %u messages, bytes %.1f KB/s of budget %.1f KB/s (plan %.1f KB/s), backpressure halvings %u, digest sent %u (%u ids), records skipped %u (past 655 m %u), WWA1 %u",
+                    "near %.1f Hz / mid %.1f Hz / far %.1f Hz (resting %.1f Hz), %u records in %u messages, bytes %.1f KB/s of budget %.1f KB/s (plan %.1f KB/s), backpressure halvings %u, digest sent %u (%u ids), records skipped %u (past 655 m %u), WWA1 %u",
                     s,offered_cars+offered_people,offered_cars,offered_people,held,declined,m.reoffers,sent.creates,sent.create_bytes/1024.0,waiting,m.over_create_budget,
-                    sent.removes_gone+sent.removes_area,sent.removes_gone,sent.removes_area,hz(0),hz(1),hz(2),sent.records,sent.messages,bytes/10240.0,
+                    sent.removes_gone+sent.removes_area,sent.removes_gone,sent.removes_area,hz(0),hz(1),hz(2),rest_hz,sent.records,sent.messages,bytes/10240.0,
                     cw::TickBudget(world_upload_kbps,std::max(1,members))*20/1024.0,m.bytes/10240.0,m.halvings,sent.digests,sent.digest_ids,sent.skipped,m.skipped_far,sent.admits);
       ProbeLog(line);
       m.ResetStats(); sent=WorldSent{};

@@ -259,6 +259,21 @@ int main(int argc, char** argv) {
     Check(w.update_before_create == 0, "no update is planned before (or in the same tick as) the object's create");
     uint32_t over = 0; for (int s = 0; s < kMaxSlots; ++s) over += w.members[s].over_create_budget;
     std::printf("      creates held back by the budget: %u\n", over);
+    // The member counters the owner's 10 s line prints: moving objects per band, the resting ones apart.
+    double lo_moving[3] = {1e9, 1e9, 1e9}, lo_rest = 1e9, hi_rest = 0;
+    for (int s = 0; s < kMaxSlots; ++s) {
+      const Member& m = w.members[s];
+      uint32_t ro = 0, rp = 0;
+      for (int b = 0; b < 3; ++b) {
+        const uint32_t n = m.band[b].objects - m.band[b].rest_objects;
+        if (n) lo_moving[b] = std::min(lo_moving[b], 20.0 * (m.band[b].planned - m.band[b].rest_planned) / n);
+        ro += m.band[b].rest_objects; rp += m.band[b].rest_planned;
+      }
+      if (ro) { lo_rest = std::min(lo_rest, 20.0 * rp / ro); hi_rest = std::max(hi_rest, 20.0 * rp / ro); }
+    }
+    std::printf("      member counters: moving objects at least %.1f / %.1f / %.2f Hz, resting %.2f .. %.2f Hz\n", lo_moving[0], lo_moving[1], lo_moving[2], lo_rest, hi_rest);
+    Check(lo_moving[0] >= 15 && lo_moving[1] >= 7.5 && lo_moving[2] >= 1.5 && lo_rest >= 1.5 && hi_rest <= 2.5,   // (from tick 1: the catch-up included)
+          "the members' band counters (the owner line) give the moving objects their band rates and the resting ones 2 Hz apart");
   }
   Check(plan_a == plan_b && plan_a.size() > 10000, Fmt("the plan is deterministic: two runs on equal inputs give identical plans (%g bytes of plan)", double(plan_a.size())));
   {
