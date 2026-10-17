@@ -129,7 +129,8 @@ stand-alone test program that runs several peers over loopback without the game.
 ## 10. Co-op 2.0 and 2.1 (milestone 1): what is built
 
 Every player needs the same version: 2.0 brought a new protocol (a 1.71 game knocking is told so on screen and
-in the log), 2.1 bumped it to 3 (a 2.0 game can't join), 2.1.1 to 4, 2.1.2 to 5 (2.1.3 and 2.1.4 keep it).
+in the log), 2.1 bumped it to 3 (a 2.0 game can't join), 2.1.1 to 4, 2.1.2 to 5 (2.1.3 and 2.1.4 keep it), 2.2 to 6
+(section 11).
 
 **Session** (`net.h`, tested by `tests/net_test.cpp`: 12 players through 20% loss, refusals, leave/timeout,
 rejoin, a lost join reply, a one-way outage, a leave lost before a rejoin, 3000 reliable messages through a 5 s
@@ -486,3 +487,114 @@ purple dots skipped, failed draw calls).
 
 Not in 2.1 yet (milestones 2-3): roadblocks for a wanted client, pickups, car hit forwarding, NPC gunfire and NPC
 projectiles, weather, area ownership for players spread across the city, bandwidth scheduling for 12 players.
+
+## 11. Co-op 2.2: the shared area mirrored (in progress)
+
+Goal (the user's): players who share an area see the same cars, people, cops, actions and effects, the way the game's
+multiplayer mirrors its world, instead of 2.1's streams with their 90 / 200 / 250 m gates and fixed-size packets
+(which dropped and re-made about 8 cars and 20 people every 10 s on a two-player test). The model is the MP's (research
+Q 2.1): every object the authority simulates is created once on each member (reliable), updated by priority within a
+byte budget per member (unreliable, newest wins) and removed once (reliable); the member decides what it can hold and
+says so. In 2.2 the host is the owner of the one area; a client is a member of it or runs its own world (solo), as
+in 2.1. Package A of the round is built in steps; steps 1 and 2 are in (the 2.1 streams still show the world).
+
+**Step 1: `world.h`** (no game code; `tests/world_test.cpp`). The records: `WWS1` updates (25-byte header with the
+owner slot, the OwnerMap epoch, the owner's clock and a reference point; `CarRec` 29 bytes: id, vehicle-table index,
+position in 2 cm from the reference point, smallest-three quaternion, velocity 1/128 m/s, angular velocity, the
+damage / siren bits of 2.1 and the hit points; `PedRec` 20 bytes on foot: position, heading, flags (orientation sign,
+mission, dead, crouching, ragdoll, burning, hidden or cutscene, seated), state `+516 << 4 | +520`, animation set,
+action, velocity, team, gun in hand; `SeatedRec` 12 bytes: id, car id, seat, team, gun, flags), `WWC1` creates
+(kind, authority, model, team, name, the look block `8238B0B8` writes, the car paint, a car's crew ids and the first
+record), `WWR1` removes (fade time, reason: gone or the area left), `WWA1` member reports (cars and people held and
+the caps, the people models resident, the loaded chunks, the ids declined), `WWD1` set digests (the sorted ids a
+member was offered, every 10 s) and `WOM1` (the OwnerMap: per slot its area and owner). The `Registry` (keyed owner
+slot + handle, idempotent adds, removals queued for the members the id was created on) and the `Scheduler`: per
+member and 50 ms tick the MP's priority (-10 a metre, +500 in the view cone or within 10 m, `82353DB0`'s constants,
+plus the age), bands by distance to the member's camera (within 50 m 20 Hz, 150 m 10 Hz, beyond 2 Hz; parked and
+resting cars and seated people 2 Hz unless something changed), shares of the budget per band in proportion when it is
+short, a fair queue inside a band so nothing starves, at most 4 creates a tick (a car before its crew), no records for
+a car a player drives (`kEntryPlayerCar`, or another player's authority), declined ids offered again after 3 s when
+the member has room, and the digest. The budget per member is `world_upload_kbps` shared by the members, 6-24 KB/s
+each, halved for 2 s on backpressure. Tested: 12 members x 200 objects keep 20 / 10 / 2 Hz within 50 / 150 m / beyond
+at 1200 bytes a tick and slow every band alike at 570, never over the budget, deterministic.
+
+**Step 2: the owner side** (`coop.cpp`, "The shared area mirrored" next to the network thread). Every game keeps a
+registry of the cars and people its own game makes, fed where the game makes and removes them (the MP registers its
+objects from the constructors through `82352D38` when both MP bytes are set; co-op hooks the same points and never
+sets those bytes, H):
+- cars: `82569700(source, ...)` after the call (`VehicleCreateHook`). The source at its 17 call sites (H): 2 traffic
+  (the traffic creator `82411310` passes 4 for its police cars), 4 the response (`82411118`) and the gangs' cars
+  (`825611D8`), 5 parked (`8241E378`), 6 special (`824224F0`), 7 scripts and cheats, 3 co-op's own copies
+  (`making_car`; the MP's creators don't run in story mode) and 9 the El Train (`8242D248` under the train manager
+  `8242EFB0`), which is left out and counted (trains as records are later). Cars a script makes during a mission are
+  left out too (each game's mission makes its own).
+- people: `8247A6D0(human, -, park)` after the call. It is the activation (H): the human goes on the active list
+  `0x8309ABB8` (+3592/+3596) when `+200` bits 0 and 1 are set, else (r5 = 1) on the inactive list `0x8309ABB0`. It is
+  called by the constructor `82477B78` (only when `+216` 0x4000 says the model is set up, else `8247A8E0` parks the
+  human inactive), by `8247A9F8` - the people stream group's model-loaded callback (`+140` of its config in
+  `82185498`), which activates every inactive human of that model - and by `8240B228` for queued mission
+  characters once their model is in. So the same human comes again whenever its model is unloaded (`8247AA70`) and
+  loaded again: the add is idempotent and counted as a re-activation. The kind is `+4216`, written before (report
+  L: 1 ambient, 2 traffic crews, 4 police response, 6 special, 8 hood, 0/3/7 system and script characters). Co-op's
+  own copies (`making_actor` around its `82479AB0` call, and the copies by handle), the players' characters
+  (player-pool objects) and the test characters are left out.
+- removal: `824789A8` (`HumanDestroyHook`) and `825324D0` (`VehicleRemoveHook`), when the game really removes the
+  object. A fade-out the game begins is a removal at once, with the time it has left: a car's `82537D40` sets `+53976`
+  0x40000000 with the clock `+54436` and the length `+54444` and fades every occupant with it; a person's `824517A0`
+  sets `+212` 0x80 with `+2488` / `+2492`; both clocks are `*0x827AA6E0`, less 1800000000 past that (H).
+- the registry is filled from the object table when the session starts (cars named by the traffic list, the parked
+  records at `0x83AD346C`, the response squads, an El Train car by its vehicles.xtbl row 65; people only once
+  active) and checked against it every 10 s ("audit": what the hooks missed both ways; it should stay 0).
+
+On the host, 20 times a second (`WorldOwnerTick`): the members are the clients whose pose says they show the host's
+world (`kPoseHostWorld`, 2.1's rule for the host's police: the client shows the host's traffic or people - from 120 m,
+kept to 200 m - and the host's character, made within 60 m and removed past 130 m, held 2 s; with mod.ini police = 0
+the bit is never set and nobody is a member yet); their camera from the pose (`eye`, the forward row of `cam`). The registry's state is read from the game: positions; the car's chunk bit (`+120` 0x04000000, what
+`vehicle_in_loaded_chunk` `824DAB38` reads: a car whose chunk unloaded is parked without physics and doesn't stream);
+resting (slower than 0.3 m/s or no physics: 2 Hz) and a change of hit points, damage, siren or driver; a person's
+activity (`+200`), seat (`+2496`/`+2500`: a seated person is a crew record of its car), and the rules 2.1 kept: mission
+and script characters stream only while a mission runs, the story characters' models (Gat, Dex, Julius, Troy) never
+on the street. Authority (F2): a car a player sits in or is getting into (this player's `+2496`, another player's
+character's car or the car it is getting into) is theirs: its pose carries it, so no records go for it, and the
+area's members are told with `kEventAuthority` (owner, id, the player's slot, 1); it comes back to the host's game
+1 s after it rests with nobody in it (`kEventAuthority` ..., 0). It is never removed for that. Then `Scheduler::Plan`
+with each member's budget (for the time since the last tick) and the stream point (the camera `0x827D9778` +44, where
+the game's own stream point `82485DB0` starts and what its despawn radii are measured from), and the messages:
+creates with their tail (a car's paint read again for each, `ReadCarLook`; a person's name and look block, `ReadLook`),
+removes, the records packed into `WWS1` messages of at most 1146 bytes (each object described once a tick, a record
+past 655 m skipped and counted), the digest every 10 s and the OwnerMap (reliable when someone joins or leaves the
+area, else once a second). The network thread sends them in order, before the events. Backpressure: a member's link
+whose unreliable backlog stays past 16 KB after a flush, that drops snapshots (`Session::LinkStats` per link, new in
+`net.h`), or Epic's outgoing queue past 16 KB halves that member's budget for 2 s. A member's `WWA1` is taken (what it
+holds and declined; members send none yet). Members in step 2 count what arrives and apply nothing; the host still
+sends the 2.1 streams, so what players see is 2.1's.
+
+Measured offline (world.h with a two-player street: 12 traffic cars with drivers, 6 parked, 26 people, churn of a car
+and two people every 2 s; budget 1200 bytes a tick): about 11 KB/s per member with every moving object at its band's
+rate (20 / 10 / 2 Hz), resting ones at 2 Hz, 3 creates a second, never over the budget; 11 members at 568 bytes a tick:
+10 KB/s each, 19 / 10 / 2 Hz. In step 2 that comes on top of the 2.1 streams (about 41 KB/s to each client near the
+host) and the poses.
+
+Log (every 10 s): `World (owner): area: ...; set: cars (traffic, parked, response, special, script; trains and mission
+cars left out, inactive, players' cars), people (ambient, traffic crews, response, hood, special, mission/script;
+seated; story characters left out, mission/script outside a mission, inactive); audit +a/-b; made cars / people,
+removed cars / people (of them as their fade began), re-activated people` (the host's own churn: the baseline the
+members' numbers are judged against); per member `World (owner) slot S: offered (cars, people), held (from WWA1),
+declined (re-offered), created (KB; catch-up left, deferred for the budget), removed (gone, area), near / mid / far Hz
+of the moving objects (resting apart), records in messages, bytes of the budget (and the plan's own count),
+backpressure halvings, digest (ids), records skipped (past 655 m), WWA1`; `World (owner) authority: n cars driven by
+players now (slots), taken, returned`. One-shot: `World registry on` (the count at the start and the MP net time
+`*0x83061944`, a probe), `World (owner): the first member in the area` (what it catches up), `slot S joined / left
+the area` (40), the authority changes (30). A client: `World (this game's own, a client): registry; ...` and
+`World (member, 2.2 step 2: counted, not applied yet): from the host n update messages, creates, removes, digests,
+owner maps, KB/s`.
+
+Protocol 6 (2.1 can't join): message types `kMsgWorld` (WWS1), `kMsgWorldCreate` (WWC1), `kMsgWorldRemove` (WWR1),
+`kMsgWorldAdmit` (WWA1), `kMsgWorldDigest` (WWD1), `kMsgOwnerMap` (WOM1) after `kMsgNotoriety`; events
+`kEventCarDamage` (25, the members' side) and `kEventAuthority` (26). The session's relay needed nothing new (the host
+sends to one slot; a client's message for the host stays there). mod.ini: `world_upload_kbps = 1000`.
+
+Next (Package A, steps 3-4): the members' side (the one table of copies keyed owner + id, admission with hysteresis,
+creates / updates / removes with fades and deadlines, `WWA1`, the digest diff, the update age), then the 2.1 streams
+go (`CaptureTraffic`, `CapturePeds`, `UpdateSharedTraffic`, `UpdateSharedPeds` and their packets) and the membership
+becomes the host's own (90 m / 140 m with 2 s / 5 s of hysteresis, the OwnerMap's epoch).

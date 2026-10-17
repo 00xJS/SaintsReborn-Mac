@@ -53,6 +53,7 @@ enum : uint8_t {
 };
 
 constexpr uint8_t kSolo = 0xFF;             // OwnerMapRec.area: the slot runs its own world
+constexpr uint8_t kAuthorityPlayer = 0x80;  // CreateRec.authority: a player's pose carries the car (that player's slot in the low bits; the owner's own player too)
 
 #pragma pack(push, 1)
 // WWS1: unreliable, unicast per member; then n_cars CarRec and n_people PedRec / SeatedRec.
