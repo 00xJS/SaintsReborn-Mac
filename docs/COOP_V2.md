@@ -890,6 +890,33 @@ n (kind k) at x y z, source found|none, attacker who` (10), `World (owner): slot
 damage)` (10), `Explosion defs / weapons: slot S has a / b, this game c / d: the same | DIFFERENT`. Perf part `world
 fire` (in `world apply`).
 
+**People models and car copies: where the references go** (notes/coop-2.1/model_refcount_investigation.md 7.2a and
+9.4; 2.1.4 balanced the per-character reference and measured the rest). H for the calls below (read in the asm):
+- **Pins at level 0.** `PinModel` asks a people model (group 0) with `8250C750(group, id, 5, level 0, now)` instead of
+  the top level (13): the pass `8250D3E0(group, level)` pairs a level's requests only with that level's slots, and
+  the top level had only the slots `8241BD40` last moved there (the "8 loaded" plateau of every client log, then 4-6,
+  with slots idle at levels 1, 2, 4, 5 that nobody asks at). `ReleasePins` releases at the pin's own level when a
+  reference was taken (`ModelPin.held`). Other groups (car models) keep the top level (`pin_top`).
+- **The quota table.** On a client, once a second, the live table `0x827ACFFC` (14 words; `8241CA80` copies it into
+  the group's `+196`, `8241BD40` grows levels from it and never shrinks one) gets level 0 = the group's slot count
+  (`+0`, `people_models` included) and 0 above when it differs, applied with `8250F780(0, 0x827ACFFC, 14)` (it copies
+  each changed word to the group's array and sets its dirty bit `+200` 0x80, so the next pass's balancer `8250D0A8`
+  moves the surplus slots down to level 0); skipped while the group's pass runs (`+200` 0x20). The game's own table
+  is saved first and put back when the session ends (single player keeps the game's 8 1 1 0 1 1 0 ...).
+- The 2.1.4 guard (`ModelRefGuard`) stays log-only; it now counts a pin by its reference, at any level. The 10 s
+  `slots here` dump keeps each slot's level and the quota line (`slot quota per level 827ACFFC`).
+- **Car copies.** `CreateVehicle` takes the model reference through the game's own `82532360(vehicle, 5)`
+  (`8250C750(group, *(*(v+50324)+0), kind, 0, 1)`, then `v+50304` = kind) instead of `8250C750` directly (the
+  network creator `823BA888`'s way, which leaves the constructor's -1 at `+50304`): the vehicle destructor `825324D0`
+  releases the kind noted at `+50304` when it isn't -1, so a copy's reference goes with the copy.
+
+Logs: `People-model slot quota set: 827ACFFC was q0 .. q13, now n at level 0 and none above` / `put back` (10);
+`Model priority: n models pinned (people p at level 0, cars at the top level), r released, h held; slot quota written w
+times (level 0 holds every slot: yes|no)`; `Car copy ID made: model M, reference kind noted at +50304 = 5` (3; `-1`
+would mean the old way), `Car copy ID made with a model reference noted already` (5), and every 10 s `Car models: per
+model of a copy here its kind-5 references (copies, this game's own; copies noted at +50304): ID k (c, o; noted n) ...;
+m with more references than its cars + 1` next to the 2.1.4 `Car models here` line.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies,
 the host's people's rounds on a member's own car).
