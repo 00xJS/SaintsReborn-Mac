@@ -8928,10 +8928,10 @@ index 2b222da..1b58324 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..e181806
+index 0000000..ad3e2d8
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,532 @@
 +// Saints Reborn: Xbox Live sessions over Epic Online Services (included by
 +// xgi_app.cpp; only active with the cvar xam_signed_in_to_live).
 +//
@@ -9107,7 +9107,8 @@ index 0000000..e181806
 +  std::vector<std::pair<uint32_t, uint32_t>> contexts;
 +  std::vector<std::pair<uint32_t, std::vector<uint8_t>>> properties;
 +  std::string name;
-+  bool modded = true, ranked = false, priv = false;
++  bool modded = true, ranked = false, priv = false, mm = false;
++  int rank = 1;  // search order: 0 a host waiting in matchmaking, 1 anything else
 +};
 +bool ParseAdvert(const std::string& text, Advert& a) {
 +  const auto v = Unhex(text);
@@ -9141,8 +9142,16 @@ index 0000000..e181806
 +    a.modded = f & 1;
 +    a.ranked = f & 2;
 +    a.priv = f & 8;
++    a.mm = f & 4;
 +  }
 +  return true;
++}
++
++// What the advert's host is doing (its SRACT, see online_players.cpp), empty
++// when unknown (an older game, or its details not in yet).
++std::string HostActivity(const Advert& a) {
++  std::string puid;
++  return rex::system::eoslan::SessionHostWhere(a.info, puid);
 +}
 +
 +// Fills XSESSION_SEARCHRESULT_HEADER + results (92 bytes each: XSESSION_INFO
@@ -9170,7 +9179,7 @@ index 0000000..e181806
 +                                  ". Mods work in a Private Party with invited friends.");
 +    }
 +  }
-+  uint32_t other_kind = 0;
++  uint32_t other_kind = 0, busy = 0;
 +  for (const auto& t : texts) {
 +    Advert a;
 +    if (!ParseAdvert(t.text, a)) continue;
@@ -9192,8 +9201,24 @@ index 0000000..e181806
 +      ++other_kind;
 +      continue;
 +    }
++    // Full lobbies and matches already running can't take a matchmaking
++    // join: the game tried them anyway (results came in lobby-member order),
++    // the join failed and the player ended up hosting alone on "Finding
++    // matches". Hosts waiting in matchmaking come first, the fullest first.
++    const std::string act = HostActivity(a);
++    if (a.open_pub == 0 || act == "In a multiplayer match") {
++      ++busy;
++      continue;
++    }
++    a.rank = act == "Searching for players" ? 0 : 1;
 +    found.push_back(std::move(a));
 +  }
++  if (!session_id)
++    std::stable_sort(found.begin(), found.end(), [](const Advert& x, const Advert& y) {
++      if (x.rank != y.rank) return x.rank < y.rank;
++      return x.filled_pub + x.filled_priv > y.filled_pub + y.filled_priv;
++    });
++  if (busy) REXLOG_INFO("LIVE {}: {} full or already playing, left out", what, busy);
 +  if (other_kind)
 +    REXLOG_INFO("LIVE {}: {} session(s) hidden (this game is {}; public matches are unmodded games only, private "
 +                "parties are joined by invite)", what, other_kind, me_modded ? "modded" : "unmodded");
@@ -9286,6 +9311,94 @@ index 0000000..e181806
 +  return -1;
 +}
 +}  // namespace rex::kernel::xam
++
++// Matchmaking merge (game: coop_menu.cpp, every 2 s while this game hosts a
++// matchmaking session on the matchmaking screen). The game searches once,
++// then hosts and waits. Two players who search within a few seconds of each
++// other don't see each other's advert yet (1-3 s to show up), so both host
++// and both sit on "Finding matches" alone for good. A host still alone moves
++// into another host waiting in matchmaking for the same match type and mode:
++// to the one with more players, and between two lone hosts only the one with
++// the higher session id moves, so exactly one of them does. It joins the way
++// an accepted invite does. 1 = a join was started.
++extern "C" __declspec(dllexport) int SrMatchmakingMerge() {
++  uint8_t mine[60];
++  std::map<uint32_t, uint32_t> ctx;
++  bool alone = false;
++  {
++    std::lock_guard<std::mutex> l(g_live.mutex);
++    alone = g_live.hosting && (g_live.flags & kFlagMatchmaking) && g_live.remote == 0 && g_live.public_slots > 0;
++    std::memcpy(mine, g_live.info, 60);
++    ctx = g_live.contexts;
++  }
++  static std::string session, target;
++  static std::chrono::steady_clock::time_point since, next_try;
++  static int tries = 0, seen = 0;
++  if (!alone) {
++    session.clear();
++    return 0;
++  }
++  const std::string my_hex = Hex(std::vector<uint8_t>(mine, mine + 60));
++  const auto now = std::chrono::steady_clock::now();
++  if (my_hex != session) {
++    session = my_hex;
++    since = now;
++    next_try = {};
++    tries = 0;
++    seen = 0;
++    target.clear();
++  }
++  // Our own advert needs a moment to reach the others too, and a failed move
++  // isn't repeated at once.
++  if (now - since < std::chrono::seconds(5) || now < next_try || tries >= 3) return 0;
++  if (rex::system::online::Modded()) return 0;
++  const std::string my_id = my_hex.substr(0, 16);
++  std::string best_hex, best_name;
++  uint32_t best_filled = 0;
++  for (const auto& t : rex::system::eoslan::LiveAdverts(0)) {
++    Advert a;
++    if (!ParseAdvert(t.text, a)) continue;
++    if (a.modded || t.modded || a.priv || !a.mm || a.open_pub == 0) continue;
++    if (std::memcmp(a.info, mine, 8) == 0) continue;
++    bool same = true;
++    for (uint32_t id : {0x800Au, 0x800Bu}) {
++      auto mi = ctx.find(id);
++      bool has = false;
++      for (auto& [aid, av] : a.contexts)
++        if (aid == id) {
++          has = true;
++          same = same && mi != ctx.end() && av == mi->second;
++        }
++      same = same && has && mi != ctx.end();
++    }
++    if (!same || HostActivity(a) != "Searching for players") continue;
++    const uint32_t filled = std::max<uint32_t>(1, a.filled_pub + a.filled_priv);
++    const std::string hex = Hex(std::vector<uint8_t>(a.info, a.info + 60));
++    if (filled <= 1 && hex.substr(0, 16) > my_id) continue;  // the other lone host moves to us
++    if (best_hex.empty() || filled > best_filled || (filled == best_filled && hex < best_hex)) {
++      best_hex = hex;
++      best_filled = filled;
++      best_name = a.name.empty() ? t.name : a.name;
++    }
++  }
++  if (best_hex.empty()) {
++    seen = 0;
++    target.clear();
++    return 0;
++  }
++  // Seen on two polls in a row (2 s apart): not a host that is just leaving.
++  if (best_hex != target) {
++    target = best_hex;
++    seen = 1;
++    return 0;
++  }
++  if (++seen < 2) return 0;
++  ++tries;
++  next_try = now + std::chrono::seconds(20);
++  REXLOG_INFO("LIVE matchmaking: alone as host; {} waits for the same match with {} player(s) - joining them (try {})",
++              best_name, best_filled, tries);
++  return rex::system::eoslan::JoinAdvertisedSession(best_hex, best_name) ? 1 : 0;
++}
 +
 +// MULTIPLAYER > LOBBIES (game: online_players.cpp). SrPublicLobbies: first line
 +// "#ready" / "#connecting" / "#modded" / "#off", then one line per public
@@ -10914,10 +11027,10 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..ceb5873
+index 0000000..4ee41d0
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,2075 @@
+@@ -0,0 +1,2114 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -11018,7 +11131,8 @@ index 0000000..ceb5873
 +  X(EOS_Lobby_JoinLobbyById) X(EOS_Lobby_LeaveLobby) X(EOS_Lobby_CopyLobbyDetailsHandle)                      \
 +  X(EOS_LobbyDetails_GetMemberCount) X(EOS_LobbyDetails_GetMemberByIndex) X(EOS_LobbyDetails_Release)        \
 +  X(EOS_P2P_SendPacket) X(EOS_P2P_ReceivePacket) X(EOS_P2P_AcceptConnection)                                 \
-+  X(EOS_P2P_AddNotifyPeerConnectionRequest) X(EOS_ProductUserId_ToString)                                  \
++  X(EOS_P2P_AddNotifyPeerConnectionRequest) X(EOS_P2P_AddNotifyPeerConnectionClosed)                       \
++  X(EOS_ProductUserId_ToString)                                                                             \
 +  X(EOS_Lobby_UpdateLobbyModification) X(EOS_LobbyModification_AddMemberAttribute)                          \
 +  X(EOS_LobbyModification_RemoveMemberAttribute) X(EOS_LobbyModification_Release) X(EOS_Lobby_UpdateLobby)   \
 +  X(EOS_LobbyDetails_CopyMemberAttributeByKey) X(EOS_Lobby_Attribute_Release) X(EOS_Platform_Release)
@@ -11365,6 +11479,18 @@ index 0000000..ceb5873
 +  n.SocketId = &socket_id;
 +  p_EOS_P2P_AddNotifyPeerConnectionRequest(p2p_if, &n, nullptr,
 +                                           [](const EOS_P2P_OnIncomingConnectionRequestInfo* i) { AcceptFrom(i->RemoteUserId); });
++  // Why Epic dropped a player-to-player connection (players losing the host
++  // mid-match: was it a timeout, the other side closing, ...). Sending to that
++  // player again opens a new one.
++  EOS_P2P_AddNotifyPeerConnectionClosedOptions cn{};
++  cn.ApiVersion = EOS_P2P_ADDNOTIFYPEERCONNECTIONCLOSED_API_LATEST;
++  cn.LocalUserId = me;
++  cn.SocketId = &socket_id;
++  p_EOS_P2P_AddNotifyPeerConnectionClosed(p2p_if, &cn, nullptr, [](const EOS_P2P_OnRemoteConnectionClosedInfo* i) {
++    auto pit = peers.find(i->RemoteUserId);
++    const std::string who = pit != peers.end() ? pit->second.name + " " + pit->second.puid : PuidString(i->RemoteUserId);
++    REXSYS_WARN("EOS LAN: connection to {} closed by Epic (reason {})", who, int(i->Reason));
++  });
 +  JoinOrCreate();
 +}
 +void OnLogin(const EOS_Connect_LoginCallbackInfo* d) {
@@ -11625,7 +11751,9 @@ index 0000000..ceb5873
 +  c.LobbyId = kLobbyId;
 +  c.LocalUserId = me;
 +  EOS_HLobbyDetails details = nullptr;
-+  if (p_EOS_Lobby_CopyLobbyDetailsHandle(lobby_if, &c, &details) != EOS_EResult::EOS_Success || !details) {
++  const EOS_EResult copied = p_EOS_Lobby_CopyLobbyDetailsHandle(lobby_if, &c, &details);
++  if (copied != EOS_EResult::EOS_Success || !details) {
++    REXSYS_INFO("EOS LAN: LAN lobby details not available ({}, {} in a row)", R(copied), lobby_details_failed + 1);
 +    // Epic no longer has this game in the LAN lobby (connection lost a while,
 +    // removed after a timeout): join it again instead of staying deaf.
 +    if (++lobby_details_failed >= 5 && !creating) {
@@ -12393,21 +12521,43 @@ index 0000000..ceb5873
 +  while (true) {
 +    if (release_wanted) return;
 +    p_EOS_Platform_Tick(platform);
-+    if (state == State::Ready) {
++    const State st = state;
++    if (st == State::Ready) {
 +      const auto now = std::chrono::steady_clock::now();
 +      if (now >= next_refresh) { RefreshMembers(); next_refresh = now + std::chrono::seconds(2); }
 +      static auto next_attrs = now;
 +      if (now >= next_attrs) { ApplyAttributes(); next_attrs = now + std::chrono::milliseconds(500); }
++    }
++    // Game packets go player to player (Epic P2P) and don't need the LAN
++    // lobby, only the login. Before 2026-10-17 (b) they were sent and received
++    // only while the lobby was Ready: when Epic briefly lost the lobby and the
++    // game joined it again (or that join failed and waited 10 s), every match
++    // this game was in stopped dead - "Reconnecting to game session", then
++    // "Host disconnected" for everyone when it was the host.
++    if (me && (st == State::Ready || st == State::Joining || st == State::Failed)) {
++      const auto now = std::chrono::steady_clock::now();
 +      Flush();
 +      Receive();
 +      for (auto it = partials.begin(); it != partials.end();)
 +        it = now - it->second.since > std::chrono::seconds(3) ? partials.erase(it) : std::next(it);
 +      if (now >= next_stats && (sent_packets || received_packets)) {
-+        REXSYS_INFO("EOS LAN: {} packets sent, {} received (10 s), {} other player(s)", sent_packets.exchange(0),
-+                    received_packets.exchange(0), members.size());
++        // Players in this game's lobby / match that went quiet (the game
++        // drops a player after a few seconds without packets).
++        std::string quiet;
++        {
++          std::lock_guard<std::mutex> cl(chat_mutex);
++          for (auto& [ip, seen] : session_peer_seen) {
++            const auto ago = std::chrono::duration_cast<std::chrono::seconds>(now - seen).count();
++            if (session_active && ago >= 3 && ago < 120)
++              quiet += fmt::format(" 10.77.{}.{} {} s", (ip >> 8) & 255, ip & 255, ago);
++          }
++        }
++        REXSYS_INFO("EOS LAN: {} packets sent, {} received (10 s), {} other player(s){}{}", sent_packets.exchange(0),
++                    received_packets.exchange(0), members.size(), quiet.empty() ? "" : "; quiet:", quiet);
 +        next_stats = now + std::chrono::seconds(10);
 +      }
-+    } else if (state == State::Failed) {
++    }
++    if (st == State::Failed) {
 +      if (rejoin_at != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() >= rejoin_at) {
 +        rejoin_at = {};
 +        if (me) {
@@ -12418,8 +12568,10 @@ index 0000000..ceb5873
 +          Login();
 +        }
 +      }
-+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-+      continue;
++      if (!me) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(100));
++        continue;
++      }
 +    }
 +    std::this_thread::sleep_for(std::chrono::milliseconds(2));
 +  }
