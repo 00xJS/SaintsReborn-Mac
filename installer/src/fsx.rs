@@ -161,6 +161,38 @@ pub fn remove_dir(dir: &Path) -> Result<()> {
     fs::remove_dir_all(dir).with_context(|| format!("could not delete {}", dir.display()))
 }
 
+/// Deletes the `*.lock` files a git process leaves behind when it is killed
+/// or crashes (index.lock, shallow.lock, ... also in submodules under
+/// `.git/modules`). Setup runs git itself, one command at a time, so when it
+/// is about to start git no lock in its own repositories can be live. Without
+/// this an interrupted run fails every later one with "index.lock: File
+/// exists". Returns the removed files.
+pub fn remove_git_locks(repo: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(m) = fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if m.is_dir() {
+                // Object stores are large and never hold lock files git trips on.
+                if e.file_name() != "objects" {
+                    walk(&p, out);
+                }
+            } else if m.is_file()
+                && p.extension().is_some_and(|x| x == "lock")
+                && fs::remove_file(&p).is_ok()
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&repo.join(".git"), &mut out);
+    out
+}
+
 fn clear_readonly(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {

@@ -1442,6 +1442,21 @@ void SoloStartPoll(uint8_t* base) {
   }
   if (!(mm_host || (searching && hosting_mm))) return;
   if (!MatchmadeLobby(base)) return;
+  // Hosting alone: move into another host waiting for the same match
+  // (xgi_live.inc SrMatchmakingMerge decides; one of two lone hosts moves).
+  if (count <= 1) {
+    static auto next_merge = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_merge) {
+      next_merge = now + std::chrono::seconds(2);
+      using MergeFn = int (*)();
+      static const MergeFn merge = [] {
+        HMODULE m = GetModuleHandleW(L"rexruntime.dll");
+        return m ? reinterpret_cast<MergeFn>(GetProcAddress(m, "SrMatchmakingMerge")) : nullptr;
+      }();
+      if (merge && merge()) return;
+    }
+  }
   // Only a host alone with "Players to Start: 1": with more players the
   // game's own join / leave handling sets (and keeps) the countdown.
   const uint32_t players = std::max<uint32_t>(count, 1u);

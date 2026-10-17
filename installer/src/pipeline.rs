@@ -222,6 +222,9 @@ fn get_source(r: &Reporter, tc: &Toolchain, dir: &Path) -> Result<bool> {
     if is_install_folder(dir) {
         r.status("Downloading the latest Saints Reborn patches");
         let is_repo = dir.join(".git").is_dir();
+        if is_repo {
+            clear_git_locks(r, dir);
+        }
         let before = if is_repo {
             capture(&mut git(&["rev-parse", "HEAD"])).unwrap_or_default()
         } else {
@@ -589,6 +592,7 @@ fn prepare_sdk_source(
         run(r, c, "Downloading the ReXGlue SDK", |_| {})
             .context("Check your internet connection.")?;
     }
+    clear_git_locks(r, sdk_src);
     r.status(format!(
         "Checking out ReXGlue SDK {} and its dependencies",
         short(commit)
@@ -677,6 +681,14 @@ fn prepare_sdk_source(
         bail!("The SDK patch does not apply. Delete the build folder and press Install again.");
     }
     Ok(())
+}
+
+/// Clears locks a killed or crashed git run left in `repo` (see
+/// fsx::remove_git_locks) and says so in the log.
+fn clear_git_locks(r: &Reporter, repo: &Path) {
+    for p in fsx::remove_git_locks(repo) {
+        r.log(format!("Removed a leftover git lock: {}", p.display()));
+    }
 }
 
 /// Git on Windows checks libmspack's symlinked sources out as small text
