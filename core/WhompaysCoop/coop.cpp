@@ -422,8 +422,58 @@ uint32_t ResolveHuman(uint32_t handle) {
     api->read_u32(obj+72)==1 && obj!=api->read_u32(0x8309ABEC) ? obj : 0;
 }
 
+// One streaming reference per character made here (CreateActor: 8250C750,
+// kind 5, as the game's own network NPC creator 823A7DB0 takes it), given
+// back when the character goes. The game has no counterpart for it: no human
+// destroy path releases a people-model reference (the image's three 8250CA48
+// callers are the population sets' 82419C08 and the vehicles' 8247BA28 /
+// 825324D0), so every copy, stand-in and traffic crew member left its
+// model's count one higher (BF 1 -> 139 in 12 min of the second 2.1.2 test)
+// and the request never died: a dead model's kind-5 request evicted slots
+// that live copies wore. Handle -> model id and the references on its live
+// request (one; a re-request after the request was dropped starts over).
+// 8250CA48(group, id, kind, level, all): refs[kind] -= 1 and levels[level]
+// -= 1 (all: every counter zeroed); the request is taken down only when all
+// seven kinds are 0; without a request for the id it does nothing; while the
+// group is locked (its own pass) it queues itself at group+64.
+struct ActorModel { uint32_t id=0; uint8_t refs=0; };
+std::unordered_map<uint32_t,ActorModel> actor_models;   // game thread
+unsigned actor_refs_released=0, actor_refs_swept=0;
+uint32_t FindStreamEntry(uint32_t id);
+void NoteActorModel(uint32_t handle,uint32_t id) {
+  if(!FindStreamEntry(id)) return;   // no free request record: nothing was taken (8250C750 fails silently)
+  ActorModel& m=actor_models[handle];
+  if(m.id!=id) m.refs=0;
+  m.id=id; ++m.refs;
+}
+void ReleaseActorModel(GuestScratch& scratch,uint32_t handle) {
+  const auto it=actor_models.find(handle);
+  if(it==actor_models.end()) return;
+  const ActorModel m=it->second;
+  if(api->read_u8(kStreamTable+(m.id>>24)*204+200)&0x20) return;   // its pass is running (not from the update hook): the sweep comes back to it
+  actor_models.erase(it);
+  if(!FindStreamEntry(m.id)) return;   // let go already (ClearUnusedModelRefs)
+  for(unsigned i=0;i<m.refs;++i) {
+    scratch.ctx.r3.u64=kStreamTable+(m.id>>24)*204; scratch.ctx.r4.u64=m.id;
+    scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=0;
+    scratch.Call(0x8250CA48);
+    ++actor_refs_released;
+  }
+}
+// Once a second: the characters the game removed by itself (the corpse
+// clean-up, HumanDestroyHook's let-throughs) give theirs back too.
+void SweepActorModels(GuestScratch& scratch,uint64_t now) {
+  static uint64_t next=0;
+  if(now<next || actor_models.empty()) return;
+  next=now+1000;
+  std::vector<uint32_t> gone;
+  for(auto& [h,m]:actor_models) if(!ResolveHuman(h)) gone.push_back(h);
+  for(uint32_t h:gone) { ReleaseActorModel(scratch,h); ++actor_refs_swept; }
+}
+
 void DestroyActor(GuestScratch& scratch,uint32_t& handle,const char* tag) {
   if(ResolveHuman(handle)) {
+    ReleaseActorModel(scratch,handle);
     scratch.ctx.r3.u64=handle;
     scratch.Call(0x823ACF50); // Native destructor validates full handle again.
     char line[120];
@@ -476,8 +526,8 @@ void WatchActors(uint64_t now) {
 // Same order as the game's network NPC creator (823A7DB0): move the spot off
 // any human standing exactly there, construct, then take a streaming reference
 // on the model (category 5). Without that reference the actor's setup waits on
-// a model nobody requested: no physics body, nothing drawn. The human
-// destructor releases the reference (8247BA28 -> 8250CA48).
+// a model nobody requested: no physics body, nothing drawn. Given back when
+// the character goes (ReleaseActorModel: nothing in the game does it; 2.1.4).
 unsigned actors_refused=0;       // game thread
 uint64_t actors_blocked_until=0;  // after a refusal, no new people for a moment
 // Kind of character made (82479AB0 r3): 3 = a passer-by of this game, which
@@ -524,6 +574,7 @@ uint32_t CreateActor(GuestScratch& scratch,uint32_t definition,uint32_t pos,uint
     scratch.ctx.r3.u64=kStreamTable+(id>>24)*204; scratch.ctx.r4.u64=id;
     scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=1;
     scratch.Call(0x8250C750);
+    NoteActorModel(handle,id);
   } else if(!quiet) ProbeLog("Created actor has no model descriptor; no streaming reference taken");
   if(quiet) return handle;
   char line[160];
@@ -782,6 +833,7 @@ uint8_t CarSiren(uint32_t vehicle) {
 }
 unsigned car_damage_applied=0, car_sirens_applied=0;
 void ApplyCarDamage(struct GuestScratch& scratch,uint32_t vehicle,uint8_t want,uint8_t hp);
+void ForgetCarDamage(uint32_t handle);   // a copy made again starts its damage record over
 void ApplyCarSiren(struct GuestScratch& scratch,uint32_t vehicle,uint8_t want);
 uint32_t SharedCarHostHandle(uint32_t local);   // client: host handle of a traffic copy (0 if none)
 // A car here as every game names it: its owner's slot and its handle there.
@@ -1555,6 +1607,7 @@ bool CrewSeat(uint32_t handle,uint32_t& host_car,uint32_t& seat);  // joiner: th
 bool IsSentCar(uint32_t id);                     // host: this car is in the traffic sent to the clients (2.1.1)
 // game thread (joiner): copies' own shots (from a seat), their local hits on our player, crews' own actions, exits and the hits on them (2.1.1)
 unsigned copy_shots_blocked=0, copy_shots_seated=0, copy_hits_zeroed=0, crew_actions_blocked=0, crew_exits=0, crew_exits_refused=0, crew_hits_sent=0;
+unsigned crew_hits_empty=0, crew_hits_nocar=0, crew_hits_player=0;   // host: other players' crew hits dropped here: no one in that seat, the car not here or not sent, a player in it (2.1.4)
 std::atomic<uint32_t> crew_hits_applied{0};      // host: other players' hits on its crews applied here (2.1.1)
 std::atomic<uint32_t> ped_hits_sent{0}, ped_hits_applied{0}, hits_from_people{0};
 void ApplyPedAction(GuestScratch& scratch,const struct Event& e,uint64_t now);
@@ -1781,6 +1834,7 @@ bool SharedPersonCall(uint32_t fn,WmlContext* c) {
 // the player steps off (UpdateBody, UnstickPlayer).
 uint32_t StandingOnSharedCharacter(uint32_t player);   // the character under the player, or 0
 std::atomic<uint32_t> unstick_from{0};
+int knocking_avatar=0;   // inside SyncKnockdown's own 824497F0 call: the one knockdown of another player's character here
 void KnockdownHook(WmlContext* c,uint8_t* b) {
   if(connected.load() && !replicated_depth && api->get_lr(c)==0x82463558u &&
      uint32_t(api->get_r(c,3))==api->read_u32(0x8309ABEC)) {
@@ -1800,7 +1854,11 @@ void KnockdownHook(WmlContext* c,uint8_t* b) {
   // The victim's game decides falls. A fall our game decides for the peer's
   // stand-in (our punch landing here) is dropped; the peer's game sends the
   // real one back if its player goes down (its pose's ragdoll bit, SyncKnockdown).
-  if(connected.load() && !replicated_depth && AvatarSlotOf(uint32_t(api->get_r(c,3)))>=0) { api->set_r(c,3,0); return; }
+  // During a replay too (2.1.4): their own rocket's explosion replayed here
+  // knocked their character down while they stood and fired (the host saw it
+  // lie 3-4 s, 55 of their shots refused in one window); only SyncKnockdown
+  // knocks it.
+  if(connected.load() && !knocking_avatar && AvatarSlotOf(uint32_t(api->get_r(c,3)))>=0) { api->set_r(c,3,0); return; }
   if(SharedPersonCall(0x824497F0,c)) return;
   const bool mine=uint32_t(api->get_r(c,3))==api->read_u32(0x8309ABEC) && connected.load() && !replicated_depth;
   if(mine) { LogLocalCall("knockdown",c); QueueCall(0x824497F0,c); ++actions_sent; }
@@ -1883,8 +1941,13 @@ void MeleeHitHook(WmlContext* c,uint8_t* b) {
 // and its hits already arrive as their own events.
 int fire_replay_depth=0;  // game thread: a shot of the other player is being replayed
 bool share_shooting=true; // mod.ini [settings] shooting = 0: their character gets no gun, their shots aren't replayed
+bool walk_as_player=true; // mod.ini [settings] walk = 0: other players' characters walk their path on move orders (82441670), as 2.1 did (DriveAsPlayer)
 bool share_police=true;   // mod.ini [settings] police = 0: no notoriety per player (no sync, crime credit, arrests or response steering across games; a client's police run near the host): as 2.0
 std::atomic<uint32_t> shots_sent{0}, shots_played{0}, shots_refused{0};
+// 2.1.4: why a shot of theirs last waited here (Remote::Shot::held), counted
+// when it is dropped after 750 ms ("refused here (lying ..." in the Shots line).
+enum : uint8_t { kHeldOther=0, kHeldLying, kHeldNotSetUp, kHeldOtherGun, kHeldNoAmmo, kHeldFireRefused, kHeldRaising, kHeldInCar, kHeldReasons };
+std::atomic<uint32_t> shots_held[kHeldReasons]{};
 // Epic link (1.71): the largest queue sizes the network thread saw since the
 // last Perf line (what waits to be sent / to be read), for the "Link:" line.
 std::atomic<uint32_t> link_out_bytes{0}, link_out_packets{0}, link_in_bytes{0}, link_in_packets{0};
@@ -2707,6 +2770,24 @@ uint32_t SeatedIn(uint32_t car_handle,uint32_t seat) {
   const uint32_t v=ResolveVehicle(car_handle);
   return v ? OccupantHandle(v,seat) : 0;
 }
+// A seat's occupant: the slot when it holds one, else the scan above (the
+// slots are empty for most AI crews: other players' bullets never reached
+// the host's own traffic crews through them, 2.1.4).
+uint32_t SeatOccupant(uint32_t v,uint32_t seat) { if(const uint32_t h=OccupantHandle(v,seat)) return h; return SeatedIn(api->read_u32(v+68),seat); }
+// The same, remembered per car and seat for 250 ms: a burst of hits on one
+// crew member scanned the 4096 slots once per hit (the hit lands on whoever
+// still sits there; nobody found stays nobody for the 250 ms).
+uint32_t SeatOccupantMemo(uint32_t v,uint32_t seat,uint64_t now) {
+  static std::unordered_map<uint64_t,uint32_t> memo; static uint64_t cleared=0;   // game thread
+  if(now-cleared>=250) { memo.clear(); cleared=now; }
+  const uint32_t car=api->read_u32(v+68);
+  const uint64_t key=uint64_t(car)<<2|seat;
+  if(const auto it=memo.find(key);it!=memo.end()) {
+    const uint32_t h=it->second, o=h ? ResolveHuman(h) : 0;
+    if(!h || (o && api->read_u32(o+2496)==car && api->read_u32(o+2500)==seat)) return h;
+  }
+  return memo[key]=SeatOccupant(v,seat);
+}
 std::vector<uint32_t> host_models; uint64_t host_models_time=0;
 bool pin_host_models=false;  // mod.ini preload_host_models: asking for models no copy here needs yet (new stream entries) came in with the joiner's freezes (1.11 on)  // joiner: people models the host's game has loaded (game thread)
 void OrderExitVehicle(GuestScratch& scratch,uint32_t human);
@@ -2723,6 +2804,55 @@ struct Snapshot { uint32_t time; float pos[3]; float rows[9]; };
 void Normalize(float* v) {
   const float n=std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
   if(n>1e-4f) for(unsigned i=0;i<3;++i) v[i]/=n;
+}
+bool Normalize2(float* v) { const float n=std::sqrt(v[0]*v[0]+v[1]*v[1]); if(n<=1e-4f) return false; v[0]/=n; v[1]/=n; return true; }
+
+// Moves another player's character the way the game moves its own player
+// (82168D60) and multiplayer's remote players (8237B7B8): the point to walk
+// to 5 m ahead in +464, state 1, and the player locomotion 8245FC08(human,
+// f1 side, f2 forward, r6 sprint, r7 standing) with the stick as the player
+// holds it, every update. The game picks walk, run, sprint, strafe, aim-walk
+// and the run turn-around from that and turns the body as the strafe needs
+// (state 1, 82460468). A move order (82441670; state 2 is "walking a path")
+// left the character sliding with its legs still while its player walked
+// with the gun up (the 2.1 tests' "floats" lines). The stick is the direction
+// of travel in the frame the player's own game uses: its camera's right and
+// forward rows, flat (+4124 / +4148 as WriteRemoteCamera sets them; the
+// character's own rows when no camera came), +3028 / +4424 forward and
+// +3032 / +4420 sideways as 82168D60 stores them. 8245FC08 takes walk up to
+// 0.81 (squared), run above, sprint by flag, and goes by the magnitude and
+// its reversals only: the direction is +464. After MoveHuman: its teleport
+// (8243E6F8) writes +464 too. gait 0 standing, 1 walk, 2 run, 3 sprint.
+// False when the state isn't its to drive (jump, climb, landing, car walk,
+// knocked down: 4-8 keep their own handling). last_dir: the way it last
+// moved (kept on the Follower), used while the path speed dips inside the
+// 150 ms stop debounce (the camera forward there stepped it forward at each
+// stop). stick: side, forward (log).
+bool DriveAsPlayer(GuestScratch& scratch,uint32_t obj,const float* path_pos,const float* rows,const float* vel,int gait,float* last_dir,float* stick) {
+  const uint32_t state=api->read_u32(obj+516);
+  if(state>2) return false;
+  ++replicated_depth;   // (none of it is the player's own: StateHook, PlayActionHook)
+  if(state==2) { scratch.ctx.r3.u64=obj; scratch.ctx.r4.u64=0; scratch.ctx.r5.u64=0; scratch.Call(0x82441308); }   // the game's own "cancel the move order" (frees its path)
+  float f[2]={api->read_f32(obj+4148),api->read_f32(obj+4156)}, r[2]={api->read_f32(obj+4124),api->read_f32(obj+4132)};
+  if(!Normalize2(f) || !Normalize2(r)) { f[0]=rows[6]; f[1]=rows[8]; r[0]=rows[0]; r[1]=rows[2]; Normalize2(f); Normalize2(r); }
+  float dir[2]={0,0}, fwd=0, side=0;
+  if(gait) {
+    dir[0]=vel[0]; dir[1]=vel[2];
+    if(Normalize2(dir)) { last_dir[0]=dir[0]; last_dir[1]=dir[1]; }
+    else if(last_dir[0]!=0.0f || last_dir[1]!=0.0f) { dir[0]=last_dir[0]; dir[1]=last_dir[1]; }
+    else { dir[0]=f[0]; dir[1]=f[1]; }
+    const float push=gait==1 ? 0.6f : 1.0f;
+    fwd=(dir[0]*f[0]+dir[1]*f[1])*push; side=(dir[0]*r[0]+dir[1]*r[1])*push;
+  }
+  api->write_f32(obj+464,path_pos[0]+dir[0]*5.0f); api->write_f32(obj+468,path_pos[1]); api->write_f32(obj+472,path_pos[2]+dir[1]*5.0f);
+  api->write_f32(obj+3028,fwd); api->write_f32(obj+4424,fwd); api->write_f32(obj+3032,side); api->write_f32(obj+4420,side);
+  if(api->read_u32(obj+516)==0) { scratch.ctx.r3.u64=obj; scratch.ctx.r4.u64=1; scratch.ctx.r5.u64=0; scratch.Call(0x82441308); }
+  scratch.ctx.r3.u64=obj; scratch.ctx.f1.f64=side; scratch.ctx.f2.f64=fwd;
+  scratch.ctx.r6.u64=gait==3 ? 1 : 0; scratch.ctx.r7.u64=gait ? 0 : 1;
+  scratch.Call(0x8245FC08);
+  --replicated_depth;
+  if(stick) { stick[0]=side; stick[1]=fwd; }
+  return true;
 }
 
 // How another player's character is moving right now (what its own
@@ -2758,7 +2888,10 @@ struct Follower {
   // when its own locomotion has not moved it from there (the first 2.1 test:
   // a character floated along its path for 3 s after its replayed exit).
   float left_pos[3]{}; uint64_t left_at=0, still_since=0, last_order=0, next_still_log=0;
-  void Reset() { count=0; offset=INT64_MAX; recent_count=0; recent_next=0; next_order=0; moving=false; left_at=0; still_since=0; last_order=0; if(base_delay>=0) delay=base_delay; }
+  // 2.1.4 diagnostic (walk = 1): updates in a row moved as a player, lines logged (10 per character made).
+  unsigned walk_updates=0, walk_logged=0;
+  float walk_dir[2]{};   // the way it last moved as a player (DriveAsPlayer's stop debounce)
+  void Reset() { count=0; offset=INT64_MAX; recent_count=0; recent_next=0; next_order=0; moving=false; left_at=0; still_since=0; last_order=0; walk_updates=0; walk_dir[0]=walk_dir[1]=0; if(base_delay>=0) delay=base_delay; }
 
   void Add(uint32_t time,const float* pos,const float* rows,uint64_t now) {
     if(base_delay<0) base_delay=delay;
@@ -2892,14 +3025,34 @@ struct Follower {
       if(moving) { moving=false; next_order=0; order_mode=0; }
       return true;
     }
-    if(speed>0.6f && !(av && now<av->action_until)) {
+    // The gait from the path speed, with hysteresis: keep the current one
+    // near its band edges so the walk cycle doesn't switch back and forth.
+    int gait=0;
+    if(speed>0.6f) {
+      gait=speed<2.2f ? 1 : speed<5.5f ? 2 : 3;
+      if(order_mode) {
+        const float lo=order_mode==1?0.0f:order_mode==2?2.2f:5.5f, hi=order_mode==1?2.2f:order_mode==2?5.5f:1e9f;
+        if(speed>lo-0.4f && speed<hi+0.4f) gait=order_mode;
+      }
+    }
+    // 2.1.4: another player's character is moved as a player (DriveAsPlayer,
+    // after MoveHuman below), not on move orders; the host's people copies
+    // keep theirs. Only a character from the player pool (IsPlayerObject,
+    // 22128 bytes): the stick block at +4420..+4448 that 8245FC08 and
+    // 82460468 read lies past the end of an NPC human (4252 bytes), so an
+    // NPC-class character shown for a player keeps the move orders. The stop
+    // waits 150 ms as the stop order did (1.62: a quick turn dips the path
+    // speed for a moment).
+    const bool as_player=is_avatar && walk_as_player && IsPlayerObject(obj);
+    if(as_player) {
+      if(gait) slow_since=0;
+      else if(moving) { if(!slow_since) slow_since=now; if(now-slow_since<150) gait=order_mode; else slow_since=0; }
+      order_mode=gait; moving=gait>0;
+      if(gait) last_order=now;   // (the "floats" line below keeps watching)
+    } else if(speed>0.6f && !(av && now<av->action_until)) {
       // Keep one steady order: re-aim only every 400 ms, or sooner when the
       // direction or gait changes, so the walk cycle doesn't stop and start.
-      int mode=speed<2.2f ? 1 : speed<5.5f ? 2 : 3;
-      if(order_mode) { // hysteresis: keep the current gait near its band edges
-        const float lo=order_mode==1?0.0f:order_mode==2?2.2f:5.5f, hi=order_mode==1?2.2f:order_mode==2?5.5f:1e9f;
-        if(speed>lo-0.4f && speed<hi+0.4f) mode=order_mode;
-      }
+      const int mode=gait;
       const float heading=std::atan2(vel[0],vel[2]);
       float turn=std::abs(heading-order_heading); if(turn>3.14159f) turn=6.28318f-turn;
       // (Over 25 m off: no route from there, MoveHuman below places it first.)
@@ -2957,6 +3110,23 @@ struct Follower {
     const bool find_node=now>=next_node;
     if(find_node) next_node=now+200;
     const bool moved=MoveHuman(scratch,obj,pos,matrix,velocity,find_node);
+    if(as_player) {
+      float stick[2]={0,0};
+      const bool driven=DriveAsPlayer(scratch,obj,path_pos,rows,vel,gait,walk_dir,stick);
+      // 2.1.4 diagnostic: the first updates after it starts moving this way -
+      // whether the walk / aim-walk layer (layer 0, +576 at +580 weight; the
+      // run turn-around 335/336 shows on layer 1, +764) gets going.
+      if(!gait) walk_updates=0;
+      else if(tag && (++walk_updates==1 || walk_updates==3 || walk_updates==10) && walk_logged<10) {
+        ++walk_logged;
+        char line[260];
+        std::snprintf(line,sizeof(line),"%s walks here (update %u): state %u/%u, mode %u, gait %u (%d asked), layer 0 action %d at %.2f, layer 1 %d, action %d, gun %s, stick %.2f/%.2f (band %+.0f deg), r3=%X%s",tag,walk_updates,
+                      api->read_u32(obj+516),api->read_u32(obj+520),api->read_u32(obj+508),api->read_u32(obj+512),gait,int32_t(api->read_u32(obj+576)),api->read_f32(obj+580),
+                      int32_t(api->read_u32(obj+764)),int32_t(api->read_u32(obj+756)),(api->read_u32(obj+216)&0x80000000u)?"up":"down",stick[0],stick[1],
+                      std::atan2(stick[0],stick[1])*57.2958f,scratch.ctx.r3.u32,driven?"":" (not driven: its state)");
+        ProbeLog(line);
+      }
+    }
     for(unsigned i=0;i<3;++i) left_pos[i]=api->read_f32(obj+20+i*4);
     left_at=now;
     return moved;
@@ -3029,7 +3199,7 @@ struct Remote {
   // Their shots, automatic-gun releases and throws, played in order; one the
   // character refuses (turning, falling, gun lowered...) is tried again for
   // up to 750 ms (R 5).
-  struct Shot { uint32_t kind=0, weapon=0; float hit[3]{}; bool has_hit=false; float strength=0; uint64_t at=0; };
+  struct Shot { uint32_t kind=0, weapon=0; float hit[3]{}; bool has_hit=false; float strength=0; uint64_t at=0; uint8_t held=kHeldOther; };   // held: why it last waited
   std::deque<Shot> shots;
   uint64_t next_raise=0;
   // Knocked down / ragdolled: their game decides (research S 2d); applied here.
@@ -3206,6 +3376,7 @@ void ShareCarLook(GuestScratch& scratch,uint32_t vehicle,uint64_t now) {
 // game's own cars took them away the moment they appeared. Handle -> made at.
 std::unordered_map<uint32_t,uint64_t> personal_cars;
 int making_car=0;   // inside co-op's own CreateVehicle (a copy, not this player's car)
+unsigned car_model_refs_taken=0, car_model_refs_total=0; uint32_t car_model_group=0;   // the copies' model references (log)
 uint32_t CreateVehicle(GuestScratch& scratch,int32_t type,const float* pos,const float* rows) {
   if(type<0 || uint32_t(type)>=api->read_u32(kVehicleInfoCount)) return 0;
   const uint32_t data=scratch.data(), p=data+1700, m=data+1716;
@@ -3230,6 +3401,13 @@ uint32_t CreateVehicle(GuestScratch& scratch,int32_t type,const float* pos,const
   scratch.ctx.r3.u64=kStreamTable+(id>>24)*204; scratch.ctx.r4.u64=id;
   scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=1;
   scratch.Call(0x8250C750);
+  // 2.1.4 measure (log only, the "Car models here" line): the game's own cars
+  // ask through 82532360(v, kind), which notes the kind at v+50304 for the
+  // destructor's release (825324D0 releases when it isn't -1); the network
+  // creator's direct call above leaves -1 there.
+  ++car_model_refs_taken; ++car_model_refs_total; car_model_group=id>>24;
+  { static unsigned logged=0;
+    if(logged++<3) { char line[140]; std::snprintf(line,sizeof(line),"Car copy %08X made: model %X, reference kind noted at +50304 = %d (-1: its destructor releases none)",handle,id,int32_t(api->read_u32(vehicle+50304))); ProbeLog(line); } }
   scratch.ctx.r3.u64=vehicle; scratch.ctx.r4.u64=p; scratch.ctx.r5.u64=m; scratch.ctx.r6.u64=0;
   scratch.Call(0x82535C68);
   return handle;
@@ -3469,6 +3647,7 @@ bool UpdateRemoteCar(GuestScratch& scratch,Remote& r,uint32_t avatar,const Playe
     if(!made) return avatar_in;
     CarCopy& c=car_copies[CarKey(owner,id)];
     c=CarCopy{}; c.local=made; c.type=p.vehicle; c.used=now;
+    ForgetCarDamage(made);
     car.enter_tries=0; car.next_enter=0;
     target=ResolveVehicle(made);
   }
@@ -3702,12 +3881,17 @@ std::atomic<uint32_t> throws_played{0}, releases_played{0}, knockdowns_synced{0}
 std::atomic<uint32_t> knockdowns_refused{0}, stranded_found{0}, stranded_recovered{0}, replayed_calls_dropped{0}, replayed_actions_dropped{0};
 // Their shots, automatic-gun releases and throws on their character, in
 // order (R 3.1-3.4). A shot the character refuses stays queued and is tried
-// again next update, for up to 750 ms (R 5).
+// again next update, for up to 750 ms (R 5). 2.1.4: each wait is noted on the
+// shot and the last reason counted when it is dropped (the second test refused
+// 9% of a player's shots, most while the character lay here).
 void TryRemoteShots(GuestScratch& scratch,Remote& r,uint32_t obj,uint64_t now) {
   for(unsigned n=0;n<4 && !r.shots.empty();++n) {
     Remote::Shot& s=r.shots.front();
-    if(now-s.at>750) { r.shots.pop_front(); ++shots_refused; continue; }
-    if(!(api->read_u32(obj+216)&0x4000) || api->read_u32(obj+780)) return;   // not set up, or lying down: later
+    if(now-s.at>750) { r.shots.pop_front(); ++shots_refused; ++shots_held[s.held]; continue; }
+    // (Seated, whatever refused the gun or the fire is put down to the car.)
+    auto held=[&](uint8_t why) { s.held=why>kHeldNotSetUp && ResolveVehicle(api->read_u32(obj+2496)) ? kHeldInCar : why; };
+    if(!(api->read_u32(obj+216)&0x4000)) { held(kHeldNotSetUp); return; }   // not set up: later
+    if(api->read_u32(obj+780) || api->read_u32(obj+516)==8) { held(kHeldLying); return; }   // lying, or getting up (state 8): later
     if(s.kind==kEventFireRelease) {
       // Trigger released: latch, loop sound stop and release sound (82474738,
       // 82476B70), trigger-held bit off.
@@ -3721,10 +3905,10 @@ void TryRemoteShots(GuestScratch& scratch,Remote& r,uint32_t obj,uint64_t now) {
       ++releases_played;
       r.shots.pop_front(); continue;
     }
-    if(!s.weapon || !MatchWeapon(scratch,obj,s.weapon,r.gun)) return;   // the gun first (tried again next update)
+    if(!s.weapon || !MatchWeapon(scratch,obj,s.weapon,r.gun)) { held(kHeldOtherGun); return; }   // the gun first (tried again next update)
     r.gun.hold_until=now+1500;   // the pose's gun lags behind the shot: it waits
     const uint32_t ammo=EquippedAmmo(obj);
-    if(!ammo) return;
+    if(!ammo) { held(kHeldNoAmmo); return; }
     // Never empty here: this game would reload or click (or, for a thrown
     // weapon, take the item away) on its own (R 5).
     if(int32_t(api->read_u32(ammo+16))<2) api->write_u32(ammo+16,2);
@@ -3767,11 +3951,11 @@ void TryRemoteShots(GuestScratch& scratch,Remote& r,uint32_t obj,uint64_t now) {
     --replicated_depth; --fire_replay_depth;
     if(api->read_u32(obj+212)&0x00080000u) {   // deferred (it was raising the gun): next update
       api->write_u32(obj+212,api->read_u32(obj+212)&~0x00080000u);
-      return;
+      held(kHeldRaising); return;
     }
     // Fired when the refire timer was re-armed or a round used (as FireHook).
     if(api->read_u32(ammo+24)!=t || api->read_u32(ammo+16)!=rounds) { ++shots_played; r.shots.pop_front(); continue; }
-    return;   // refused: next update (until 750 ms)
+    held(kHeldFireRefused); return;   // refused: next update (until 750 ms)
   }
 }
 // The get-up's two spots (+792 start, +808 end; +804 / +820 the object they
@@ -3853,7 +4037,7 @@ bool SyncKnockdown(GuestScratch& scratch,Remote& r,uint32_t obj,const PlayerPose
           // character seated by co-op may not have it: "knocked out in the car").
           if(ResolveVehicle(api->read_u32(obj+2496))) { scratch.ctx.r3.u64=obj; scratch.ctx.r4.u64=19; scratch.Call(0x8257C400); }
           scratch.ctx.r3.u64=obj; scratch.ctx.r4.u64=60000; scratch.ctx.r5.u64=0;
-          scratch.Call(0x824497F0);
+          ++knocking_avatar; scratch.Call(0x824497F0); --knocking_avatar;
           --replicated_depth;
         }
         // Lying if it took (every knockdown ends in 8/15, 82449974 / 82449AC0).
@@ -3923,7 +4107,7 @@ bool SyncKnockdown(GuestScratch& scratch,Remote& r,uint32_t obj,const PlayerPose
           r.next_getup=0;
           SetGetUpSpots(obj,p.pos,r.tag,"knocked again");
           scratch.ctx.r3.u64=obj; scratch.ctx.r4.u64=500; scratch.ctx.r5.u64=0;
-          ++replicated_depth; scratch.Call(0x824497F0); --replicated_depth;
+          ++replicated_depth; ++knocking_avatar; scratch.Call(0x824497F0); --knocking_avatar; --replicated_depth;
           ok=api->read_u32(obj+516)==8;
           if(ok) ++stranded_recovered;
         }
@@ -4067,6 +4251,133 @@ void ApplyProjectiles(GuestScratch& scratch,uint64_t now) {
     it=(now-it->second.made>60000 || !LiveProjectile(it->second.proj) || ProjHandle(it->second.proj)!=it->second.handle) ? proj_copies.erase(it) : std::next(it);
 }
 
+// ---- Other players on the maps (2.1.4) ----
+// An arrow per other player on the minimap and the pause map, drawn like the
+// player's own (map_blip, HUD item 0x83023660[9]) the way the minimap draws
+// homies (822E8FE8: heading from the forward row, a tint, 8227E720): after
+// the game's followers pass on the minimap, after the pause map's own drawing
+// (822B3F70, the MAP tab's view 0x8206169C). Where their character is while
+// it exists here, else their newest pose (far off, not made yet, hidden in a
+// cutscene, dead); a colour per slot; half alpha while they lie or are dead;
+// on the map's edge when off it. Their character's purple people dot
+// (822E8C78, the minimap's team-0 dot, icon [4] map_other_blip_revive) is
+// skipped. Nothing goes in the icon lists: no mission clears it, no icon slot
+// is used. The people, car and follower passes run from the HUD minimap
+// 822ECDB0 only, so the pause map never showed them (the host couldn't be
+// found there after a death).
+struct MapMarker { float pos[3]{}; float yaw=0; bool have=false, down=false, from_character=false; };
+std::array<MapMarker,kSlots> markers;    // UpdateAvatar writes, the HUD hooks read
+std::atomic<uint32_t> markers_minimap{0}, markers_minimap_edge{0}, markers_pausemap{0}, markers_pausemap_edge{0}, dots_skipped{0}, marker_calls_failed{0};   // (Markers line; failed: since the start)
+// Not the player's yellow (255,255,0), the homies' purple (160,0,255) or the enemies' red.
+constexpr uint8_t kSlotColours[kSlots][3]={{0,200,255},{0,230,80},{255,140,0},{255,100,180},{255,255,255},{0,160,160},{130,200,0},{255,200,120},{120,120,255},{200,160,100},{0,100,255},{180,255,220}};
+constexpr float kMapPi=3.14159265f;      // what the game adds to a map arrow's heading (0x820380B0)
+// Every update, with the pose just taken: where this slot's player is.
+void NoteMapMarker(const Remote& r,int slot,const PlayerPose& p) {
+  MapMarker& m=markers[slot];
+  const uint32_t obj=ResolveHuman(r.avatar);
+  if(obj) { for(unsigned i=0;i<3;++i) m.pos[i]=api->read_f32(obj+20+4*i); m.yaw=std::atan2(api->read_f32(obj+56),api->read_f32(obj+64)); }   // (8262EB58(obj+32): the forward row's x and z)
+  else { std::memcpy(m.pos,p.pos,sizeof(m.pos)); m.yaw=std::atan2(p.rows[6],p.rows[8]); }
+  m.down=(p.flags&(kPoseRagdoll|kPoseDead))!=0;
+  if(!m.have || m.from_character!=(obj!=0)) { static unsigned logged=0; if(logged++<40) { char line[160]; std::snprintf(line,sizeof(line),"Map marker: %s from %s at %.0f %.0f %.0f, yaw %.2f",r.tag,obj?"their character here":"their last pose",m.pos[0],m.pos[1],m.pos[2],m.yaw); ProbeLog(line); } }
+  m.from_character=obj!=0; m.have=true;
+}
+// Another player in the session with a position (not this game's own slot).
+bool MarkerShown(int slot) { return slot!=int(my_slot.load()) && Present(slot) && markers[slot].have; }
+bool AnyMarker() { for(int s=0;s<kSlots;++s) if(MarkerShown(s)) return true; return false; }
+inline float HudScale() { return std::max(api->read_f32(0x82FFB4EC),api->read_f32(0x82FFB4E8)); }   // the HUD scale the arrows are drawn with (both maps take the larger of the two)
+// The draw colour: 8263E7D8(r, g, b, a) - a slot's, or white again (what the
+// minimap's passes leave; 822ECDB0 sets its own before the player's arrow).
+void MarkerColour(GuestScratch& scratch,int slot,float alpha) {
+  const uint8_t* col=slot>=0 ? kSlotColours[slot] : nullptr;
+  const float a=std::clamp(alpha,0.0f,1.0f)*(col && markers[slot].down ? 128.0f : 255.0f);
+  scratch.ctx.r3.u64=col?col[0]:255; scratch.ctx.r4.u64=col?col[1]:255; scratch.ctx.r5.u64=col?col[2]:255; scratch.ctx.r6.u64=uint32_t(a);
+  scratch.Call(0x8263E7D8);
+}
+// One arrow: 8227E720(bitmap, f1 x, f2 y, f3 angle, f4 scale, r8 params), a
+// quad of the bitmap's size times scale, turned by angle around x, y.
+bool DrawMarker(GuestScratch& scratch,uint32_t bitmap,float x,float y,float angle,float scale,uint32_t params) {
+  scratch.ctx.r3.u64=bitmap; scratch.ctx.r8.u64=params;
+  scratch.ctx.f1.f64=x; scratch.ctx.f2.f64=y; scratch.ctx.f3.f64=angle; scratch.ctx.f4.f64=scale;
+  if(scratch.Call(0x8227E720)) return true;
+  if(marker_calls_failed++<3) ProbeLog("Map marker: the game's bitmap draw 8227E720 failed here");
+  return false;
+}
+WmlGuestFunction original_team0_dot=nullptr, original_followers=nullptr, original_pause_map=nullptr;
+// 822E8C78(pos = person+20, params): the minimap's purple dot of a team-0
+// person (from the people pass 822E8D00, which skips homies and people in
+// cars). Not for another player's character: its arrow stands there.
+void Team0DotHook(WmlContext* c,uint8_t* b) {
+  const uint32_t pos=uint32_t(api->get_r(c,3));
+  if(connected.load() && pos>=20 && AvatarSlotOf(pos-20)>=0) { ++dots_skipped; return; }
+  original_team0_dot(c,b);
+}
+// 822E8FE8(f1 alpha, r4 &params): the minimap's followers pass (story mode,
+// from 822ECDB0 with the MP byte clear; it returns inside when the player
+// has no homies). After it, the other players' arrows: 822E8A78(&xy, &aux,
+// pos, 0) projects a world position onto the minimap (a point past its radius
+// is put on the edge, and it says so), the arrow turned by their heading + pi
+// plus the map's turn *0x8370E438 while the map doesn't turn with the player
+// (byte 0x8370E407), at the player's own size (homies: 0.8 of it).
+void FollowersHook(WmlContext* c,uint8_t* b) {
+  // (read before the original: it runs on this context and leaves r4 / f1
+  // as it last wrote them - with a homie, a stack slot and 160.0)
+  const float alpha=float(api->get_f(c,1)); const uint32_t params=uint32_t(api->get_r(c,4));
+  original_followers(c,b);
+  if(!connected.load() || !AnyMarker()) return;
+  const uint32_t blip=api->read_u32(0x83023660+36);   // map_blip (24x24, hud_sheet_01)
+  const float ui=HudScale(), turn=api->read_u8(0x8370E407) ? 0.0f : api->read_f32(0x8370E438);
+  { static bool logged=false; if(!logged) { logged=true; char line[200]; std::snprintf(line,sizeof(line),"Map markers: map_blip bitmap %u (HUD item 9), HUD scale %.2f, the map turns with the player: %u, MP blip 108's bitmap %u (story HUD: none expected), params %08X",blip,ui,api->read_u8(0x8370E407),api->read_u32(0x83027258+4*108),params); ProbeLog(line); } }
+  GuestScratch scratch(c);
+  const uint32_t d=scratch.data(), xy=d, aux=d+16, pos=d+32;
+  for(int s=0;s<kSlots;++s) {
+    if(!MarkerShown(s)) continue;
+    const MapMarker& m=markers[s];
+    for(unsigned i=0;i<3;++i) api->write_f32(pos+4*i,m.pos[i]);
+    scratch.ctx.r3.u64=xy; scratch.ctx.r4.u64=aux; scratch.ctx.r5.u64=pos; scratch.ctx.r6.u64=0;
+    if(!scratch.Call(0x822E8A78)) { if(marker_calls_failed++<3) ProbeLog("Map marker: the minimap projection 822E8A78 failed here"); continue; }
+    if(scratch.ctx.r3.u32&0xFF) ++markers_minimap_edge;
+    MarkerColour(scratch,s,alpha);
+    if(DrawMarker(scratch,blip,api->read_f32(xy),api->read_f32(xy+4),m.yaw+kMapPi+turn,ui,params)) ++markers_minimap;
+  }
+  MarkerColour(scratch,-1,alpha);
+}
+// 822B3F70(view, -, &top-left, &bottom-right, f1 alpha): the pause map's
+// drawing - the map, the icon lists (822EDC50), the route, the player's
+// arrow. After it, the other players' arrows with its own transform (the icon
+// pass's and the arrow's, block 0x8370DD60: px = +1072 + +1080*zoom +
+// (+1104 - x)*zoom, py = +1076 + +1084*zoom + (z - +1108)*zoom, zoom
+// *0x827AF7B4; the page's x runs against the world's), its arrow bitmap
+// 0x8300FC78[0] at HUD scale * (clamped zoom *0x827AF7A8 * 0.333 + 0.667),
+// turned by their heading + pi (the player's own turns with the camera), kept
+// on the page by hand: the game's scissor is back to the whole screen when it
+// returns.
+void PauseMapHook(WmlContext* c,uint8_t* b) {
+  // (read before the original: its last call is the scissor reset
+  // 8263E210(0,0,w,h), which leaves r5 / r6 as the screen size)
+  const float alpha=float(api->get_f(c,1));
+  const uint32_t tl=uint32_t(api->get_r(c,5)), br=uint32_t(api->get_r(c,6));
+  original_pause_map(c,b);
+  if(!connected.load() || api->read_u8(0x8370E9F6) || !AnyMarker()) return;
+  if(!Readable(tl,8) || !Readable(br,8)) return;
+  constexpr uint32_t t=0x8370DD60;
+  const float zoom=api->read_f32(0x827AF7B4), ox=api->read_f32(t+1072)+api->read_f32(t+1080)*zoom, oy=api->read_f32(t+1076)+api->read_f32(t+1084)*zoom, cx=api->read_f32(t+1104), cz=api->read_f32(t+1108);
+  const float scale=HudScale()*(api->read_f32(0x827AF7A8)*api->read_f32(0x82089440)+api->read_f32(0x8208943C)), half=16.0f*scale;
+  const float x0=api->read_f32(tl)+half, y0=api->read_f32(tl+4)+half, x1=api->read_f32(br)-half, y1=api->read_f32(br+4)-half;
+  if(!(x0<x1) || !(y0<y1)) return;   // (no page)
+  const uint32_t arrow=api->read_u32(0x8300FC78);
+  { static bool logged=false; if(!logged) { logged=true; char line[240]; std::snprintf(line,sizeof(line),"Map markers: pause-map arrow bitmap %u (0x8300FC78[0]), zoom %.2f (clamped %.2f, arrow scale %.2f), origin %.0f %.0f, centre %.0f %.0f, page %.0f %.0f - %.0f %.0f",arrow,zoom,api->read_f32(0x827AF7A8),scale,ox,oy,cx,cz,api->read_f32(tl),api->read_f32(tl+4),api->read_f32(br),api->read_f32(br+4)); ProbeLog(line); } }
+  GuestScratch scratch(c);
+  for(int s=0;s<kSlots;++s) {
+    if(!MarkerShown(s)) continue;
+    const MapMarker& m=markers[s];
+    const float px=ox+(cx-m.pos[0])*zoom, py=oy+(m.pos[2]-cz)*zoom, x=std::clamp(px,x0,x1), y=std::clamp(py,y0,y1);
+    if(x!=px || y!=py) ++markers_pausemap_edge;
+    MarkerColour(scratch,s,alpha);
+    if(DrawMarker(scratch,arrow,x,y,m.yaw+kMapPi,scale,0x82839AA0)) ++markers_pausemap;
+  }
+  MarkerColour(scratch,-1,alpha);
+}
+
 // Making a character (a blocking body-model load the first time, the player
 // object) and its first dressing (waits for the clothes to load) are slow:
 // one of them per 300 ms for all other players together, so joining a full
@@ -4083,6 +4394,7 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
   }
   if(!p.sequence) return;
   if(fresh) r.seen=now;
+  NoteMapMarker(r,slot,p);   // (their arrow on the maps, from here on whatever happens below)
   if(now-r.seen>3000 && !HostPauseHold(now)) { if(r.avatar) DestroyAvatar(scratch,r); return; }
   // No other player's character during a cutscene here, and for 2 s after:
   // both games play it with their own player on the same spot, so the
@@ -4163,6 +4475,7 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
     heavy_avatar_until=MonoMs()+300;
     if(!obj) { r.avatar=0; r.player_obj=false; return; }
     made_now=true;
+    r.follow.walk_logged=0;   // (its "walks here" lines: 10 per character made)
     r.next_item_check=0; r.applied_worn.clear(); r.dress_step=0;
     // Get-up spots where it stands (SetGetUpSpots); down at once if they lie.
     SetGetUpSpots(obj,p.pos,r.tag,"made");
@@ -4404,7 +4717,7 @@ void UpdateAvatar(GuestScratch& scratch,Remote& r,int slot,uint64_t now,bool clo
     ++replicated_depth; scratch.Call(0x82449708); --replicated_depth;
   }
   // Knocked down there: down here (nothing moves or seats it meanwhile).
-  if(SyncKnockdown(scratch,r,obj,p,now)) { r.on_foot=false; r.follow.Reset(); return; }
+  if(SyncKnockdown(scratch,r,obj,p,now)) { for(auto& s:r.shots) s.held=kHeldLying; r.on_foot=false; r.follow.Reset(); return; }   // (its shots wait: lying)
   TryRemoteShots(scratch,r,obj,now);
   // Stuck in a car they left (see UpdateRemoteCar): made again.
   if(r.force_remake) {
@@ -4454,6 +4767,7 @@ void UpdateAvatars(GuestScratch& scratch,uint64_t now) {
     uint32_t generation;
     { std::lock_guard lock(pose_mutex); generation=remote_in[s].generation; }
     if(!present || r.generation!=generation) {
+      markers[s].have=false;   // (no arrow on the maps)
       // They left (or someone new has the slot): their character goes first.
       if(r.avatar) {
         DestroyAvatar(scratch,r);
@@ -4537,7 +4851,7 @@ void ApplyEvents(GuestScratch& scratch,uint64_t now) {
         shot.has_hit=std::isfinite(shot.hit[0]) && std::isfinite(shot.hit[1]) && std::isfinite(shot.hit[2]);
       }
       if(e.kind==kEventThrow) shot.strength=std::isfinite(e.f) && e.f>0.0f && e.f<1000.0f ? e.f : 1.0f;
-      if(r.shots.size()<64) r.shots.push_back(shot); else ++shots_refused;
+      if(r.shots.size()<64) r.shots.push_back(shot); else { ++shots_refused; ++shots_held[kHeldOther]; }
       continue;
     }
     if(e.kind==kEventEnterCar || e.kind==kEventExitCar) {
@@ -4582,10 +4896,20 @@ void ApplyEvents(GuestScratch& scratch,uint64_t now) {
         if(!hosting.load() || !IsSentPed(e.a[0])) continue;
         victim=ResolveHuman(e.a[0]); attacker=avatar;
       } else if(e.kind==kEventCrewDamage) {   // host: a client hit a crew member of our traffic, named by its seat in our car (2.1.1)
-        if(!hosting.load() || !IsSentCar(e.a[0])) continue;
-        const uint32_t crew_car=FindCar(0,e.a[0]);
-        victim=crew_car ? ResolveHuman(OccupantHandle(crew_car,(e.a[7]>>16)&3)) : 0; attacker=avatar;
-        if(!victim || victim==player || AvatarSlotOf(victim)>=0) continue;   // (empty now, or a player sits there)
+        if(!hosting.load()) continue;
+        const uint32_t crew_car=IsSentCar(e.a[0]) ? FindCar(0,e.a[0]) : 0, seat=(e.a[7]>>16)&3;
+        if(!crew_car) { ++crew_hits_nocar; continue; }
+        // 2.1.4: who sits there by their own +2496/+2500 (SeatOccupant), as
+        // CaptureTraffic names them: the car's seat slots are empty for most
+        // AI crews, so every one of these hits was dropped here (352 in a test).
+        victim=ResolveHuman(SeatOccupantMemo(crew_car,seat,now)); attacker=avatar;
+        if(!victim) {
+          ++crew_hits_empty;
+          static unsigned logged=0;
+          if(logged++<20) { char line[160]; std::snprintf(line,sizeof(line),"%s hit the crew in seat %u of car %08X: no one in that seat here (slot %08X)",r.tag,seat,e.a[0],api->read_u32(crew_car+52320+seat*108)); ProbeLog(line); }
+          continue;
+        }
+        if(victim==player || AvatarSlotOf(victim)>=0) { ++crew_hits_player; continue; }   // (a player sits there: their own hit path)
       } else {                        // client: one of the host's people hit us
         if(hosting.load() || !from_host || !Readable(player,4488)) continue;
         victim=player; attacker=ResolveHuman(SharedPedLocalHandle(e.a[0]));
@@ -4775,7 +5099,10 @@ void ApplyEvents(GuestScratch& scratch,uint64_t now) {
         // and the drop: not an end then.)
         const bool normal=(e.a[1]==0) || (e.a[1]==1 && !m.climbing) || (e.a[1]==6 && e.a[2]==0xE);
         if(!(e.a[1]==1 && m.climbing)) {
-          m.action_until=now+(normal ? 120 : 3000);
+          // (2.1.4: no 120 ms hold for the owner's own 82441308(0/1, 0) on a
+          // character moved as a player: it is in state 1 by itself and the
+          // hold only skipped DriveAsPlayer for 120 ms at each of them)
+          if(!(normal && walk_as_player && IsPlayerObject(avatar))) m.action_until=now+(normal ? 120 : 3000);
           if(normal) m.reorder=true;
           m.climbing=e.a[1]==5;
         }
@@ -5369,7 +5696,7 @@ void CaptureTraffic(GuestScratch& scratch,uint32_t player,uint64_t now) {
   if(hosting.load() && share_police) {
     std::vector<uint32_t> units, cars;
     OwnResponseUnits(&units,&cars);
-    for(uint32_t h:units) if(const uint32_t o=ResolveHuman(h)) if(const uint32_t v=ResolveVehicle(api->read_u32(o+2496))) if(OccupantHandle(v,0)==h) cars.push_back(api->read_u32(v+68));
+    for(uint32_t h:units) if(const uint32_t o=ResolveHuman(h)) if(const uint32_t v=ResolveVehicle(api->read_u32(o+2496))) if(api->read_u32(o+2500)==0 || OccupantHandle(v,0)==h) cars.push_back(api->read_u32(v+68));   // (its own seat +2500: the slots are empty for most AI crews)
     for(uint32_t handle:cars) {
       if(handle==own || players_car(handle) || found_ids.count(handle)) continue;
       const uint32_t v=ResolveVehicle(handle);
@@ -5481,6 +5808,7 @@ unsigned shared_snaps=0, shared_made=0, shared_removed=0, own_removed=0, gone_co
 
 extern int mod_destroying;
 void DestroyObject(GuestScratch& scratch,uint32_t handle) {
+  ReleaseActorModel(scratch,handle);   // (a character's model reference; nothing for a car)
   scratch.ctx.r3.u64=handle;
   ++mod_destroying; scratch.Call(0x823ACF50); --mod_destroying;
 }
@@ -5633,14 +5961,18 @@ void VehicleRemoveHook(WmlContext* c,uint8_t* b) {
 // global exemption let the whole explosion's area pass hurt every copy here
 // (chain wrecks the owners never saw).
 uint32_t applying_vehicle=0;
-unsigned car_hp_applied=0, car_smoke_failed=0, car_wrecks_applied=0, car_wrecks_quiet=0;
-unsigned car_wreck_nophys=0, car_wreck_nodef=0, car_wrecks_refused=0;   // wreck replays put off (tries)
+unsigned car_hp_applied=0, car_smoke_failed=0, car_wrecks_applied=0, car_wrecks_quiet=0, car_wrecks_waited=0;
+unsigned car_wreck_nophys=0, car_wreck_nodef=0, car_wrecks_refused=0;   // wreck replays put off (tries without physics)
 // Per car another game drives here (by handle): when that game's damage was
 // last applied (fed: its hit points are that game's, CarHpHook), when it was
 // last shown intact (its wreck explodes here only right after), when smoke
-// and fire may be tried again, and the tries of its wreck.
-struct CarSeen { uint64_t fed=0, intact=0, next_smoke=0, next_wreck=0; unsigned wreck_tries=0; };
+// and fire may be tried again, the tries of its wreck, and its tries without
+// physics here (4 counted, then it waits quietly for the physics).
+struct CarSeen { uint64_t fed=0, intact=0, next_smoke=0, next_wreck=0; unsigned wreck_tries=0, nophys=0; };
 std::unordered_map<uint32_t,CarSeen> car_seen;   // game thread
+void ForgetCarDamage(uint32_t handle) { car_seen.erase(handle); }   // a copy made again starts over
+// Copies wrecked in their owner's game that still wait for their physics here (the Car damage line).
+unsigned CarsWaitingForPhysics() { unsigned n=0; for(auto& [h,s]:car_seen) if(s.nophys>=4) if(const uint32_t v=ResolveVehicle(h)) if(!(api->read_u32(v+53976)&0x80000000u)) ++n; return n; }
 bool DrivenFromOtherGame(uint32_t vehicle);
 // A copy here of another game's car (its owner's game has the real one): a
 // copy of another player's car, or on a client a copy of the host's traffic
@@ -5658,7 +5990,7 @@ void ApplyCarDamage(GuestScratch& scratch,uint32_t vehicle,uint8_t want,uint8_t 
   CarSeen& s=car_seen[handle];
   s.fed=now;
   if(!(want&4)) {
-    s.intact=now; s.wreck_tries=0; s.next_wreck=0;
+    s.intact=now; s.wreck_tries=0; s.nophys=0; s.next_wreck=0;
     // Hit points: written to the main record (+53504: +4 most, +8 left),
     // never down to 0 (the burn tick or pending damage would then run the
     // destroy 8252BF38 here: explosion, cash, script callbacks).
@@ -5704,7 +6036,15 @@ void ApplyCarDamage(GuestScratch& scratch,uint32_t vehicle,uint8_t want,uint8_t 
     // without physics until long after the wreck) is wrecked without the
     // explosion (ExplosionHook): it blew up each time it was made, or late
     // next to the player.
-    if(api->read_u8(vehicle+50300)!=1) { ++car_wreck_nophys; return; }   // (82542650 does nothing then)
+    // Without its physics set up (+50300: far off or parked) 82542650 returns
+    // at once (its first test), as the game's own MP client 8238BDE0 lets it.
+    // 2.1.4: 4 tries (1 s) are counted, then the copy waits quietly (no call,
+    // no count: 48-154 counted tries per 10 s all through the second test)
+    // and is wrecked without the explosion as soon as its physics is set up.
+    if(api->read_u8(vehicle+50300)!=1) {
+      if(s.nophys<4) { ++car_wreck_nophys; ++s.nophys; }
+      return;
+    }
     const uint32_t info=api->read_u32(vehicle+50324);
     const uint32_t def=Readable(info,876) ? api->read_u32(info+872) : 0;
     if(!def) {
@@ -5721,7 +6061,7 @@ void ApplyCarDamage(GuestScratch& scratch,uint32_t vehicle,uint8_t want,uint8_t 
     }
     scratch.ctx.r3.u64=handle; scratch.ctx.r4.u64=0; scratch.ctx.r5.u64=0;
     scratch.Call(0x8253CD70);
-    const bool quiet=!s.intact || now-s.intact>1500;
+    const bool waited=s.nophys>=4, quiet=waited || !s.intact || now-s.intact>1500;
     // 82542650 also throws the car up after the explosion (a random lift on
     // its body, vtable +100), whatever the explosion did: a quiet wreck keeps
     // the motion it had.
@@ -5734,9 +6074,10 @@ void ApplyCarDamage(GuestScratch& scratch,uint32_t vehicle,uint8_t want,uint8_t 
     quiet_wreck=0;
     if(vel && VehicleVelocityAddress(vehicle)==vel) for(unsigned i=0;i<3;++i) { api->write_f32(vel+i*4,motion[i]); api->write_f32(vel+16+i*4,motion[3+i]); }
     if(!(api->read_u32(vehicle+53976)&0x80000000u)) { ++car_wrecks_refused; s.next_wreck=now+(++s.wreck_tries<3 ? 1000 : 30000); return; }
-    ++car_wrecks_applied; if(quiet) ++car_wrecks_quiet;
+    ++car_wrecks_applied; if(quiet) ++car_wrecks_quiet; if(waited) ++car_wrecks_waited;
     static unsigned logged=0;
-    if(logged++<20) ProbeLog(quiet?"Car wrecked in the other game before it was shown here (or replayed late): wrecked here without an explosion":"Car wrecked in the other game: wrecked here too");
+    if(logged++<20) ProbeLog(waited?"Car wrecked in the other game while its copy here had no physics: wrecked here without an explosion now that it has":
+                             quiet?"Car wrecked in the other game before it was shown here (or replayed late): wrecked here without an explosion":"Car wrecked in the other game: wrecked here too");
     return;
   }
   // One of this game's own cars another player drives: the full destroy
@@ -6119,6 +6460,7 @@ void UpdateSharedTraffic(GuestScratch& scratch,uint32_t player,uint64_t now) {
       s.car=CreateVehicle(scratch,c.type,c.pos,c.rows);
       if(!s.car) continue;
       s.made_at=now;
+      ForgetCarDamage(s.car);
       if(const uint32_t v=ResolveVehicle(s.car)) {
         if(VehicleType(v)!=c.type) ++car_type_mismatch;
         // Ask for its model at the top priority (people's models waited
@@ -7623,6 +7965,12 @@ template<class F> void EachVehicle(F&& f) {
     f(cur);
   }
 }
+// A helicopter after a handle: its AI block +54840 in mode (+684) 2, the
+// pursuit (8259DCC8 / 825A0560), or 1, over the target (825A0F18 from the
+// pursuit update 8259DD80; it keeps +160), with +160 the handle. 825A3000's
+// mode 4 (target gone, or called off) leaves +160 as it was (2.1.4: the
+// Police line counted mode 2 alone, 0 helicopters while four attacked).
+bool HeliAfter(uint32_t v,uint32_t handle) { const uint32_t m=api->read_u32(v+54840+684); return (m==1 || m==2) && api->read_u32(v+54840+160)==handle; }
 // 821D1A20's car pass for a character's handle: every car after it (modes 4 /
 // 10 / 11 of +50376 with +50468 the handle, mode 3 with +51324), driven by the
 // team (-1: any), is called off as the game calls off the player's at level 0;
@@ -7637,7 +7985,7 @@ void CallOffPursuit(GuestScratch& scratch,uint32_t handle,int32_t team,const cha
     if((api->read_u32(v+120)&0xD8000000u) || (api->read_u8(v+50300)==1 && int32_t(api->read_u32(v+46448))<=0)) return;
     const uint32_t info=api->read_u32(v+50324);
     if(Readable(info,288) && api->read_u32(info+284)==6) {   // the helicopter: its own AI at +54840 (8259DCC8)
-      if((team<0 || team==5) && api->read_u32(v+54840+684)==2 && api->read_u32(v+54840+160)==handle) { scratch.ctx.r3.u64=v; scratch.Call(0x825A3000); ++helis; }
+      if((team<0 || team==5) && HeliAfter(v,handle)) { scratch.ctx.r3.u64=v; scratch.Call(0x825A3000); ++helis; }
       return;
     }
     if(team>=0) {
@@ -7660,13 +8008,13 @@ void CallOffPursuit(GuestScratch& scratch,uint32_t handle,int32_t team,const cha
     ProbeLog(line);
   }
 }
-// The cars after a handle now (modes 4 / 10 / 11, +50468) and the helicopters (+54840: +684 == 2, +160), for the Police line.
+// The cars after a handle now (modes 4 / 10 / 11 of +50376 with +50468 the handle: 825A91A0 stores 4, 17 and +92) and the helicopters (HeliAfter), for the Police line.
 void CarsAfter(uint32_t handle,unsigned& cars,unsigned& helis) {
   cars=helis=0;
   EachVehicle([&](uint32_t v) {
     const uint32_t mode=api->read_u32(v+50376), info=api->read_u32(v+50324);
-    if((mode==4 || mode==10 || mode==11) && api->read_u32(v+50468)==handle) ++cars;
-    else if(api->read_u32(v+54840+684)==2 && api->read_u32(v+54840+160)==handle && Readable(info,288) && api->read_u32(info+284)==6) ++helis;
+    if(Readable(info,288) && api->read_u32(info+284)==6) { if(HeliAfter(v,handle)) ++helis; }
+    else if((mode==4 || mode==10 || mode==11) && api->read_u32(v+50468)==handle) ++cars;
   });
 }
 // The target's character goes (DestroyAvatar: before its release): the response after it is called off, this player is the target again.
@@ -8022,9 +8370,53 @@ void ClearUnusedModelRefs(GuestScratch& scratch) {
   }
   for(uint32_t id:clear) {
     model_pins.erase(id);
+    // (the characters' references went with the request: a later release
+    // would hit the next request made for the id)
+    for(auto it=actor_models.begin();it!=actor_models.end();) it=it->second.id==id ? actor_models.erase(it) : std::next(it);
     scratch.ctx.r3.u64=group; scratch.ctx.r4.u64=id; scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=1;
     scratch.Call(0x8250CA48);
     ++stale_models_cleared;
+  }
+}
+// 2.1.4 guard, every 10 s: a model's references of kind 5 (entry+64) against
+// what holds them here - its wearers (one per character made here, the
+// local player's own) and its pin (PinModel, one). More is a reference
+// nobody gives back (the leak ReleaseActorModel closes, or a path it
+// misses): logged and let go, one release each. The players' own models are
+// left alone (the game's own kind-5 references on them: 8247DDF0).
+unsigned model_refs_excess=0;
+void ModelRefGuard(GuestScratch& scratch) {
+  const uint32_t group=kStreamTable;
+  if(!Readable(group,204) || (api->read_u8(group+200)&0x20)) return;
+  const uint32_t player=api->read_u32(0x8309ABEC);
+  std::unordered_map<uint32_t,unsigned> wearers; std::vector<uint32_t> own;
+  for(uint32_t index=0;index<4096;++index) {
+    const uint32_t h=TableObject(index,1,4252);
+    if(!h) continue;
+    const uint32_t desc=api->read_u32(h+228);
+    if(!Readable(desc,612)) continue;
+    const uint32_t id=api->read_u32(desc+608);
+    ++wearers[id];
+    if(h==player || AvatarSlotOf(h)>=0) own.push_back(id);
+  }
+  if(wearers.empty()) return;   // table not readable: leave everything alone
+  std::vector<std::pair<uint32_t,unsigned>> excess;
+  const uint32_t head=api->read_u32(group+48);
+  unsigned guard=0;
+  for(uint32_t e=head;e && Readable(e,72) && guard++<256;) {
+    const uint32_t id=api->read_u32(e+4), kind5=api->read_u32(e+64);
+    const auto w=wearers.find(id); const auto p=model_pins.find(id);
+    const unsigned held=(w!=wearers.end() ? w->second : 0)+(p!=model_pins.end() && p->second.level>0 ? 1 : 0);
+    if(kind5>held && kind5<0x10000 && held && std::find(own.begin(),own.end(),id)==own.end()) excess.push_back({id,kind5-held});
+    e=api->read_u32(e+28); if(e==head) break;
+  }
+  for(auto [id,n]:excess) {
+    static unsigned logged=0;
+    // (logged only this build: a reference the game itself holds on a model
+    // only copies wear - a script's preload - would be let go too, and its
+    // own release later would take the request below zero: immortal)
+    if(logged++<20) { char line[160]; std::snprintf(line,sizeof(line),"Model %X: %u references of kind 5 more than its wearers and pin here",id,n); ProbeLog(line); }
+    (void)scratch; model_refs_excess+=n;
   }
 }
 // A model loaded here that the host's game doesn't have loaded is used by no
@@ -8044,10 +8436,20 @@ void LogPeopleSlots(const char* tag) {
   std::string l=tag; char t[64];
   for(uint32_t i=0;i<count;++i) {
     const uint32_t sl=slots+i*56;
-    std::snprintf(t,sizeof(t)," [%u:%X %X %X %X %X]",api->read_u32(sl+36),api->read_u32(sl+0),api->read_u32(sl+4),api->read_u32(sl+8),api->read_u32(sl+12),api->read_u32(sl+16));
+    std::snprintf(t,sizeof(t)," [%u:%X %X %X %X %X L%u]",api->read_u32(sl+36),api->read_u32(sl+0),api->read_u32(sl+4),api->read_u32(sl+8),api->read_u32(sl+12),api->read_u32(sl+16),api->read_u32(sl+32));
     l+=t;
   }
   ProbeLog(l.c_str());
+  // 2.1.4: the slots' levels (L, slot+32) and the per-level slot quota
+  // (0x827ACFFC, 14 words, group 0; 8241BD40 recomputes it from the kind-5
+  // requests per level, 8241CA80 copies it into the group): the pass
+  // 8250D3E0(group, level) pairs a level's requests only with that level's
+  // slots, and co-op asks at the top level (PinModel) - the "8 loaded" plateau.
+  if(Readable(0x827ACFFC,56)) {
+    std::string q="  slot quota per level 827ACFFC:";
+    for(unsigned i=0;i<14;++i) { std::snprintf(t,sizeof(t)," %u",api->read_u32(0x827ACFFC+i*4)); q+=t; }
+    ProbeLog(q.c_str());
+  }
 }
 // Slots still holding a model nothing uses (+0 entry 0, state 0: kept as a
 // cache). The game only reuses one for the same model, so 4 of the 12 slots
@@ -8453,6 +8855,7 @@ void UpdateSharedPeds(GuestScratch& scratch,uint32_t player,uint64_t now) {
           scratch.ctx.r3.u64=kStreamTable+(id>>24)*204; scratch.ctx.r4.u64=id;
           scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=1;
           scratch.Call(0x8250C750);
+          actor_models.erase(sp.handle); NoteActorModel(sp.handle,id);   // (the first reference went with the dropped request)
           ++streams_rerequested;
         }
       }
@@ -8600,13 +9003,15 @@ void UpdateSharedPeds(GuestScratch& scratch,uint32_t player,uint64_t now) {
   }
   if(now>=next_log) {
     next_log=now+10000;
-    char line[400];
+    char line[480];
     {
       const uint32_t group=kStreamTable;
       unsigned loaded=0, waiting=0, guard=0;
       if(Readable(group,204)) { const uint32_t head=api->read_u32(group+48);
         for(uint32_t e=head;e && Readable(e,72) && guard++<256;) { if(api->read_u32(e)) ++loaded; else ++waiting; e=api->read_u32(e+28); if(e==head) break; } }
-      std::snprintf(line,sizeof(line),"People models here: %u loaded, %u waiting for room; %u unused models let go, %u not in the host's set made room, %u stuck slots freed",loaded,waiting,stale_models_cleared,models_evicted,slots_freed); ProbeLog(line); stale_models_cleared=0; models_evicted=0; slots_freed=0;
+      ModelRefGuard(scratch);
+      std::snprintf(line,sizeof(line),"People models here: %u loaded, %u waiting for room; %u unused models let go, %u not in the host's set made room, %u stuck slots freed; %u characters' references given back (%u for characters the game removed), %u over their wearers (seen, not let go this build)",
+                    loaded,waiting,stale_models_cleared,models_evicted,slots_freed,actor_refs_released,actor_refs_swept,model_refs_excess); ProbeLog(line); stale_models_cleared=0; models_evicted=0; slots_freed=0; actor_refs_released=actor_refs_swept=model_refs_excess=0;
       { std::string l="  loaded:", w="  waiting:", h="  host has:"; char t[16];
         if(Readable(group,204)) { const uint32_t head=api->read_u32(group+48); unsigned g2=0;
           for(uint32_t e=head;e && Readable(e,72) && g2++<256;) { unsigned refs=0; for(unsigned k=0;k<7;++k) refs+=api->read_u32(e+44+k*4);
@@ -8802,7 +9207,7 @@ void UpdateHook(WmlContext* raw,uint8_t* base) {
   if(now-window>=10000) {
     if(running.load()) {
       const double seconds=(now-window)/1000.0;
-      char line[560];
+      char line[640];
       std::snprintf(line,sizeof(line),"Perf: %.0f updates/s, mod %.2f ms/s (worst %.2f ms), packets in %.0f/s out %.0f/s, actors %u, person actions sent %u, joiner hits applied %u, people's hits on joiner %u, knockdowns/reactions sent %u played %u, car hits sent %u applied %u, own climbs of the other player blocked %u",
                     calls/seconds,busy_ms/seconds,worst_ms,packets_in.exchange(0)/seconds,packets_out.exchange(0)/seconds,
                     unsigned(avatar_count.load()+(replica_local?1:0)+(test_local?1:0)),ped_actions_sent.exchange(0),
@@ -8820,8 +9225,12 @@ void UpdateHook(WmlContext* raw,uint8_t* base) {
                     events_dropped.exchange(0),mem_os_checks.exchange(0)/seconds,qws_off.load()?" (QueryWorkingSetEx off)":"");
       ProbeLog(line);
       if(shots_sent.load() || shots_played.load() || shots_refused.load()) {
-        std::snprintf(line,sizeof(line),"Shots: %u sent, %u of other players' played here, %u refused here; throws %u, trigger releases %u played here",
-                      shots_sent.exchange(0),shots_played.exchange(0),shots_refused.exchange(0),throws_played.exchange(0),releases_played.exchange(0));
+        // (Refused: why each waited last; "other" was never tried - the
+        // character not updated or not made, or its queue full.)
+        std::snprintf(line,sizeof(line),"Shots: %u sent, %u of other players' played here, %u refused here (lying %u, not set up %u, other gun %u, no ammo %u, fire refused %u, gun raising %u, in a car %u, other %u); throws %u, trigger releases %u played here",
+                      shots_sent.exchange(0),shots_played.exchange(0),shots_refused.exchange(0),shots_held[kHeldLying].exchange(0),shots_held[kHeldNotSetUp].exchange(0),
+                      shots_held[kHeldOtherGun].exchange(0),shots_held[kHeldNoAmmo].exchange(0),shots_held[kHeldFireRefused].exchange(0),shots_held[kHeldRaising].exchange(0),
+                      shots_held[kHeldInCar].exchange(0),shots_held[kHeldOther].exchange(0),throws_played.exchange(0),releases_played.exchange(0));
         ProbeLog(line);
       }
       if(projs_sent.load() || projs_copied.load() || projs_refused.load() || booms_sent.load() || booms_played.load()) {
@@ -8866,11 +9275,12 @@ void UpdateHook(WmlContext* raw,uint8_t* base) {
         crimes_sent=crimes_received=crimes_dropped=crimes_refused=crimes_lost=crimes_witnessed=crimes_marked=seen_sent=seen_taken=busted_sent=busted_applied=busted_refused=forgivings=stops_told=decays_skipped=0;
         response_rings=response_steered=response_called_off=response_helis_off=response_changes=response_offroad=0;
       }
-      if(copy_shots_blocked || copy_hits_zeroed || teams_written || crew_actions_blocked || crew_exits || crew_exits_refused || crew_hits_sent || crew_hits_applied.load() || !crews_out.empty()) {
+      if(copy_shots_blocked || copy_hits_zeroed || teams_written || crew_actions_blocked || crew_exits || crew_exits_refused || crew_hits_sent || crew_hits_applied.load() || crew_hits_empty || crew_hits_nocar || crew_hits_player || !crews_out.empty()) {
         std::snprintf(line,sizeof(line),"Copies of the host's people and traffic crews: %u own shots dropped (%u from a seat), %u of their own hits on this player zeroed, %u set to the host's team; "
-                      "crews: %u own actions refused, %u own exits let through (asker logged), %u got out for this player's pull-outs, %u seen out of their seat, %u of this player's hits on them sent to the host, %u of other players' hits on them applied here",
-                      copy_shots_blocked,copy_shots_seated,copy_hits_zeroed,teams_written,crew_actions_blocked,crew_exits_refused,crew_exits,unsigned(crews_out.size()),crew_hits_sent,crew_hits_applied.exchange(0));
-        ProbeLog(line); copy_shots_blocked=copy_shots_seated=copy_hits_zeroed=teams_written=crew_actions_blocked=crew_exits=crew_exits_refused=crew_hits_sent=0; crews_out.clear();
+                      "crews: %u own actions refused, %u own exits let through (asker logged), %u got out for this player's pull-outs, %u seen out of their seat, %u of this player's hits on them sent to the host, %u of other players' hits on them applied here "
+                      "(%u found no one in that seat here, %u no such car here, %u a player in that seat)",
+                      copy_shots_blocked,copy_shots_seated,copy_hits_zeroed,teams_written,crew_actions_blocked,crew_exits_refused,crew_exits,unsigned(crews_out.size()),crew_hits_sent,crew_hits_applied.exchange(0),crew_hits_empty,crew_hits_nocar,crew_hits_player);
+        ProbeLog(line); copy_shots_blocked=copy_shots_seated=copy_hits_zeroed=teams_written=crew_actions_blocked=crew_exits=crew_exits_refused=crew_hits_sent=crew_hits_empty=crew_hits_nocar=crew_hits_player=0; crews_out.clear();
       }
       if(knockdowns_synced.load() || getups_synced.load() || knockdowns_refused.load() || stranded_found.load() || stranded_recovered.load() || getup_spots_moved.load() ||
          replayed_calls_dropped.load() || replayed_actions_dropped.load() || !ejection_cars_skipped.empty()) {
@@ -8883,17 +9293,38 @@ void UpdateHook(WmlContext* raw,uint8_t* base) {
       ejection_cars_skipped.clear();
       // 2.1: car damage on every game (it was only in the client's shared
       // traffic line, and its skipped count was a running total).
+      const unsigned cars_waiting=CarsWaitingForPhysics();   // (now, not this window's arrivals)
       if(car_damage_applied || car_smoke_failed || car_hp_applied || car_wrecks_applied || car_sirens_applied || detonations_window ||
-         car_hp_blocked || car_pushes_blocked || own_cars_wrecked || their_cars_wrecked || car_wreck_nophys || car_wreck_nodef || car_wrecks_refused) {
-        char cars[768];
-        std::snprintf(cars,sizeof(cars),"Car damage: %u smoke/fire changes applied (%u refused), %u hit point changes, %u wrecks replayed (%u without the explosion; put off: %u tries without physics here, %u without an explosion, %u refused), %u siren/siren light changes; "
+         car_hp_blocked || car_pushes_blocked || own_cars_wrecked || their_cars_wrecked || car_wreck_nophys || car_wreck_nodef || car_wrecks_refused || cars_waiting) {
+        char cars[896];
+        std::snprintf(cars,sizeof(cars),"Car damage: %u smoke/fire changes applied (%u refused), %u hit point changes, %u wrecks replayed (%u without the explosion, %u of them after waiting for physics here; put off: %u tries without physics here, %u cars waiting for it now, %u without an explosion, %u refused), %u siren/siren light changes; "
                       "on cars other games drive, skipped here: %u local explosions/hits (%s), %u hit point losses (%s), %u explosion pushes, %u wrecked here anyway; own cars wrecked %u",
-                      car_damage_applied,car_smoke_failed,car_hp_applied,car_wrecks_applied,car_wrecks_quiet,car_wreck_nophys,car_wreck_nodef,car_wrecks_refused,car_sirens_applied,
+                      car_damage_applied,car_smoke_failed,car_hp_applied,car_wrecks_applied,car_wrecks_quiet,car_wrecks_waited,car_wreck_nophys,cars_waiting,car_wreck_nodef,car_wrecks_refused,car_sirens_applied,
                       detonations_window,TopCallers(detonate_callers,true).c_str(),car_hp_blocked,TopCallers(car_hp_callers,false).c_str(),car_pushes_blocked,their_cars_wrecked,own_cars_wrecked);
         ProbeLog(cars);
-        car_damage_applied=car_smoke_failed=car_hp_applied=car_wrecks_applied=car_wrecks_quiet=car_sirens_applied=0;
+        car_damage_applied=car_smoke_failed=car_hp_applied=car_wrecks_applied=car_wrecks_quiet=car_wrecks_waited=car_sirens_applied=0;
         car_wreck_nophys=car_wreck_nodef=car_wrecks_refused=0;
         detonations_window=car_hp_blocked=car_pushes_blocked=their_cars_wrecked=own_cars_wrecked=0;
+      }
+      // 2.1.4 measure (log only): the car copies' model references, taken
+      // like the people's (CreateVehicle: 8250C750, kind 5) - the vehicle
+      // group's kind-5 count against the copies here says whether they come
+      // back (the destructor 825324D0 releases only a kind noted at v+50304).
+      if(car_model_refs_taken || car_model_refs_total) {
+        unsigned entries=0, loaded=0, kind5=0, copies=unsigned(car_copies.size());
+        for(auto& [cid,sc]:shared_cars) if(sc.car) ++copies;
+        const uint32_t group=kStreamTable+car_model_group*204;
+        if(car_model_group<64 && Readable(group,204)) { const uint32_t head=api->read_u32(group+48); unsigned guard=0;
+          for(uint32_t e=head;e && Readable(e,72) && guard++<4096;) { ++entries; if(api->read_u32(e)) ++loaded; kind5+=api->read_u32(e+64); e=api->read_u32(e+28); if(e==head) break; } }
+        std::snprintf(line,sizeof(line),"Car models here: %u references taken by copies made this window (%u since the start), group %u now %u entries (%u loaded) with %u references of kind 5, %u car copies here",
+                      car_model_refs_taken,car_model_refs_total,car_model_group,entries,loaded,kind5,copies);
+        ProbeLog(line); car_model_refs_taken=0;
+      }
+      // 2.1.4: the other players' arrows on the maps (FollowersHook, PauseMapHook, Team0DotHook).
+      if(markers_minimap.load() || markers_pausemap.load() || dots_skipped.load() || marker_calls_failed.load()) {
+        std::snprintf(line,sizeof(line),"Markers: other players' arrows drawn %u on the minimap (%u of them at its edge), %u on the pause map (%u at its edge); %u purple dots of their characters skipped; %u draw calls failed since the start",
+                      markers_minimap.exchange(0),markers_minimap_edge.exchange(0),markers_pausemap.exchange(0),markers_pausemap_edge.exchange(0),dots_skipped.exchange(0),marker_calls_failed.load());
+        ProbeLog(line);
       }
 #ifdef WHOMPAYS_EOS
       if(const int kind=eos::link_kind.load()) {
@@ -9281,10 +9712,18 @@ void HelpHook(WmlContext* c,uint8_t* b) {
 }
 void MissionEndHook(WmlContext* c,uint8_t* b) {
   if(connected.load() && hosting.load() && share_missions) {
-    HudEvent e; e.kind=kHudMissionEnd; e.a[0]=uint32_t(api->get_r(c,3));
-    e.length=ReadWide(uint32_t(api->get_r(c,4)),e.text,300);
-    QueueHud(e);
-    char line[80]; std::snprintf(line,sizeof(line),"Mission ended here (%s)",e.a[0]?"passed":"failed"); ProbeLog(line);
+    // Only with a mission running (82215360's own first test, 0x82B3106C):
+    // the player's death calls it "failed" in free roam too, and every death
+    // of the host showed "Host's mission failed" on the clients (2.1.4).
+    if(MissionActive()) {
+      HudEvent e; e.kind=kHudMissionEnd; e.a[0]=uint32_t(api->get_r(c,3));
+      e.length=ReadWide(uint32_t(api->get_r(c,4)),e.text,300);
+      QueueHud(e);
+      char line[80]; std::snprintf(line,sizeof(line),"Mission ended here (%s)",e.a[0]?"passed":"failed"); ProbeLog(line);
+    } else {
+      static unsigned logged=0;
+      if(logged++<20) ProbeLog("Mission end message not forwarded: no mission (the host died)");
+    }
   } else if(HoldLocalHud()) { ProbeLog("This game's own mission end held back: the host's mission decides"); return; }
   original_mission_end(c,b);
 }
@@ -9922,6 +10361,7 @@ if(connected.load()) {
   { PERF_SECTION("shared traffic"); if(!hosting.load()) UpdateSharedTraffic(scratch,player,now); }
   mod_stage.store("shared people");
   { PERF_SECTION("shared people"); if(!hosting.load()) { UpdateSharedPeds(scratch,player,now); UpdatePedEffects(scratch,now); } }
+  SweepActorModels(scratch,now);   // (characters the game removed give their model reference back, 2.1.4)
   RemoveOwnResponse(scratch,player);   // (once, as the host's world comes)
   mod_stage.store("events");
   { PERF_SECTION("replica"); if(connected.load() && !hosting.load()) UpdateReplica(scratch,now); }
@@ -10821,6 +11261,7 @@ bool StartSession(bool host, bool online = false) {
   ResetHostWorldIn();
   { std::lock_guard lock(event_mutex); events_in.clear(); events_out.clear(); proj_in.clear(); proj_out.clear(); }
   npc_follow.Reset(); npc_pending_look.clear();
+  actor_models.clear();   // (the last session's copies went with their references; a stale release would take one off a live request)
   WSADATA wsa{};
   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
     SetStatus("Winsock startup failed.");
@@ -11068,6 +11509,7 @@ extern "C" WML_EXPORT int wml_mod_init(const WmlApi* loader, const WmlMod* mod) 
     use_player_avatar=_stricmp(value,"npc")!=0;
     forward_damage=GetPrivateProfileIntA("settings","damage_forward",0,(std::string(self->folder)+"\\mod.ini").c_str())!=0;
     share_shooting=GetPrivateProfileIntA("settings","shooting",1,(std::string(self->folder)+"\\mod.ini").c_str())!=0;
+    walk_as_player=GetPrivateProfileIntA("settings","walk",1,(std::string(self->folder)+"\\mod.ini").c_str())!=0;
     share_police=GetPrivateProfileIntA("settings","police",1,(std::string(self->folder)+"\\mod.ini").c_str())!=0;
     sync_body=GetPrivateProfileIntA("settings","body",0,(std::string(self->folder)+"\\mod.ini").c_str())!=0;
     body_test=GetPrivateProfileIntA("settings","body_test",0,(std::string(self->folder)+"\\mod.ini").c_str())!=0;
@@ -11107,7 +11549,7 @@ extern "C" WML_EXPORT int wml_mod_init(const WmlApi* loader, const WmlMod* mod) 
     people_memory_scale=std::clamp<unsigned>(GetPrivateProfileIntA("settings","people_memory",1,ini.c_str()),1,4);
   }
   api->hook(0x8250EEF8,StreamSetupHook,&original_stream_setup);
-  ProbeLog("Whompays Coop 2.1.3 (co-op v2, docs/COOP_V2.md): 2.1.3: traffic crew copies' own exit requests go through again (2.1.2 refused them; the first asker seen was the game's own character removal 824789A8, which takes a human out of its car before it goes - refused, a deleted character stayed in the seat); 2.1.2 (protocol 5): a client's crimes are judged by the host's cops - the game credits an unseen crime a quarter of its points (its detection test 821D1F98, run as the record is applied: a living cop within 40 m in front of it, 8 m around it, or 40 m of its car, through walls; the first 2.1 test's client got no stars that way), so the host runs that test on another player's character when it forwards a crime and sends the record's witnessed flag set when it holds, tells each client whether a cop sees its character (kEventSeen, on change and once a second), and the client queues the crimes it credits itself (hits, carjacks) witnessed while that holds; a police car taken by another player's character counts in their own game, as a carjack does (82482400's record here is dropped: forwarded, one act counted twice); a copy carries no team, so the thief's own game never counts it) and so is a cop's police or gang alert at their character (820DB9D0, flag set); \"crime detection\" lines (seen or not, the nearest of the team) and the Police line's witnessed counts; 2.1.1 (from the first 2.1 test, protocol 4): a car a cheat, mod menu or script makes for a client stays (the removal of this game's own cars while the host's world is shown took it away at once: 82569700 with source 7 or 3 is this player's own, source 2/4/5/6/9 the game's spawners); a client's hits on the host's traffic crews go to the host (kEventCrewDamage: car id and seat) instead of killing the copy here only (the corpse was removed again and again) - cops in cars can be hurt and their kills credited; crew copies no longer get out of their cars on their own here (their exit requests are refused; a pull-out by this player goes through); another player's character gets up where that player stands when its ragdoll here ended elsewhere (a car hit sent the copy 42 m away: the get-up spots +792/+808 are set to their position); the Police line shows the police points; 2.1: notoriety per player - each player's stars are their own game's, every game's police and gangs go after the wanted player's character (its level is written on it there), a player's crimes seen in another game are credited to their own game (kills, government cars, a cop seeing their gun; not their hits and carjacks, which their own game counts), only the player the cops arrest is busted, and the host's police response - its cars, helicopter and the gangs' cars - comes for the wanted player in the host's world (the highest level within 200 m of the host; its units and cars go to the clients with the people and traffic) instead of the host (mod.ini police = 0 turns it all off: as 2.0, the host's stars rise for the crimes seen in its game and a client's own police run near the host too); car damage comes from the game that drives the car - hit points, smoke, fire and wrecks (2.0 took the fade-out before a car is removed for its wreck: intact cars blew up on the other games, real wrecks only lost their smoke there); copies are wrecked with the game's multiplayer wreck replay and take no hit point losses, explosion pushes or chain wrecks of their own; the host's people and traffic crews shown on a client wear the host's teams (minimap marks), don't shoot or hurt that player on their own and play only the host's actions (crews also their car moves), and the client's own police response and roadblocks stay off while its character stands in the host's game (made within 60 m of the host, removed past 130 m; what the response had out then is removed; beyond, its own come back); other players' knockdowns and get-ups show where they happen (2.0 replayed their get-up states on a character still lying here, which stood it up at the map's origin and back - the ~700 m jump - or left it lying for good): nothing of theirs is replayed while they lie, their character's get-up spots are set before each knockdown, one left ragdolled is knocked again so it can get up; the map menu closes on a client again (the pause menu's context 823494D0 gets the multiplayer answer over a running world); the police lights and siren of a car another game drives show on its copy; protocol 3 (2.0 can't join); 2.0: up to 12 players in one session (the host relays; messages carry the sender's slot, events are acked and resent instead of sent three times), one character, clothes, gun and car record per other player, cars named by their owner's slot so any player can drive or ride in any other player's car, the host shares its traffic and people around every client; built in from Co-op Car Guard 0.5: memory checks skip QueryWorkingSetEx under Wine and keep VirtualQuery answers per region (mod.ini memory_speedup); fixed: car smoke and fire were applied the wrong way round; the local player is put back when the game takes another player's character for it (the 1.34 check never matched); 1.71: online link - the outgoing Epic queue is capped at 64 KB (it was unlimited, so what the link couldn't carry waited in line and arrived later and later: shots 20-30 s late in the 1.69 test), and each Perf block has a \"Link:\" line (direct or through Epic's relay servers, the largest queue sizes, packets refused by the full queue); 1.70:no crash when the other player's character is made again (after a death or out of range) - its guns are holstered and removed before it goes back to the player pool, and a pool object starts with no equipped item (1.69: a C++ exception in 8247E248 right after the PC player died, the Mac's character held a grenade); thrown weapons aren't handed over; 1.69:replayed shots of single-shot guns (Magnum, shotguns) are no longer refused after the first - the trigger latch (ammo +12 bit 0x80, set by each shot, cleared by the shooter's trigger release) is cleared before each replay; 1.68:the other player's gun is given the way the game's multiplayer arms a remote player (823AA218): with the 76-byte item table entry the weapon info's +32 points to, after the item in that weapon's slot (823F79F0) is reused or removed (1.66/1.67 gave the weapon info itself: a broken item that never went into the hand, and the host froze in the world update soon after); 1.67:no freeze from the other player's gun - the pose's gun is read the way the fire function reads it (item +16 ammo, +8 info: 1.66's pose said no gun while the shots said TEC-9), and the character's gun changes only once the poses agree for 400 ms (1.5 s to holster), not while a shot holds it, using a gun it already carries (1.66 gave and holstered every frame and the host froze in the projectile/item update); \"Our gun in hand\" lines; 1.66:shooting shows in the other game - the gun in each player's hand goes with the pose and each shot is replayed on their character there the way the game's multiplayer replays a remote player's shot (muzzle flash, sound, recoil, tracers; bullet guns only), hurting no one there since the hits already come across (\"Shots:\" line); 1.65:scans of the object table check each object's type on one page before its full size, and readable pages are remembered 4096 at a time instead of 32 (the host's car scan grew from 40 to 150 ms/s over a 6 minute session: lag); 1.64: a car is no longer removed while its list of people getting in or out names someone who belongs to another car or none (the joiner froze for good while shared traffic removed a car copy; logged as \"Car removal:\"; mod.ini debug_cars = 1 checks those lists all the time, \"Car list check:\"); 1.63: the other player's character never removes someone sitting in the seat it wants (takes a free seat; Troy was removed), the host's strongholds / missions the joiner's save hasn't opened start on the joiner too, only timed mission help reaches the joiner (no \"Kick the door open\"), the joiner pauses only for the host's pause menu, a mission end that wasn't running here shows as a message, shared cars and people removed a few at a time (freeze on disconnect), no seat retries far from the player; 1.62: parked cars of the other game placed only when they move (were placed every update), the other player\'s walk re-aimed sooner on quick turns and no stop-glide on turns; 1.61: the host\'s pause pauses the joiner\'s game for real (world stopped, the joiner\'s own pause menu can always be closed), the host\'s car scan no longer runs every frame (most of the host\'s mod time: desync); 1.60: section timing in the Perf lines; 1.59: chat (T in the game, WCH1 packets); 1.58: reserved names (Whompay) only with the owner key; 1.57: co-op messages (hosting, join code, joined, left, ended, errors) in the game's own help box and the join code under Pause > Options instead of the F6 box (F6 is a debug view now); 1.56: no crash on hosting / joining online (the game's System Link over Epic and co-op online no longer run two Epic sessions in one game), Host / Join / End Co-op in the game's menus; 1.49 (1.45 + one change): story characters are never sent as pedestrians (Johnny Gat, Dex, Julius and Troy came back at the church stairs on the joiner after the end prompt); 1.45: the host sends only people within 100 m of itself, pedestrians too (a finished mission\'s gang members, turned into pedestrians, T-posed on the joiner after the host was moved to the next mission), every cutscene character of this game\'s own left standing is removed (Julius stayed on the stairs), list of who stands near the joiner after a mission in its log; 1.44: hit reactions of the host\'s people are played the same on both screens, and the joiner\'s punches make them flinch on the host too (combat reactions only on one side); this game\'s own story characters left standing after a mission cutscene (Johnny Gat, Dex, Julius, gang members, T-posing) are removed at once; 1.43: people models the host\'s people wear here keep their top priority (in fights one pushed the other out: people blinking; mod.ini keep_worn_models); 1.42: copies of the host\'s people wearing their real model are no longer removed to make room (people going invisible and back again and again); 1.41: the other player\'s character is made again when it stays stuck off their path (lay flat behind them for a whole mission after being knocked down just before a cutscene), the host sends only mission characters within 100 m of itself (the finished mission\'s people at the old spot showed on the joiner for ~10 s after the host was moved to the next mission); 1.40: the host no longer sends mission characters its own game has hidden (a finished mission\'s people, and the next mission\'s made ahead, showed up only on the joiner after the mission-passed prompts); 1.39 taken back; 1.38: this game\'s own cutscene characters still standing after a cutscene are hidden (Johnny Gat and others on the stairs at the next mission), and removed when their models keep the host\'s people from loading; all generic gang members and police count as this game\'s own extras (xx_X_*); 1.37: this game\'s own generic mission characters are removed after 1 s when their model isn\'t the host\'s, and whenever they keep the host\'s models from loading (people invisible in missions), everything the joiner\'s mission left behind is removed for 8 s after it ends (mission people staying after the end); 1.36: after a cutscene the host\'s people are shown only once the host sends them again (a finished mission\'s enemies came back for a moment); 1.35: this game\'s own mission characters are removed when the host\'s mission is over here (the finished mission\'s enemies came back), the other player\'s character is put back at once when something here throws it far off (vanished after a hit); 1.34: the local player is put back when the game takes the other player\'s character for it after a cutscene (both saw only the other one and couldn\'t move), player diagnostics after cutscenes; 1.33: this game's pedestrian spawning is turned off again when a mission turns it back on (people popping in and out, their models kept the host's from loading), the host's people are kept through cutscenes and made up to 8 at a time (one by one after a cutscene), no falling over again and again when standing on a hidden character; 1.32: the arrows over the people a mission wants attacked are shown on the joiner too (the host's in-game effects on its shared people); 1.31: this game's own hidden mission characters are removed when their models keep the host's people's models from loading (people invisible in fights); 1.30: stand-ins use models the host has loaded (models only the joiner had kept the host's people from loading: invisible people), a single far-off position of the other player is ignored (vanishing for a moment after being hit), colours set before the clothes go on and clothes put on again when colours arrive later (hair colour); 1.29: the host's people are hidden during cutscenes instead of removed and made again afterwards (people flashing in, T-poses, wrong models after cutscenes); 1.28: a mission the host starts right after passing one brings the joiner over again (1.27 left them behind), the joiner is no longer moved away from the host every time they come close in a fight (only when standing inside each other for 3 s); 1.27: the host's mission no longer counts as ended during the moment between its stages (the joiner restarted it: mission people flickered, the last cutscene wasn't played); 1.26: no freeze when the host skips the last cutscene of a mission (the joiner's cutscene is ended before the mission end, not after); 1.25: body slider check (what arrives from the other player, whether the game baked it into their model, re-applied if something resets it); 1.24: body sliders applied as the game does (only the wanted value; the game bakes the change into the character's own body model), 1.23: memory for the other player's body model (the game's player-body stream group had none in single player, so it never loaded), key 5 spawns the copy again at once; 1.22: the other player's own body model is loaded the way the game loads the player's (1.21 never got it: shared body, host turned muscular); with the shared body nothing of theirs is applied; 1.21: the other player gets their own body model (multiplayer's StyleTest_PC_MP slots, mod.ini own_body) and their body sliders (mod.ini body) - no more both players turning skinny or muscular; 1.20: the other player's skin tone and hair colour (the game's colour choices) are sent and applied, body-shape diagnostic on the player copy (mod.ini body_test); 1.19: the joiner's game can no longer remove copies after 2 s of asking (they were remade: people changing model and clothes, vanishing and coming back); 1.18: new copies hidden until the host's clothes are on (a hat came and went), people standing still get no walk orders (stood up and sat down on a bench again and again); 1.17: models kept in memory that nothing uses are unloaded with the game's own unload while the host's models wait (1.15/1.16 freed their slots by hand: 5 fps), models asked for at the top level again, freeze reports say what the mod was doing; 1.16: the host's models are no longer asked for ahead on the joiner (the joiner's freezes started with that in 1.11; mod.ini preload_host_models); 1.15: people-model slots left full after a model was let go are freed (the joiner held 8 models, the host 11: people missing); 1.14: a person's walk/idle style is set once per change of the host's (no switching between two, e.g. cane and wheelchair), model memory of both games in the logs; 1.13: models loaded here that the host doesn't have make room for the host's people's models (people missing on the joiner); starting the host's people's ongoing actions is off (it started a newspaper only the joiner saw; mod.ini sync_idle), people-model lists of both games in the joiner's log; 1.12: what the host's people are doing (newspaper, tying shoes, cane walks) is started on their copies, people in cars are removed with their car again (the joiner's game froze); 1.11: the joiner loads the people models the host has loaded (same people sooner, fewer lookalikes), no more wrong position when thrown about (other player invisible after jumping out of a car); 1.10: this game no longer removes copies of the host's people, drivers and passengers by itself (people popping in and out; mod.ini keep_copies); 1.09: copies of people are made as scripted characters, which this game doesn't remove on its own (mod.ini copy_kind, 3 = as before); 1.08: getting in as a passenger walks to the door and climbs in (was put straight in the seat); copies waiting for their model (behind a stand-in) and traffic drivers and passengers are no longer removed as this game's own people (popping in and out); 1.07: people models no character uses any more are let go (removed copies kept them: models filled up, people popped in and out on the joiner); 1.06: people-model memory back to normal (twice the memory crashed in the player creator), models no longer needed let go after 4 s instead of 30 s so the host's current people get the room (NPCs in cars), loaded/waiting people models in the log; 1.05: twice the memory for people models (mod.ini people_memory); 1.04: more people models is off by default (people_models = 3 froze the game when entering the world; freeze report written when on); 1.03: room for more people models (mod.ini people_models); 1.02: the pulled-out driver carries on here (gets up) instead of a new standing copy, crash and freeze reports next to the log; 1.01: no endless driver re-making when a seat is refused (the joiner\'s game froze), a pulled-out driver is thrown out with the same exit as in the other game; 1.00: the other player\'s character gets out of its car before it is removed (crash when they time out or leave range while seated), a car stays put while the other player pulls its driver out; 0.99: getting in where the other player drives goes straight to the passenger seat (same seats on both screens), a pulled-out driver\'s copy is removed once out (no duplicate); 0.98: passers-by wait for their real model again (no switching or wrong people), the other player is never taken out of a car their game still has them in (no gliding without a car), car models of the other player\'s car asked for at top priority; 0.97: getting in as the other player\'s passenger finishes (seated directly if it stalls), a pulled-out driver plays the being-pulled-out move on both screens before stepping out, stand-ins are always the same sex; 0.96: no car removed when a driver is pulled out, drivers, passengers and passers-by whose model won't load here get a lookalike (no invisible people), getting in where the other player drives falls back to the usual way when the passenger seat is refused; 0.95: a driver the other player pulls out is pulled out here with the game's own move, whoever got in first keeps the wheel (no two drivers in one seat); 0.94: a driver the other player pulls out is found and gets out here too (no player sitting on top of it); 0.93: players never pull each other out of a seat, no jump to the passenger seat while still getting in, traffic drivers and passengers found by where people sit (NPCs in cars shown), car doors open and close on both screens; 0.92: getting in where the other player drives asks for the passenger seat (no pulling them out), drivers' and passengers' models asked for at top priority, animations played with their blend values, their car found when the host gets in one the joiner took; 0.91: the other player's getting in shows their own moves (door, pulling the driver out, climbing in) and seats them when they sit; 0.90: taking a car with a driver: the driver gets out on both screens, then the player gets in; getting in with the other player driving walks to the passenger door; up to 104 cars shared, parked ones up to 200 m; 0.89: the other player's jumps, climbs and punches start where their character is shown (held back by the follow delay); 0.88: the other player's getting in carries on at the door (door and climb-in play), a car of this game the other player drives up in is shown again; 0.87: passengers of shared cars shown, F9 trace logs getting-in progress; 0.86: the other player is seated at once if their car drives off before getting in finishes here; 0.85: the other player's getting in is no longer cancelled right after it starts; 0.84: getting in and out of cars plays the walk, door and seat on both screens (no exit on entering), the other player no longer climbs twice, wrecked cars blow up once; 0.83: F9 trace of climbing and getting in and out of cars; 0.82: car damage (smoke, fire, wrecks) from the game driving the car, no local explosions of the other game's cars, no create-remove loop for cars; 0.81: car hits no longer applied twice (cars flying off), getting in with the car state not interrupted; 0.80: getting in and out of cars (and pulling drivers out) with the player's own moves, no stuck prompts; 0.79: car hits happen on both screens, climbs keep going through their middle step and retry refused moves, pause menu no longer stuck after the host pauses, F6 always closes the overlay; 0.78: parked cars shared too (the joiner's own go), up to 52 cars, car models asked for at top priority, animated getting in; 0.77: a car a player takes stays the same car on both screens (no vanishing, no second car), climbs play out and hand back on landing; 0.76: no drivers left sitting in thin air, people fight the other player too, the other player gets in cars (and pulls drivers out) with the animation, passers-by take the joiner's punches; 0.75: own pedestrian spawner off and its model memory freed for the host's models, climbs and jumps not cut short; 0.74: people models asked for at top priority, own people removed before they show, climbing and other movement states shared, gang stand-ins for gang members; 0.73: knockdowns and hit reactions of people shared, no random models for passers-by, other player visible further away, movement recovers after jumps; 0.72: other player and copies never fight, crouch or run off on their own AI; crouching shared; 0.71: copies whose model never loads here are remade with a loaded one (no invisible people, no full pool); 0.70: people copy the host's animation sets and only do what the host's do, stand-ins while a model loads, steadier player following, joiner held while the host's game is paused by a prompt; 0.69: joiner's mission intro confirmed at once (no reset of synced characters), up to 96 people shared; 0.68: punched pedestrians stay shared, stuck copies named in the log; 0.67: the host's mission end reaches the joiner (rewards), no walking on the spot, wider takeover; 0.66: the host's mission drives the joiner's (cutscenes, character groups, teleports); 0.65: joiner's own mission characters hidden at once and harmless; 0.64: copies still loading take over the joiner's own mission characters when they appear; 0.63: the joiner's own mission characters follow the host's (no empty cutscenes, attackers shown); 0.62: the joiner's game doesn't pause the world, mission cutscenes from its own mission; 0.61: joiner runs the host's mission with the host's HUD, characters and ending; 0.60: other player's clothing in its own memory (torso/legs, garbled textures), hidden (not removed) during cutscenes; 0.58: other player dressed again when re-created (missing torso/legs), no falling over on top of other characters (breakdancing), joiner starts next to the host; 0.57: F9 rebuilds the other player's look (no crash), F8 compares with own player; players never stand inside each other (host got stuck), only the host skips cutscenes; host keeps working after the mission cutscene, no doubled people in cutscenes, overlay closes when connected; shared cutscenes (host skip skips both), joiner placed next to the host after them, other player keeps clothes on mission start; host pause freezes the joiner, no crash after mission cutscenes; smoother people (20 Hz, buffered, per-frame), no freeze after cutscenes, no false deaths; joiner hits and host enemies count across, deaths shared, mission markers hidden for the joiner, clothing kept after cutscenes; mission detection, F7 people dump, time of day from the host; missions follow the host; car colours; shared pedestrians with appearance and actions; per-frame player smoothing; shared traffic, shared cars (driver in charge, passengers), fresh character after leaving range");
+  ProbeLog("Whompays Coop 2.1.4 (co-op v2, docs/COOP_V2.md): 2.1.4: other players as arrows on the minimap and the pause map, in a colour per player, where they are or were last seen (their character's purple dot is gone; the pause map showed nobody); other players' characters are moved the way the game moves its own player and multiplayer's remote players - a stick input every update (8245FC08, the point to walk to 5 m ahead in +464, state 1) instead of move orders along their path (82441670; state 2 is \"walking a path\": with the gun up the character slid with its legs still while its player walked and fired, the 2.1 tests' \"floats\" lines) - so they walk, run, strafe, back-pedal and aim-walk with their legs (mod.ini walk = 0: move orders as 2.1; \"walks here\" lines show the animation layer at the first steps); every character made here (copies, stand-ins, traffic crews) gives its model's streaming reference back when it goes - nothing in the game did (BF 1 -> 139 in 12 min: dead models' requests evicted the slots live copies wore), a 10 s guard logs any excess and the slot dump shows each slot's level and the per-level quota; a client's hits on the host's traffic crews land (the seat by the crew's own +2496/+2500: the car's seat slots are empty for most AI crews); the host's mission-end message goes out only with a mission running; helicopters over the target are counted and called off; only the sync knocks another player's character down - a replay here (the host replaying that player's own rocket's explosion) knocked it down while its player stood and fired there (55 of their shots refused in the second test); the Shots line counts the refused shots by reason (lying, not set up, other gun, no ammo, fire refused, gun raising, in a car); a wreck replayed on a copy without its physics set up (far off, parked) waits quietly for it (4 tries, then the moment it has physics; before: 4 tries a second for as long as it lasted); 2.1.3: traffic crew copies' own exit requests go through again (2.1.2 refused them; the first asker seen was the game's own character removal 824789A8, which takes a human out of its car before it goes - refused, a deleted character stayed in the seat); 2.1.2 (protocol 5): a client's crimes are judged by the host's cops - the game credits an unseen crime a quarter of its points (its detection test 821D1F98, run as the record is applied: a living cop within 40 m in front of it, 8 m around it, or 40 m of its car, through walls; the first 2.1 test's client got no stars that way), so the host runs that test on another player's character when it forwards a crime and sends the record's witnessed flag set when it holds, tells each client whether a cop sees its character (kEventSeen, on change and once a second), and the client queues the crimes it credits itself (hits, carjacks) witnessed while that holds; a police car taken by another player's character counts in their own game, as a carjack does (82482400's record here is dropped: forwarded, one act counted twice); a copy carries no team, so the thief's own game never counts it) and so is a cop's police or gang alert at their character (820DB9D0, flag set); \"crime detection\" lines (seen or not, the nearest of the team) and the Police line's witnessed counts; 2.1.1 (from the first 2.1 test, protocol 4): a car a cheat, mod menu or script makes for a client stays (the removal of this game's own cars while the host's world is shown took it away at once: 82569700 with source 7 or 3 is this player's own, source 2/4/5/6/9 the game's spawners); a client's hits on the host's traffic crews go to the host (kEventCrewDamage: car id and seat) instead of killing the copy here only (the corpse was removed again and again) - cops in cars can be hurt and their kills credited; crew copies no longer get out of their cars on their own here (their exit requests are refused; a pull-out by this player goes through); another player's character gets up where that player stands when its ragdoll here ended elsewhere (a car hit sent the copy 42 m away: the get-up spots +792/+808 are set to their position); the Police line shows the police points; 2.1: notoriety per player - each player's stars are their own game's, every game's police and gangs go after the wanted player's character (its level is written on it there), a player's crimes seen in another game are credited to their own game (kills, government cars, a cop seeing their gun; not their hits and carjacks, which their own game counts), only the player the cops arrest is busted, and the host's police response - its cars, helicopter and the gangs' cars - comes for the wanted player in the host's world (the highest level within 200 m of the host; its units and cars go to the clients with the people and traffic) instead of the host (mod.ini police = 0 turns it all off: as 2.0, the host's stars rise for the crimes seen in its game and a client's own police run near the host too); car damage comes from the game that drives the car - hit points, smoke, fire and wrecks (2.0 took the fade-out before a car is removed for its wreck: intact cars blew up on the other games, real wrecks only lost their smoke there); copies are wrecked with the game's multiplayer wreck replay and take no hit point losses, explosion pushes or chain wrecks of their own; the host's people and traffic crews shown on a client wear the host's teams (minimap marks), don't shoot or hurt that player on their own and play only the host's actions (crews also their car moves), and the client's own police response and roadblocks stay off while its character stands in the host's game (made within 60 m of the host, removed past 130 m; what the response had out then is removed; beyond, its own come back); other players' knockdowns and get-ups show where they happen (2.0 replayed their get-up states on a character still lying here, which stood it up at the map's origin and back - the ~700 m jump - or left it lying for good): nothing of theirs is replayed while they lie, their character's get-up spots are set before each knockdown, one left ragdolled is knocked again so it can get up; the map menu closes on a client again (the pause menu's context 823494D0 gets the multiplayer answer over a running world); the police lights and siren of a car another game drives show on its copy; protocol 3 (2.0 can't join); 2.0: up to 12 players in one session (the host relays; messages carry the sender's slot, events are acked and resent instead of sent three times), one character, clothes, gun and car record per other player, cars named by their owner's slot so any player can drive or ride in any other player's car, the host shares its traffic and people around every client; built in from Co-op Car Guard 0.5: memory checks skip QueryWorkingSetEx under Wine and keep VirtualQuery answers per region (mod.ini memory_speedup); fixed: car smoke and fire were applied the wrong way round; the local player is put back when the game takes another player's character for it (the 1.34 check never matched); 1.71: online link - the outgoing Epic queue is capped at 64 KB (it was unlimited, so what the link couldn't carry waited in line and arrived later and later: shots 20-30 s late in the 1.69 test), and each Perf block has a \"Link:\" line (direct or through Epic's relay servers, the largest queue sizes, packets refused by the full queue); 1.70:no crash when the other player's character is made again (after a death or out of range) - its guns are holstered and removed before it goes back to the player pool, and a pool object starts with no equipped item (1.69: a C++ exception in 8247E248 right after the PC player died, the Mac's character held a grenade); thrown weapons aren't handed over; 1.69:replayed shots of single-shot guns (Magnum, shotguns) are no longer refused after the first - the trigger latch (ammo +12 bit 0x80, set by each shot, cleared by the shooter's trigger release) is cleared before each replay; 1.68:the other player's gun is given the way the game's multiplayer arms a remote player (823AA218): with the 76-byte item table entry the weapon info's +32 points to, after the item in that weapon's slot (823F79F0) is reused or removed (1.66/1.67 gave the weapon info itself: a broken item that never went into the hand, and the host froze in the world update soon after); 1.67:no freeze from the other player's gun - the pose's gun is read the way the fire function reads it (item +16 ammo, +8 info: 1.66's pose said no gun while the shots said TEC-9), and the character's gun changes only once the poses agree for 400 ms (1.5 s to holster), not while a shot holds it, using a gun it already carries (1.66 gave and holstered every frame and the host froze in the projectile/item update); \"Our gun in hand\" lines; 1.66:shooting shows in the other game - the gun in each player's hand goes with the pose and each shot is replayed on their character there the way the game's multiplayer replays a remote player's shot (muzzle flash, sound, recoil, tracers; bullet guns only), hurting no one there since the hits already come across (\"Shots:\" line); 1.65:scans of the object table check each object's type on one page before its full size, and readable pages are remembered 4096 at a time instead of 32 (the host's car scan grew from 40 to 150 ms/s over a 6 minute session: lag); 1.64: a car is no longer removed while its list of people getting in or out names someone who belongs to another car or none (the joiner froze for good while shared traffic removed a car copy; logged as \"Car removal:\"; mod.ini debug_cars = 1 checks those lists all the time, \"Car list check:\"); 1.63: the other player's character never removes someone sitting in the seat it wants (takes a free seat; Troy was removed), the host's strongholds / missions the joiner's save hasn't opened start on the joiner too, only timed mission help reaches the joiner (no \"Kick the door open\"), the joiner pauses only for the host's pause menu, a mission end that wasn't running here shows as a message, shared cars and people removed a few at a time (freeze on disconnect), no seat retries far from the player; 1.62: parked cars of the other game placed only when they move (were placed every update), the other player\'s walk re-aimed sooner on quick turns and no stop-glide on turns; 1.61: the host\'s pause pauses the joiner\'s game for real (world stopped, the joiner\'s own pause menu can always be closed), the host\'s car scan no longer runs every frame (most of the host\'s mod time: desync); 1.60: section timing in the Perf lines; 1.59: chat (T in the game, WCH1 packets); 1.58: reserved names (Whompay) only with the owner key; 1.57: co-op messages (hosting, join code, joined, left, ended, errors) in the game's own help box and the join code under Pause > Options instead of the F6 box (F6 is a debug view now); 1.56: no crash on hosting / joining online (the game's System Link over Epic and co-op online no longer run two Epic sessions in one game), Host / Join / End Co-op in the game's menus; 1.49 (1.45 + one change): story characters are never sent as pedestrians (Johnny Gat, Dex, Julius and Troy came back at the church stairs on the joiner after the end prompt); 1.45: the host sends only people within 100 m of itself, pedestrians too (a finished mission\'s gang members, turned into pedestrians, T-posed on the joiner after the host was moved to the next mission), every cutscene character of this game\'s own left standing is removed (Julius stayed on the stairs), list of who stands near the joiner after a mission in its log; 1.44: hit reactions of the host\'s people are played the same on both screens, and the joiner\'s punches make them flinch on the host too (combat reactions only on one side); this game\'s own story characters left standing after a mission cutscene (Johnny Gat, Dex, Julius, gang members, T-posing) are removed at once; 1.43: people models the host\'s people wear here keep their top priority (in fights one pushed the other out: people blinking; mod.ini keep_worn_models); 1.42: copies of the host\'s people wearing their real model are no longer removed to make room (people going invisible and back again and again); 1.41: the other player\'s character is made again when it stays stuck off their path (lay flat behind them for a whole mission after being knocked down just before a cutscene), the host sends only mission characters within 100 m of itself (the finished mission\'s people at the old spot showed on the joiner for ~10 s after the host was moved to the next mission); 1.40: the host no longer sends mission characters its own game has hidden (a finished mission\'s people, and the next mission\'s made ahead, showed up only on the joiner after the mission-passed prompts); 1.39 taken back; 1.38: this game\'s own cutscene characters still standing after a cutscene are hidden (Johnny Gat and others on the stairs at the next mission), and removed when their models keep the host\'s people from loading; all generic gang members and police count as this game\'s own extras (xx_X_*); 1.37: this game\'s own generic mission characters are removed after 1 s when their model isn\'t the host\'s, and whenever they keep the host\'s models from loading (people invisible in missions), everything the joiner\'s mission left behind is removed for 8 s after it ends (mission people staying after the end); 1.36: after a cutscene the host\'s people are shown only once the host sends them again (a finished mission\'s enemies came back for a moment); 1.35: this game\'s own mission characters are removed when the host\'s mission is over here (the finished mission\'s enemies came back), the other player\'s character is put back at once when something here throws it far off (vanished after a hit); 1.34: the local player is put back when the game takes the other player\'s character for it after a cutscene (both saw only the other one and couldn\'t move), player diagnostics after cutscenes; 1.33: this game's pedestrian spawning is turned off again when a mission turns it back on (people popping in and out, their models kept the host's from loading), the host's people are kept through cutscenes and made up to 8 at a time (one by one after a cutscene), no falling over again and again when standing on a hidden character; 1.32: the arrows over the people a mission wants attacked are shown on the joiner too (the host's in-game effects on its shared people); 1.31: this game's own hidden mission characters are removed when their models keep the host's people's models from loading (people invisible in fights); 1.30: stand-ins use models the host has loaded (models only the joiner had kept the host's people from loading: invisible people), a single far-off position of the other player is ignored (vanishing for a moment after being hit), colours set before the clothes go on and clothes put on again when colours arrive later (hair colour); 1.29: the host's people are hidden during cutscenes instead of removed and made again afterwards (people flashing in, T-poses, wrong models after cutscenes); 1.28: a mission the host starts right after passing one brings the joiner over again (1.27 left them behind), the joiner is no longer moved away from the host every time they come close in a fight (only when standing inside each other for 3 s); 1.27: the host's mission no longer counts as ended during the moment between its stages (the joiner restarted it: mission people flickered, the last cutscene wasn't played); 1.26: no freeze when the host skips the last cutscene of a mission (the joiner's cutscene is ended before the mission end, not after); 1.25: body slider check (what arrives from the other player, whether the game baked it into their model, re-applied if something resets it); 1.24: body sliders applied as the game does (only the wanted value; the game bakes the change into the character's own body model), 1.23: memory for the other player's body model (the game's player-body stream group had none in single player, so it never loaded), key 5 spawns the copy again at once; 1.22: the other player's own body model is loaded the way the game loads the player's (1.21 never got it: shared body, host turned muscular); with the shared body nothing of theirs is applied; 1.21: the other player gets their own body model (multiplayer's StyleTest_PC_MP slots, mod.ini own_body) and their body sliders (mod.ini body) - no more both players turning skinny or muscular; 1.20: the other player's skin tone and hair colour (the game's colour choices) are sent and applied, body-shape diagnostic on the player copy (mod.ini body_test); 1.19: the joiner's game can no longer remove copies after 2 s of asking (they were remade: people changing model and clothes, vanishing and coming back); 1.18: new copies hidden until the host's clothes are on (a hat came and went), people standing still get no walk orders (stood up and sat down on a bench again and again); 1.17: models kept in memory that nothing uses are unloaded with the game's own unload while the host's models wait (1.15/1.16 freed their slots by hand: 5 fps), models asked for at the top level again, freeze reports say what the mod was doing; 1.16: the host's models are no longer asked for ahead on the joiner (the joiner's freezes started with that in 1.11; mod.ini preload_host_models); 1.15: people-model slots left full after a model was let go are freed (the joiner held 8 models, the host 11: people missing); 1.14: a person's walk/idle style is set once per change of the host's (no switching between two, e.g. cane and wheelchair), model memory of both games in the logs; 1.13: models loaded here that the host doesn't have make room for the host's people's models (people missing on the joiner); starting the host's people's ongoing actions is off (it started a newspaper only the joiner saw; mod.ini sync_idle), people-model lists of both games in the joiner's log; 1.12: what the host's people are doing (newspaper, tying shoes, cane walks) is started on their copies, people in cars are removed with their car again (the joiner's game froze); 1.11: the joiner loads the people models the host has loaded (same people sooner, fewer lookalikes), no more wrong position when thrown about (other player invisible after jumping out of a car); 1.10: this game no longer removes copies of the host's people, drivers and passengers by itself (people popping in and out; mod.ini keep_copies); 1.09: copies of people are made as scripted characters, which this game doesn't remove on its own (mod.ini copy_kind, 3 = as before); 1.08: getting in as a passenger walks to the door and climbs in (was put straight in the seat); copies waiting for their model (behind a stand-in) and traffic drivers and passengers are no longer removed as this game's own people (popping in and out); 1.07: people models no character uses any more are let go (removed copies kept them: models filled up, people popped in and out on the joiner); 1.06: people-model memory back to normal (twice the memory crashed in the player creator), models no longer needed let go after 4 s instead of 30 s so the host's current people get the room (NPCs in cars), loaded/waiting people models in the log; 1.05: twice the memory for people models (mod.ini people_memory); 1.04: more people models is off by default (people_models = 3 froze the game when entering the world; freeze report written when on); 1.03: room for more people models (mod.ini people_models); 1.02: the pulled-out driver carries on here (gets up) instead of a new standing copy, crash and freeze reports next to the log; 1.01: no endless driver re-making when a seat is refused (the joiner\'s game froze), a pulled-out driver is thrown out with the same exit as in the other game; 1.00: the other player\'s character gets out of its car before it is removed (crash when they time out or leave range while seated), a car stays put while the other player pulls its driver out; 0.99: getting in where the other player drives goes straight to the passenger seat (same seats on both screens), a pulled-out driver\'s copy is removed once out (no duplicate); 0.98: passers-by wait for their real model again (no switching or wrong people), the other player is never taken out of a car their game still has them in (no gliding without a car), car models of the other player\'s car asked for at top priority; 0.97: getting in as the other player\'s passenger finishes (seated directly if it stalls), a pulled-out driver plays the being-pulled-out move on both screens before stepping out, stand-ins are always the same sex; 0.96: no car removed when a driver is pulled out, drivers, passengers and passers-by whose model won't load here get a lookalike (no invisible people), getting in where the other player drives falls back to the usual way when the passenger seat is refused; 0.95: a driver the other player pulls out is pulled out here with the game's own move, whoever got in first keeps the wheel (no two drivers in one seat); 0.94: a driver the other player pulls out is found and gets out here too (no player sitting on top of it); 0.93: players never pull each other out of a seat, no jump to the passenger seat while still getting in, traffic drivers and passengers found by where people sit (NPCs in cars shown), car doors open and close on both screens; 0.92: getting in where the other player drives asks for the passenger seat (no pulling them out), drivers' and passengers' models asked for at top priority, animations played with their blend values, their car found when the host gets in one the joiner took; 0.91: the other player's getting in shows their own moves (door, pulling the driver out, climbing in) and seats them when they sit; 0.90: taking a car with a driver: the driver gets out on both screens, then the player gets in; getting in with the other player driving walks to the passenger door; up to 104 cars shared, parked ones up to 200 m; 0.89: the other player's jumps, climbs and punches start where their character is shown (held back by the follow delay); 0.88: the other player's getting in carries on at the door (door and climb-in play), a car of this game the other player drives up in is shown again; 0.87: passengers of shared cars shown, F9 trace logs getting-in progress; 0.86: the other player is seated at once if their car drives off before getting in finishes here; 0.85: the other player's getting in is no longer cancelled right after it starts; 0.84: getting in and out of cars plays the walk, door and seat on both screens (no exit on entering), the other player no longer climbs twice, wrecked cars blow up once; 0.83: F9 trace of climbing and getting in and out of cars; 0.82: car damage (smoke, fire, wrecks) from the game driving the car, no local explosions of the other game's cars, no create-remove loop for cars; 0.81: car hits no longer applied twice (cars flying off), getting in with the car state not interrupted; 0.80: getting in and out of cars (and pulling drivers out) with the player's own moves, no stuck prompts; 0.79: car hits happen on both screens, climbs keep going through their middle step and retry refused moves, pause menu no longer stuck after the host pauses, F6 always closes the overlay; 0.78: parked cars shared too (the joiner's own go), up to 52 cars, car models asked for at top priority, animated getting in; 0.77: a car a player takes stays the same car on both screens (no vanishing, no second car), climbs play out and hand back on landing; 0.76: no drivers left sitting in thin air, people fight the other player too, the other player gets in cars (and pulls drivers out) with the animation, passers-by take the joiner's punches; 0.75: own pedestrian spawner off and its model memory freed for the host's models, climbs and jumps not cut short; 0.74: people models asked for at top priority, own people removed before they show, climbing and other movement states shared, gang stand-ins for gang members; 0.73: knockdowns and hit reactions of people shared, no random models for passers-by, other player visible further away, movement recovers after jumps; 0.72: other player and copies never fight, crouch or run off on their own AI; crouching shared; 0.71: copies whose model never loads here are remade with a loaded one (no invisible people, no full pool); 0.70: people copy the host's animation sets and only do what the host's do, stand-ins while a model loads, steadier player following, joiner held while the host's game is paused by a prompt; 0.69: joiner's mission intro confirmed at once (no reset of synced characters), up to 96 people shared; 0.68: punched pedestrians stay shared, stuck copies named in the log; 0.67: the host's mission end reaches the joiner (rewards), no walking on the spot, wider takeover; 0.66: the host's mission drives the joiner's (cutscenes, character groups, teleports); 0.65: joiner's own mission characters hidden at once and harmless; 0.64: copies still loading take over the joiner's own mission characters when they appear; 0.63: the joiner's own mission characters follow the host's (no empty cutscenes, attackers shown); 0.62: the joiner's game doesn't pause the world, mission cutscenes from its own mission; 0.61: joiner runs the host's mission with the host's HUD, characters and ending; 0.60: other player's clothing in its own memory (torso/legs, garbled textures), hidden (not removed) during cutscenes; 0.58: other player dressed again when re-created (missing torso/legs), no falling over on top of other characters (breakdancing), joiner starts next to the host; 0.57: F9 rebuilds the other player's look (no crash), F8 compares with own player; players never stand inside each other (host got stuck), only the host skips cutscenes; host keeps working after the mission cutscene, no doubled people in cutscenes, overlay closes when connected; shared cutscenes (host skip skips both), joiner placed next to the host after them, other player keeps clothes on mission start; host pause freezes the joiner, no crash after mission cutscenes; smoother people (20 Hz, buffered, per-frame), no freeze after cutscenes, no false deaths; joiner hits and host enemies count across, deaths shared, mission markers hidden for the joiner, clothing kept after cutscenes; mission detection, F7 people dump, time of day from the host; missions follow the host; car colours; shared pedestrians with appearance and actions; per-frame player smoothing; shared traffic, shared cars (driver in charge, passengers), fresh character after leaving range");
   if (api->hook(0x82209E30, UpdateHook, &original_update) != 0) return 2;
   api->hook(0x82212728, MissionStartHook, &original_mission_start);
   api->hook(0x821F9098, CutsceneStartHook, &original_cutscene_start);
@@ -11117,6 +11559,9 @@ extern "C" WML_EXPORT int wml_mod_init(const WmlApi* loader, const WmlMod* mod) 
   api->hook(0x82215360, MissionEndHook, &original_mission_end);
   api->hook(0x8220C778, PauseHook, &original_pause);
   api->hook(0x823494D0, MenuContextHook, &original_menu_context);
+  api->hook(0x822E8C78, Team0DotHook, &original_team0_dot);     // (other players on the maps, 2.1.4)
+  api->hook(0x822E8FE8, FollowersHook, &original_followers);
+  api->hook(0x822B3F70, PauseMapHook, &original_pause_map);
   api->hook(0x824C43B0, GroupCreateHook, &original_group_create);
   api->hook(0x824C4B58, GroupDestroyHook, &original_group_destroy);
   InstallTraces();

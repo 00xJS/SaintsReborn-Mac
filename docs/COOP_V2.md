@@ -85,7 +85,7 @@ missions and MP modes can't run together; Q section 7). But it is the blueprint,
 | Damage | - | hit requests from the attacker's game to the victim's owner, applied there through the game's hit functions (MP's bullet_hit / melee_hit model) | 824470D0 refuses on non-owners |
 | Pickups, money and weapon drops | position, value | create/collect/destroy | pickup creation/collection routed to the owner |
 | Clock, weather | 0x82B2EF30, weather entries | time jumps | 82157598 / 82156DB0 |
-| Missions, cutscenes, HUD, pause | v1's host-driven system, generalized to N | v1 | v1 |
+| Missions, cutscenes, HUD, pause | v1's host-driven system, generalized to N; other players as arrows on the minimap and the pause map, a colour per slot (2.1.4) | v1 | v1 |
 
 Randomness is never synced as a seed: the owner decides, everyone else is told the outcome (S section 6).
 
@@ -129,7 +129,7 @@ stand-alone test program that runs several peers over loopback without the game.
 ## 10. Co-op 2.0 and 2.1 (milestone 1): what is built
 
 Every player needs the same version: 2.0 brought a new protocol (a 1.71 game knocking is told so on screen and
-in the log), 2.1 bumped it to 3 (a 2.0 game can't join), 2.1.1 to 4, 2.1.2 to 5.
+in the log), 2.1 bumped it to 3 (a 2.0 game can't join), 2.1.1 to 4, 2.1.2 to 5 (2.1.3 and 2.1.4 keep it).
 
 **Session** (`net.h`, tested by `tests/net_test.cpp`: 12 players through 20% loss, refusals, leave/timeout,
 rejoin, a lost join reply, a one-way outage, a leave lost before a rejoin, 3000 reliable messages through a 5 s
@@ -159,7 +159,10 @@ isn't pushed by explosions (`82536B00` runs with the game's no-fling bit set for
 pushed and the copy follows it). A copy is wrecked with the game's MP wreck replay `82542650` (no cash, no script
 callbacks), without the explosion when it wasn't shown intact just before (made of a wrecked car, or without
 physics until long after the wreck), and keeping its motion then (`82542650` lifts the car whatever the explosion
-did, H). One of this game's own cars driven from another game is blown up with `825397E0` as before (3 tries 1 s
+did, H). A copy without its physics set up (byte +50300, far off or parked: `82542650` returns at once then, and
+the game's own MP wreck client `8238BDE0` doesn't set it up either, H) is tried 4 times (1 s), then waits quietly
+and is wrecked without the explosion the moment its physics is set up (2.1.4; before, it was tried 4 times a
+second for as long as it lasted). One of this game's own cars driven from another game is blown up with `825397E0` as before (3 tries 1 s
 apart when refused, then every 30 s; each try damages every part); only that car passes the hooks (2.0 let the
 whole explosion's area pass damage every copy: chain wrecks). Protocol 3: 2.0 sent 0 hit points and the fade-out
 bit, so it can't join a 2.1 game. Dents and broken parts aren't sent yet.
@@ -369,6 +372,117 @@ a player-type subject, the handle at event+36, flag 1, queued for the local play
 detection: seen / not seen (entry N)" with the nearest member of the entry's team here (handle, distance, on foot
 or in a car, +120, +2996), 20 lines. The Police line counts other players' crimes seen by this game's cops and this
 player's own crimes queued witnessed (with the tellings sent and taken).
+
+**2.1.4** (2026-10-17, protocol 5 kept). How other players' characters move. The 2.1 tests' "floats" lines (a
+character placed on its path every update and not moving by itself for up to 14 s while its player walked with
+the gun up, sliding with its legs still) came from the way it was moved: a move order (`82441670`, `OrderMove`)
+along the path. Its state `+516 == 2` is not an aiming or strafing state but "walking a move order": `82441670`
+ends with `82441308(h, 2, 0)` and the state-2 handler `82464DF8` is the path follower (H); the walk, strafe and
+aim-walk animation under it comes from the same table the player's own locomotion uses (`8244E018` -> armed
+`824342B0` / unarmed `82434D48`), but the layer never got going on the character (which step stops it isn't
+settled; `notes/coop-2.1/aiming_movement_investigation.md`). The game never moves a player that way: the local
+player (`82168D60`) and multiplayer's remote players (`8237B7B8`, from the snapshot apply `823AFA88`) are moved by
+a stick input every frame - the point to walk to 5 m ahead in `+464` (`8216C9E0`), state 1 and
+`8245FC08(h, f1 side, f2 forward, r6 sprint, r7 standing)`, which picks the gait from the stick's magnitude (walk
+up to 0.81 squared, run above, sprint by flag), plays the aim-walk and strafe animations with the body facing the
+aim (the camera rows `+4148`, which `WriteRemoteCamera` sets from the pose) and the run turn-around on a reversal
+of the stick (H). `DriveAsPlayer` (from `Follower::Drive`, for other players' characters only, after `MoveHuman`,
+which stays the position authority; its teleport `8243E6F8` writes `+464` too) does the same every update: it
+cancels a running move order with `82441308(h, 0, 0)` (the game's own cancel, which frees the path), writes `+464`
+= the path position + 5 m along the path velocity (the position itself when standing), the stick in the owner's
+camera frame (its right and forward rows flat: `+3028` / `+4424` forward, `+3032` / `+4420` sideways, as
+`82168D60` stores them; 0.6 for a walk, 1.0 for a run or sprint, from the path speed with the old gait hysteresis
+and the 150 ms stop debounce), sets state 1 when it is 0 and calls `8245FC08`, all under `replicated_depth`.
+States 3-8 (car walk, jump, climb, landing, knocked down) are left to their own handling, as are the gap
+placement, the knockdown, get-up and car paths, and the host's people copies (move orders as before). `mod.ini`
+`walk = 0` goes back to move orders. Diagnostic "<who> walks here (update N): ..." at the first, third and tenth
+update after each start (10 lines per character): state, mode `+508`, gait `+512`, the layer-0 action `+576` at
+its weight `+580`, layer 1 `+764` (the turn-around 335/336), `+756`, the gun, the stick and its band angle and
+`8245FC08`'s r3. Expected: `+516` 1, layer 0 an aim-walk (147-156) or walk action at 1.00 while moving, and no
+more "floats" lines (that line keeps watching). Also in 2.1.4: only the sync knocks another player's character
+down - `KnockdownHook` dropped an avatar's knockdown only when `!replicated_depth`, so a replay (the host replaying
+that player's own rocket's explosion) knocked it down while its player stood and fired there (55 of their shots
+refused in the second test); now only `SyncKnockdown`'s two `824497F0` calls pass (`knocking_avatar`). The Shots
+line counts the refused shots by reason (lying, not set up, other gun, no ammo, fire refused, gun raising, in a
+car, other: `Remote::Shot::held`, the last reason a shot waited for before the 750 ms ran out), and a wreck
+replayed on a copy without its physics set up waits quietly for it (the car damage paragraph above). Three more
+2.1.4 fixes from the second test. (1) A client's hits on the host's traffic crews land now: the host resolved the
+seat with the car's own seat slots (`+52320`, `OccupantHandle`), which are empty for most AI crews - the reason
+`CaptureTraffic` names the crews by every person's own `+2496` / `+2500` - so all 352 of a test's crew hits were
+dropped without a counter; `SeatOccupant` tries the slot, then that scan, and the "Copies" line counts the hits that
+found no one in the seat, no such car, or a player there (the first 20 empty-seat hits are logged). The same slot
+test picked the car a response unit drives for `CaptureTraffic`; its own `+2500` comes first now. (2) The host's
+mission-end message is forwarded only while a mission runs (`MissionActive()`, `0x82B3106C`: `82215360`'s own
+first test); the player's death calls it "failed" in free roam too, and every death of the host showed "Host's
+mission failed" on the clients (a capped log says when it isn't forwarded). (3) The Police line's "helicopters
+after it" and the helicopter call-off test the helicopter AI block (`+54840`) for mode `+684` 1 as well as 2, with
+`+160` the handle: 2 is the pursuit (`8259DCC8` / `825A0560`), 1 is over the target (`825A0F18`, reached from the
+pursuit update `8259DD80`, which keeps `+160`), and `825A3000`'s mode 4 (target gone, or called off) leaves `+160`
+as it was (H); the test counted mode 2 alone and showed 0 while four helicopters attacked. The cars' test
+(`+50376` 4 / 10 / 11 with `+50468` the handle) matches `825A91A0`'s stores (mode 4, sub-mode 17, `+92` = the
+order's handle).
+
+The people-model references on a client (a leak since `6c88c8a`, the first `CreateActor`). Every character co-op
+makes - a copy of one of the host's people, a stand-in, a traffic driver or passenger - took one streaming
+reference of kind 5 on its model (`8250C750(group, id, 5, 0, 1)`, as the game's own network NPC creator `823A7DB0`
+does) and nothing gave it back: no human destroy path in the image releases a people-model reference (the three
+`8250CA48` callers are the population sets' `82419C08` and the vehicles' `8247BA28` / `825324D0`; H), so a model's
+count grew by one per character made with it (BF 1 -> 139, 120 1 -> 221 in 12 min of the second 2.1.2 test) and only
+`ClearUnusedModelRefs` (nobody wearing it) ever brought it down. The harm, in two sentences: a request with a count
+never dies, and a kind-5 request paired with a slot in the group's pass (`8250D3E0`) evicts that slot at once, so a
+dead model's leftover request could take the slot of a model thirty copies wore and park them invisible
+(`8247AA70`). A leaked, worn model also kept its request, slot and queue place for the whole session. 2.1.4 keeps
+character handle -> model id and reference (`actor_models`: `NoteActorModel` after each `CreateActor` and after the
+stuck copy's re-request, which starts over since the first reference went with the dropped request) and releases
+exactly one `8250CA48(group, id, 5, 0, 0)` per reference in `DestroyObject` and `DestroyActor` (`ReleaseActorModel`),
+with a 1 s sweep (`SweepActorModels`) for the characters the game removed itself; `ClearUnusedModelRefs` forgets the
+entries of a model it clears. A guard every 10 s (`ModelRefGuard`, client) compares each model's kind-5 count with
+its wearers plus its pin and lets any excess go (capped "Model X: N references of kind 5 more than its wearers and
+pin here, let go"); the People models line counts the references given back and the excess, and the slots dump
+shows each slot's level (`L`) and the per-level slot quota table `0x827ACFFC` (14 words) - the other half of the
+"waiting for room" picture: the pass pairs a level's requests only with that level's slots, co-op asks at the top
+level (`PinModel`, level 13) and level 13 owns only the slots `8241BD40` last moved there (8, later 4-6 in the PC
+logs) while the rest sit idle at levels nobody asks at (H for the mechanism, M for the numbers over time). Not
+changed in this build, the next step once the counts are flat: ask at level 0 like the game (and give level 0 all
+12 slots in the table) or call the game's own quota recompute `8241BD40(0,0,0)` each second. The car copies' model
+references have the same shape (`CreateVehicle`: a direct `8250C750` like `823BA888`; the game's own cars go through
+`82532360(v, kind)`, which notes the kind at `v+50304` for the destructor `825324D0` to release): measured only, in a
+10 s "Car models here" line (references taken by copies against the vehicle group's kind-5 count) and a capped line
+with `+50304` of the first copies (-1 expected). Review fixes on the 2.1.4 batch: `DriveAsPlayer` runs only on
+characters from the player pool (`IsPlayerObject`: the stick block at `+4420..+4448` lies past the end of a
+4252-byte NPC human; an NPC-class character shown for a player keeps the move orders); the owner's replayed
+`82441308(0/1, 0)` no longer holds such a character for 120 ms (it is in state 1 by itself); the stop debounce keeps
+the last direction of travel instead of stepping toward the camera forward; the Car damage line's "cars waiting for
+it now" is counted at print time (copies with 4 tries without physics and no wreck bit); each character made gets
+its 10 "walks here" lines; and the crew-hit seat lookup is remembered per car and seat for 250 ms (one 4096-slot
+scan per burst of hits, not one per hit).
+
+Other players on the maps (2.1.4). The other player showed on the minimap as a purple dot, like a homie, and not at
+all on the pause map: the minimap's people pass `822E8D00` draws every human on the people list by its team `+232` -
+a player-pool character has team 0, which gets icon [4] `map_other_blip_revive` through `822E8C78(pos = obj+20,
+params)` - and the people, car and follower passes are called from the HUD minimap draw `822ECDB0` only, so the
+pause map (`822B3F70`, the render of the MAP tab's view `0x8206169C`) shows the icon lists, the route, the waypoint
+and the player's own arrow and nobody else (H). Now every other player in the session is an arrow in their slot's
+colour on both maps, drawn the way the minimap draws homies (`822E8FE8`: `map_blip`, HUD item `0x83023660[9]`,
+turned by the heading - `atan2` of the forward row's x and z, as `8262EB58(obj+32)` - plus pi, `8227E720(bitmap,
+x, y, angle, scale, params)` with the colour from `8263E7D8(r, g, b, a)`) at the player's own size (homies are 0.8 of
+it): a hook after the followers pass projects each position with `822E8A78(&xy, &aux, pos, 0)` (a point past the
+minimap's radius is put on its edge, so a far player sits at the rim), adding the map's turn `*0x8370E438` while the
+map doesn't turn with the player (byte `0x8370E407`), and a hook after `822B3F70` uses the pause map's own transform
+(block `0x8370DD60`, as its icon pass `822EDC50` and its arrow: `px = +1072 + +1080*zoom + (+1104 - x)*zoom`, `py =
++1076 + +1084*zoom + (z - +1108)*zoom`, zoom `*0x827AF7B4`; the page's x runs against the world's) with its arrow
+bitmap `0x8300FC78[0]` at `HUD scale * (clamped zoom *0x827AF7A8 * 0.333 + 0.667)`, kept on the page by hand (the
+game sets its scissor back to the whole screen before it returns). The position is their character's `+20` while it
+exists here, else their newest pose - so a player beyond 130 m, not yet made, hidden in a cutscene or dead is on the
+map where they are or were last seen - with half alpha while they lie or are dead (`MapMarker`, filled by
+`UpdateAvatar` from every pose, cleared when the slot leaves); the character's purple dot is skipped (`822E8C78`
+returns without drawing when the position is an avatar's). Nothing is added to the icon lists, so no mission clears
+it and no icon slot is used. The hook on `822B3F70` fires although nothing calls it directly (it is reached through
+the view descriptor's pointer): the loader detours the host function (MinHook), as it does for `824789A8` and
+`825324D0`, which have no direct caller either. Log: "Map markers:" once per map (the bitmap handles, HUD scale,
+the rotate byte, MP blip 108's bitmap, the zoom and page), "Map marker: Player N from their character here / their
+last pose" on each change of source, and a 10 s "Markers:" line (arrows drawn per map, how many at the edge,
+purple dots skipped, failed draw calls).
 
 Not in 2.1 yet (milestones 2-3): roadblocks for a wanted client, pickups, car hit forwarding, NPC gunfire and NPC
 projectiles, weather, area ownership for players spread across the city, bandwidth scheduling for 12 players.
