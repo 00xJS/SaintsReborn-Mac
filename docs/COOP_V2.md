@@ -216,7 +216,7 @@ outside co-op's replays, which include co-op's own seating and exit orders. Hits
 come across as before; since the notoriety round, hits from people it doesn't share as people (its crews, its
 police response's units) come across too (their own hits: not a car hitting the character, explosions or fire),
 whatever mod.ini `police` says.
-Car crews are passive like the people (`MakePassive`); a crew member getting out on its own is refused since 2.1.1
+Car crews are passive like the people (`MakePassive`); a crew member getting out on its own is counted and its asker logged (2.1.1 refused it; 2.1.3 lets it through again: the first asker seen was the game's own character removal 824789A8, which takes a human out of its car before it goes)
 (below; 2.1 logged and counted it).
 
 **Notoriety and arrests, per player** (2.1, round 1; mod.ini `police = 0` turns it all off: no stars sync, crime
@@ -329,7 +329,7 @@ stand-ins) are zeroed there like hits on its people and sent to the host as the 
 from the client's character (`824470D0` under the host's own `DamageHook`), so it can die there and the kill is
 credited to the client through `82482098` (2.1 let the copy take the bullets and die on the client alone: the host's
 cop drove on and the client's game asked to remove the body every frame). A crew member's own exit request on a
-client is refused (r3 = 0: `8257B8E0` returns no value of its own, r3 is whatever its last call left, 0 from
+client was refused in 2.1.1 and 2.1.2 and is let through again since 2.1.3 (the first asker seen in a test was the game's own character removal 824789A8, which takes a human out of its car before it goes; refused, a deleted character stayed in the seat) - the refusal was safe as far as the return value goes (r3 = 0: `8257B8E0` returns no value of its own, r3 is whatever its last call left, 0 from
 `82448010` when the character isn't in a car, and no caller reads it; the generic exit `8244D5F8` passes it through to
 nine callers that read none), except the driver this player pulls out and co-op's own replays; the asker behind
 `8244D5F8` is logged from its 128-byte frame (the request at r1+80, the saved LR at r1+120). The get-up spots
