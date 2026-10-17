@@ -129,7 +129,7 @@ stand-alone test program that runs several peers over loopback without the game.
 ## 10. Co-op 2.0 and 2.1 (milestone 1): what is built
 
 Every player needs the same version: 2.0 brought a new protocol (a 1.71 game knocking is told so on screen and
-in the log), 2.1 bumped it to 3 (a 2.0 game can't join).
+in the log), 2.1 bumped it to 3 (a 2.0 game can't join), 2.1.1 to 4, 2.1.2 to 5.
 
 **Session** (`net.h`, tested by `tests/net_test.cpp`: 12 players through 20% loss, refusals, leave/timeout,
 rejoin, a lost join reply, a one-way outage, a leave lost before a rejoin, 3000 reliable messages through a 5 s
@@ -244,7 +244,16 @@ the local player; it is reached from `82482098` (kills), `82481CD8` (hits, shots
 the culprit noted around them: another player's character's crime is sent to that player (`kEventNotoriety`:
 activity, team, flag, rocket launcher) behind the game's own gates (*0x8370D1A0 lock, multiplayer byte) and the
 original skipped; the receiver validates (activity < 24, team -1..6) and queues it with `821D3148` on its own
-player, so the game's lock, delays and queue apply. `824828C0` (carjack) and `82482290` (a cop sees a gun fired)
+player, so the game's lock, delays and queue apply. The record's flag byte (+12) means witnessed: when it is 0 and
+the activity's entry has Check_Detection (byte +16 of the 20-byte sub-record at 0x82B2BAC8 + activity*100 +
+entry*20, with +0 Points, +4 Delay, +8 Min_Level, +12 Max_Level; the entry is the gang's own for a gang team, 4 for
+everything else), `821D2840` runs the detection test `821D1F98(local player, entry)` as the record is applied, 500 ms
+after the crime: a living member of the entry's team (5 for the police) on the people list sees the player within
+8 m unless it is behind it, within 40 m in its front 120-degree cone, or within 40 m of its car, through walls
+(ai_rank_attribs.xtbl, no line of sight). An unseen crime gives a quarter of its points (at least 1), a seen one at
+least what its Min_Level takes (H). Since 2.1.2 the host judges this for a client: it runs the test on the
+client's character when it forwards a crime and sends the flag set (`WitnessedFlag`), and tells each client
+whether a cop sees its character (`kEventSeen`), during which the client queues its own crimes as witnessed (below). `824828C0` (carjack) and `82482290` (a cop sees a gun fired)
 put their record in the queue themselves (H), so their record is taken back out after the original (with the
 queue full, 30, they would apply it to the local player at once: another player's is lost and counted instead).
 No double credit: a player's own game counts its melee hits and run-overs on copies (`82481D50`, from `82457900`
@@ -252,8 +261,9 @@ No double credit: a player's own game counts its melee hits and run-overs on cop
 call, so a copy's refused damage doesn't skip it; H), so hit credit with another player's character as the
 attacker is dropped, and so are their carjacks (the jacker's game sees the pulled-out driver's team on the copy;
 its own queued record is logged, "Crime queued here by this player", since `824828C0` never reaches `821D3148`);
-kills, government-car crimes and cop sightings are forwarded; on a client, kills of copies and sightings by copied
-cops are dropped (the host's game sees them). Every caller of `821D3148` and of `82481CD8` is logged once with
+kills, government-car crimes, cop sightings and cops' alerts (`820DB9D0`, 2.1.2) are forwarded; a police car
+taken (`82482400`, 2.1.2) is dropped like a carjack (the thief's own game counts the act: see 2.1.2 below); on a client, kills of copies and sightings by copied cops are dropped (the host's game sees
+them). Every caller of `821D3148` and of `82481CD8` is logged once with
 its return address and name (`82481D50` hits, LR 82481EDC; `82481EE8` shots near people, LR 82482084; `82482760`
 cars hit, LR 824828B4); the second tells whether a client's bullets at copies reach `82481EE8` there at all (M:
 proven for melee only) - if they never do, hit credit from that caller has to be forwarded instead of dropped.
@@ -267,8 +277,9 @@ up, 8/16), with a police level left and not busted already, and the native buste
 reset follow. A client showing the host's world refuses an arrest of its own player by its copies, and never
 forwards one its copies attempt on another player's character: only the host's cops arrest there.
 A "Police:" line every 10 s shows the levels here and on other players' characters, notoriety packets sent /
-taken / old, credits sent / received / dropped / refused / lost (queue full), arrests sent / applied / refused,
-forgivings and skipped decay steps.
+taken / old, credits sent / received / dropped / refused / lost (queue full), since 2.1.2 the crimes seen by this
+game's cops and this player's own queued witnessed, arrests sent / applied / refused, forgivings and skipped decay
+steps.
 
 **The host's police response for a wanted client** (2.1, round 1). The response manager `8242ABA0` (every frame
 from `824131F0`; a client in the host's world skips its own) works for `*0x8309ABEC` alone: the level a group
@@ -335,6 +346,29 @@ the local player a direct seat while the driver's seat holds anyone, itself incl
 fast car keeps it at the wheel). Known: why the host refused the seat in the first test is not pinned yet; the
 refusal line names the state (`seat N refused: +508, state, +780, action, melee, weapon, car/seat, +2569; car: list,
 +120, +53976, ai, the seat's occupant and reservation`).
+
+**2.1.2** (2026-10-17, protocol 5). Detection by the host's cops. A client's crimes gave no stars in the first 2.1
+test: the game credits an unseen crime a quarter of its points, and its test runs in the game applying the record -
+the client's, whose cops near the host are passive copies (whether those pass the test's own skips is open; the
+"crime detection" lines show it). Now the host, which has the real cops, runs `821D1F98` on the culprit's character
+when it forwards a crime whose flag is 0 and whose entry has Check_Detection, from the hook's own context
+(`GuestScratch scratch(c)`), and sends the record's witnessed flag set when it holds (`WitnessedFlag`, in `CrimeHook`
+and `RunQueuingCrime`); the client's `821D2840` then skips its own test. For the crimes a client credits itself (its
+hits and carjacks with a civilian victim, flag 0) the host tells each client whether a cop sees its character
+(`821D1F98(character, 4)` every 250 ms in `UpdateNotoriety`; `kEventSeen` on change and once a second), and for
+1.5 s after a positive the client queues those witnessed (`CrimeHook` sets r5 = 1 before `821D3148`;
+`RunQueuingCrime` sets +12 of the record just added), only in the host's world (`OwnPoliceOff`): far from the host
+its own cops judge. Two more queuers are hooked: `82482400` (a police car, +53992 == 5, taken by a player-type
+human, from the seat completion `825786A0`: government car theft queued for the local player whoever sat down) is
+dropped for another player's character like a carjack: the thief's own game already counts the act (a pull-out
+there is a carjack, after which the car's 0x200 bit blocks its own `82482400`; a copy whose driver copy sat at the
+wheel carries team 5 in +53992, written by `825786A0`), so forwarding credited one act twice (found in review); a
+never-crewed police-car copy counts nowhere, accepted. And `820DB9D0` (a cop's police alert or a gang member's gang alert at
+a player-type subject, the handle at event+36, flag 1, queued for the local player; never raised by copies, whose
++3692 bit 0x08 is set) is forwarded to the subject's player. `821D1F98` is hooked for a diagnostic: "<who>: crime
+detection: seen / not seen (entry N)" with the nearest member of the entry's team here (handle, distance, on foot
+or in a car, +120, +2996), 20 lines. The Police line counts other players' crimes seen by this game's cops and this
+player's own crimes queued witnessed (with the tellings sent and taken).
 
 Not in 2.1 yet (milestones 2-3): roadblocks for a wanted client, pickups, car hit forwarding, NPC gunfire and NPC
 projectiles, weather, area ownership for players spread across the city, bandwidth scheduling for 12 players.
