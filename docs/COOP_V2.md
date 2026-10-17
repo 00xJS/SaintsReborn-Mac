@@ -628,8 +628,10 @@ world as before):
   (`+88`): vtable `+88` the linear, `+92` the angular velocity, 16-byte vectors, as `823BB068` does after each of its
   two `826CD960` calls. The velocities steer the car towards its path (2.1's error terms); it is placed (`82535C68`)
   only when off by more than 8 m + 0.35 s of its speed or turned by about 60 degrees, and left asleep when it rests
-  where it should. A car without physics (`+50300 != 1`, which `823BB068` leaves alone) has its transform written the
-  way `82535C68` writes one for such a car (`+20`, `+32..+64`; H), at most twice a second unless the record moved.
+  where it should. A car without physics (`+50300 != 1`, which `823BB068` leaves alone) is placed with `82535C68(v,
+  pos, rows, 1)`, which for such a car writes `+20`, `+32..+64`, bit 0x80 of `v+53984` and places its trailer
+  (`+54628`) with it (H; review A3-9: the direct write left the trailer behind), at most twice a second unless the
+  record moved.
   Hit points, smoke, fire, wreck and siren through `ApplyCarDamage` / `ApplyCarSiren`; a car a player drives (here, a
   character here, or named by `kEventAuthority`) gets no records. People follow 2.1's path follower (the same
   per-frame smoothing), with the host's flags (crouching; hidden or a cutscene actor there: hidden here, never
@@ -651,8 +653,9 @@ world as before):
 
 Logs (every 10 s on a member):
 - `World (member of slot 0's area, epoch e): held cars a of o offered (declined d: reasons), people ...; now cars,
-  people (queued, fading, driven by players); copies made / faded / destroyed (at once, past deadline), let go, gone
-  here; stand-ins, waiting for a model, models loaded l/12 (player bodies, waiting); creates applied (held for a car,
+  people (queued, fading, driven by players); copies made / faded / destroyed (at once, past deadline), let go (their
+  crews), gone here; stand-ins, waiting for a model, models loaded l of the people group's 12 slots (11 for copies;
+  player bodies, waiting); creates applied (held for a car,
   replaced), updates applied (old, before the create: used / expired, after a remove, declined, old epoch), removes
   (gone, area, digest); placements p per car per second (placed, steered, woken, written without physics); crews
   seated (refused), out of a car; authority taken / back; bytes in; malformed`;
@@ -685,7 +688,7 @@ the area` (40), the authority changes (30). A client: `World (this game's own, a
 `World (member, 2.2 step 2: counted, not applied yet): from the host n update messages, creates, removes, digests,
 owner maps, KB/s`.
 
-Protocol 6 (2.1 can't join): message types `kMsgWorld` (WWS1), `kMsgWorldCreate` (WWC1), `kMsgWorldRemove` (WWR1),
+Protocol 6 (2.1 can't join; 7 since the review fixes below): message types `kMsgWorld` (WWS1), `kMsgWorldCreate` (WWC1), `kMsgWorldRemove` (WWR1),
 `kMsgWorldAdmit` (WWA1), `kMsgWorldDigest` (WWD1), `kMsgOwnerMap` (WOM1) after `kMsgNotoriety`; events
 `kEventCarDamage` (25, the members' side) and `kEventAuthority` (26). The session's relay needed nothing new (the host
 sends to one slot; a client's message for the host stays there). mod.ini: `world_upload_kbps = 1000` (each member
@@ -745,28 +748,42 @@ The engine fills the world only around the viewpoint its spawners read (parked c
 spawner also runs for one member's viewpoint at a time, its radii unchanged and its caps shared by the area (one street
 of 12 cars, 26 people, 6 parked). The viewpoints: this game's camera and player, and each member's pose (eye, the
 camera's forward row, position, forward speed from its car's velocity or its camera's moves), refreshed by the owner
-tick for poses under 500 ms; nothing runs without members, in a cutscene, or with the host's `world = 0` (H for every
-address below, read in the asm):
+tick. A member's viewpoint stays with its last pose while it is in the area (pose under 3 s, as the membership): every
+protection below uses it, so a short gap of lost poses doesn't empty its street; only the spawn passes need a fresh one
+(under 500 ms) (review AB-2). Nothing runs without members, in a cutscene, or with the host's `world = 0`; the
+traffic and people passes also need the host's `traffic = shared` / `peds = shared` (H for every address below, read
+in the asm):
 - **Parked cars**: `8241D930` (one caller, `824131F0`) only spawns records already queued (state 2, list `0x8309A480`;
   record `+100` the state) and re-states those beyond 80 m of `*0x8309ABEC` (`r26`, read once: `+20`/`+28`) through
   `8241D210(rec, 0|1)` at `8241DA10` / `8241DA24`; `8241DC78(0)` queues new ones from the 6 nearest candidates
   `8241DAE0` picks (state 1, `0x8309A47C`; `+20/+24/+28` of the player). After the game's own pass the hook runs
   `8241D930` and `8241DC78(0)` once more for one member (each at most every 200 ms) with `*0x8309ABEC` on a stand-in
-  that holds only the member's position (zero elsewhere: handle 0, type 0); `8241E378` (the spawn: the vehicle
-  constructor, seats, model references) and `8241D210` (model references, the car's destroy) run with the real player.
-  `8241D930`'s re-states (LR `8241DA14` / `8241DA28`) are vetoed for a record within 80 m of any viewpoint, so one
-  pass doesn't undo another's queue; `8241D6B0`'s array (`0x8309A444`, {record, distance squared} x 6, count
-  `0x8309A474`; the only input of `8241D5C0`, which makes room) loses the records near a member.
+  that holds only the member's position (a human object's 4252 bytes, zero elsewhere: handle 0, type 0, so a reader
+  outside the checked closure - a `bctrl`, another thread - sees zeros, not old stack; review AB-4); `8241E378` (the
+  spawn: the vehicle constructor, seats, model references) and `8241D210` (model references, the car's destroy) run
+  with the real player. `8241D930`'s re-state of a queued record to the candidates (state 1, LR `8241DA14`) is vetoed
+  so one pass doesn't undo another's queue: in a member's pass for a record within 80 m of this game's player (its own
+  street), and in any pass for one within 80 m of another member only while its chunks are resident here (`8241DA30`'s
+  own test: `8250F3C8` on the chunk ids of the table `0x83E8ABD8` at the record's `+88` / `+104`; else it can't spawn
+  and would hold one of the queue's 6 for good) and for 3 s at most per queueing; never with `member_spawns` lacking 1
+  and never its state 0 (LR `8241DA28`: no chunk table entry). `8241D6B0`'s array (`0x8309A444`, {record, distance
+  squared} x 6, count `0x8309A474`; the only input of `8241D5C0`, which makes room) loses only the spawned records
+  (`+100` = 3) near a member, so a queued one can still be made room from (review AB-1: queued records near a member
+  could fill the area's 6 for good, the host's street with them).
 - **Traffic**: `824129C8` asks `82412298(out, &centre, &dir, f1 speed, r7 ahead)` (one call, LR `82412F30`) for spots
   around the camera; `82412298` reads no camera and the player only for its highway flag (`+21260`). On a member's turn
   the hook gives it the member's eye (written to the caller's free `r1+80`), its forward (into the caller's copy at
-  `r1+96`, which `r5` points to), its speed and "ahead" (over 2.2352 m/s); the turn goes to the member furthest below
-  its share of the wanted count (the cars within 140 m of each eye), not a full one, the host's own at least every
-  other tick. One car per tick (200-300 ms) for the whole area, as the game spawns. `82412878` (the despawn test: r4
-  the car, returns 1 to remove) keeps a car within 140 m (3D) of a member's eye.
+  `r1+96`, which `r5` points to), its speed and "ahead" (over 2.2352 m/s, or - the game's own sparse-street rule at
+  `82412EB0` - fewer cars near it than a quarter of the wanted; review AB-11); the turn goes to the member furthest
+  below its share of the wanted count (the cars within 140 m of each eye), not a full one (its cap spent on copies
+  while it shows its share near its camera by its `WWA1`; a member full of the host's far copies still gets cars:
+  admission swaps a far one for a nearer, review AB-7), the host's own at least every other tick. One car per tick
+  (200-300 ms) for the whole area, as the game spawns. `82412878` (the despawn test: r4 the car, returns 1 to remove)
+  keeps a car within 140 m (3D) of a member's eye.
 - **People**: `8240FBB0` spawns on the updates where its timer `0x82832744` hasn't run out against `*0x827AA6E0` and
-  `*0x8370FEBC` is set; on those, after it, a member below its share of the wanted people (90 m of its eye; 10 passes a
-  second in all, each member at most every 250 ms) gets `8240F148(1, !moving)` with the camera's eye (`+44`) and
+  `*0x8370FEBC` is set; on those, after it, a member below its share of the wanted people (90 m of its eye; full by the
+  same rule as traffic; 10 passes a second in all, each member at most every 250 ms) gets `8240F148(1, !moving)` with
+  the camera's eye (`+44`) and
   forward row (`+104`) the member's: its picker `8240EC88` and the spawn `8240DD40` read only those of the camera (and
   the view's FOV). The constructor `82479AB0` (LR `8240E178`) and the set-up `820E9550` (LR `8240E1AC`), whose callees
   reach the camera code, run with the real pose; never the make-room path (`8240E448`) for a member: the pass runs only
@@ -778,18 +795,40 @@ address below, read in the asm):
   the categories of a lower priority through their evict functions `823FFA48` (people, list `+0`) / `823FFC48` (cars,
   `+4`), which take the valid record (`+12` handle, `+20` state, not a visible one in pass 1) with the largest `+24`,
   the distance squared from the host's player: a member's first. The hooks give the records near a member the lowest
-  score for the call; with nothing else there the creation is refused (it retries), unless its kind's priority
-  (`0x82038858 + 28 x kind`) is 0 (a mission's, a script's, co-op's copies), which always gets its slot.
-- **Density**: `824194A8` (traffic wanted, <= 12) and `82419208` (people, <= 26) return `x (1 + member_density x
-  members)`, capped at the game's limits; the street is the area's, shared by its viewpoints.
+  score for the call, so an unprotected one goes first; with nothing else there the creation still takes one when its
+  kind's priority (`0x82038858 + 28 x kind`) is below 3: priority 0 (a mission's, a script's, co-op's copies), police
+  (kind 4, priority 1) and special / gang (6, 2) (review AB-6). Only the street's own kinds (priority 3: ambient,
+  traffic, parked) would be refused, and those evict nothing (plan_B 6), so in practice nothing is refused.
+- **Density**: `824194A8` (traffic wanted, <= 12) and `82419208` (people, <= 26) return `max(x, min(cap, x (1 +
+  member_density x members)))`: never past the game's limits, never below what the game wants (a script's density
+  can take it past them), and a base of 1 or less is left alone: the game clamps to at least 1 after multiplying by
+  the density (`82419304`), so a mission's density 0 (an empty street) comes out as 1 and stays 1. The member traffic /
+  people passes don't run while `set_traffic_density` (`0x827AD060`) / `set_ped_density` (`0x827AD064`) is 0
+  (review AB-3).
+- **The host's cars another player drives** (review A2-14, the B/2 half): `82412878` (traffic far from the host's
+  camera) and the parked removals keep a car of the host's another player's character sits in or gets into, in any
+  session (members or not, `world` 0 or 1): removed, it came back on the host as a car copy outside the registry and
+  never streamed again. The allocator's car score `823FF730` already leaves out cars with people other than ambient
+  ones in them. A car the game removes anyway (a script, an explosion) is still re-made outside the registry (open).
 - mod.ini (host): `member_spawns` 1 parked, 2 traffic, 4 people (7; 0: only the keep-alive and the allocator's cover),
   `member_density` (1.0; 0 off), `member_join_m` / `member_leave_m` 150 / 200.
+- Scaling (review AB-10): the area is one street (12 cars, 26 people, 6 parked), so with the host and 3 members each
+  has about 3 cars, 6-7 people and 1-2 parked cars near it, and at 12 players about 1 car and 2 people; the B pass
+  numbers below are for 2-3 players.
+- Visibility (review AB-13): the people pass's frustum test (`8218DE20` in `8240DD40`) and `823FE380` use the render
+  view, not the swapped camera, so people made for a member are kept out of the host's view only and can pop in
+  inside the member's (it fades its copies in anyway). Threads: `*0x8309ABEC` and the camera's eye / forward are
+  swapped for 20-150 us inside the world update; a reader on another thread (a render-side reader, another mod's
+  on_frame) could see the member's pose for that window.
 
-Logs (every 10 s with the World lines): `World (owner) B: viewpoints n (members m: slots); wanted cars w (boosted from
-w0) / people p (from p0); parked: member passes, candidates near members (of the state-1 records), made for members,
-re-states vetoed, removals kept; traffic: turns t of T ticks (0 spots z), made for members (in their view); people:
-member passes (full), made (deleted by the region check at birth); kept alive people / cars; make room spared;
-evictions refused (protected taken for a priority-0 creation, covered)`; per member `World (owner) B slot S: d m from
+Logs (every 10 s with the World lines): `World (owner) B: viewpoints n (members m: slots, "(stale)" after one whose
+pose is 0.5-3 s old; went stale k); wanted cars w (boosted from w0) / people p (from p0); parked: member passes,
+candidates near members (of the state-1 records), made for members, re-states vetoed (not vetoed: chunk not here,
+held 3 s), removals kept; traffic: turns t of T ticks (0 spots z), made for members (in their view); people: member
+passes (full), made (deleted by the region check at birth); member passes skipped for density 0; kept alive people /
+cars; make room spared; evictions refused (protected taken for a creation of priority 0-2: per kind; covered); cars
+another player sits in kept` (without members, on any host: `World (owner): cars another player's character sits in
+kept from this game's traffic / parked removals n`); per member `World (owner) B slot S: d m from
 this player (in since t s); near its eye (people 50 m / cars 100 m): this game has a / b (registry; streaming); made for
 it parked / traffic / people`; on the member `World (member) B: near me (people 50 m / cars 100 m of my eye) by distance
 to the host: <40 m: people a0, cars b0 (n0 s); 100-150 m: people a1, cars b1 (n1 s); session ratio a1/a0 = x%, b1/b0 =
@@ -797,14 +836,18 @@ y%` (the pass: x >= 60 %, y >= 80 % with n0, n1 >= 60 s, A's numbers unchanged).
 (parked/traffic/people, member_density; the traffic ring *0x82832724 and the removal radii *0x83AD2640/44)`, the first
 pass of each kind, `parked re-state vetoed for record R (spot S) near slot S` (10), `eviction refused for kind K` (10),
 `people made for slot S deleted at birth` (10), and any call a member's people pass makes to `82479AB0` / `820E9550`
-from elsewhere than the spawn's own call (plan_B's check). Perf parts `B parked`, `B people`, `B keep`.
+from elsewhere than the spawn's own call (plan_B's check). Perf parts `B parked`, `B people`, `B keep` and `B keep in a
+pass` (an eviction or keep test inside a member's pass: its ms are part of `B parked` / `B people` too; review AB-12).
+The start-up line names `member_join_m` / `member_leave_m` instead of a literal 150 / 200 m (AB-12).
 
 **Package C: the area's actions and effects** ("The shared area: actions and effects", notes/coop-2.2/plan_C.md). What
 the host's people and cars do shows on every member's screen the way the game's own MP mirrors its NPCs (`823A8240`
 applies a fire byte, a burn byte and the aim from the NPC's state, not an event per shot). mod.ini `world_actions` (1;
 0 turns all of it off on that game, sent and applied alike; each game tells the others its setting with
 `kEventVehicleTable` a[4] when a player joins, and Package C runs between two games only when both have it on).
-Protocol 6 is kept: no protocol-6 build went to testers.
+Protocol 6 was kept for Package C itself (no protocol-6 build went to testers); the review fixes below make it 7, so a
+2.2 build from an earlier step is refused at the join with the version message instead of silently showing nothing
+(reviews A3-16, AB-8).
 H for every address below (read in the asm):
 - **Wire**: `PedRec` / `SeatedRec` keep their sizes; the weapon byte is the gun's weapon-table index + 1 in bits 0-5
   (an index past 62 goes as 0, counted), bit 6 the gun raised (`+216` 0x80000000, the 2.5 s hold `82449708` sets) and
@@ -826,10 +869,11 @@ H for every address below (read in the asm):
   &hit point, blank)`; automatic guns hold the trigger (`+3592` 0x40, a call each update when the refire timer is due,
   so the gun's own rate) and release it (`82474738` + `82476B70`) when the hold bit goes or its fire part is 300 ms
   old. All under `fire_replay_depth` (no damage, no blood or shove) and `copy_fire_replay_depth` (`DetonateHook`: no
-  car takes the round's hit, the member's own car included, as 2.1); within 150 m of the camera, 8 calls an update in
-  all, a round older than 750 ms dropped with its last wait. A seated copy fires blanks (flash and sound; drive-by mode
+  car takes the round's hit: the car this player drives gets the host's round by `kEventCarHitByPed` below); within
+  150 m of the camera, 8 calls an update in all, a round older than 750 ms dropped with its last wait. A seated copy fires blanks (flash and sound; drive-by mode
   on copies is later). Its gun settles like the other players' (400 ms to another, 1.5 s to none, kept while rounds
-  wait); `MatchWeapon` logs copies as "World copy gun". The copy's own replayed rocket or throw is refused
+  wait); `MatchWeapon` logs copies as "World copy gun" (their own cap) and stops after 3 tries of a gun a copy's
+  model doesn't take, until it should hold another (review A3-11). The copy's own replayed rocket or throw is refused
   (`ProjectileCreateHook`); the host's person's projectile comes as WPJ1 with its id (unicast to each member of the
   area; the member's copy is credited to the copy of that person), its explosion too after the person is gone.
 - **Driver inputs**: the member answers the brake getter `82533DA8` (r3 handle, f1 = `E+408` with `E = *(v+224)`
@@ -867,27 +911,40 @@ H for every address below (read in the asm):
   the normal `r8`, the push `r9`) and the copy takes nothing; the host applies it with `825397E0(v, the member's
   character, 0, weapon info, ...)` and the call's constants (`f1` `*0x820380CC`, `f2` `*0x8208A354`, `+84` = 2,
   `+92` the push) under `replicated_depth`, and its replay of that member's round leaves a car of its world alone (the
-  member's screen decides the hit). A car a player drives is left to the replays of the round, as in 2.1. The
-  other direction (the host's people's rounds on a member's own car) is not built: that car takes no NPC bullets.
+  member's screen decides the hit). A car a player drives is left to the replays of the round, as in 2.1.
+- **The other direction: the host's people's rounds on the car a member drives** (`kEventCarHitByPed` 29, built with
+  the review fixes; the mapping is A/9's): on the host a real round (not a replay) of a person of its registry on a
+  car another player's character drives (seat 0) - that player's own car's copy, or a car of the host's they took -
+  reaches `DetonateHook` from the same bullet path (LR `82536470`, `+84` = 2); for a member of the area with Package C
+  on it goes to that member with the car as its pose names it (owner slot and id: `CarCopyRef`, else the host's own
+  handle), the weapon's table index, the damage (16 bits), the hit point, the normal, the shooter's id and the push
+  (direction and length), and nothing happens on the host (2.1's block refused it there anyway: the car is another
+  game's). The member finds the car (`FindCar`), applies it only to the car this player is in, with the copy of that
+  person as the attacker (skipped when the copy isn't here: `825397E0`'s attacker paths want a person), through the
+  same `825397E0` call as A/9 under `replicated_depth`. The copy's replay of that round here still hits no car
+  (`copy_fire_replay_depth`), so the car takes the round once. Before, a member's car took no NPC bullets at all.
 
 Logs (every 10 s): the owner's `World (owner) gunfire: rounds r by p people (bursts, blanks, hit points, aim past 655 m,
 guns past index 62), fire parts in n records (KB)`, `World (owner) driving: car records with brake / reverse / horn /
 steering (of n with physics, n in all); lights forced on / off`, `World (owner) explosions: sent (props, cars' second),
 skipped as wrecks / projectiles / queue / replays / far / other, bad def; NPC projectiles sent, exploded`, `World
 (owner) members' bullets on its cars: applied (car gone, a player drives it, bad); their replayed rounds' car hits left
-to their events`; the member's `World (member) gunfire: rounds played (single, held frames, releases, blanks) of n
-counted from the host; waited/dropped: not set up, lying, other gun, no ammo, raising, refused, too old, past 150 m,
-frame cap; guns given (carried, failed), raises; cost ms/s (us a call)`, `World (member) driving: brake shown (getter
-answers), reverse shown (answers), horns frames, steer written (no physics, mean |E+416|), engine bit written`, `World
+to their events; its people's rounds on cars members drive sent to them (weapon not named)`; the member's `World
+(member) gunfire: rounds played (single, held frames, releases, blanks) of n counted from the host; waited/dropped:
+not set up, lying, other gun, no ammo, raising, refused, too old, past 150 m, frame cap; guns given (carried, failed;
+given up after 3 tries), raises; cost ms/s (us a call)`, `World (member) driving: brake shown (getter answers),
+reverse shown (answers), horns frames, steer written (no physics, mean |E+416|), engine bit written`, `World
 (member) burning: lit, put out, relit; refused (in a car, slots full kept own, +120 masked, +3694, dead, water, other);
 own ignites of copies refused (explosions, fire patches, spreading, cars, other)`, `World (member) explosions: played
 (props with the prop here / without; cars' second, copy missing), skipped here already / own act, held again here,
 held from copies' rounds, chain props recorded, local copy-car explosions held, bad def; NPC projectile copies made (exploded), copies' own
 launches refused; this player's bullets on the host's cars sent (weapon not named), copies' replayed rounds on cars
-skipped`. One-shots: `World copy ID (model): round of GUN not played: why` (20, the first of each reason), `World copy
+skipped; the host's people's rounds on this player's car applied (car not here, not this player's, shooter not here,
+bad)`. One-shots: `World copy ID (model): round of GUN not played: why` (20, the first of each reason), `World copy
 gun: ...` (20), `World copy ID not set alight: why (+120, +216, +3694, +2496)` (10), `World explosion from the host: def
 n (kind k) at x y z, source found|none, attacker who` (10), `World (owner): slot S's bullet hit car ID here (weapon,
-damage)` (10), `Explosion defs / weapons: slot S has a / b, this game c / d: the same | DIFFERENT`. Perf part `world
+damage)` (10), `World (owner): a round of person P hit car C (owner slot o) that slot S drives: sent to it (weapon w)`
+(10), `Explosion defs / weapons: slot S has a / b, this game c / d: the same | DIFFERENT`. Perf part `world
 fire` (in `world apply`).
 
 **People models and car copies: where the references go** (notes/coop-2.1/model_refcount_investigation.md 7.2a and
@@ -917,6 +974,36 @@ would mean the old way), `Car copy ID made with a model reference noted already`
 model of a copy here its kind-5 references (copies, this game's own; copies noted at +50304): ID k (c, o; noted n) ...;
 m with more references than its cars + 1` next to the 2.1.4 `Car models here` line.
 
+**Review fixes** (notes/coop-2.2/review_A3.md minors, review_A4_B.md, review_A2.md A2-14, impl_C_notes open point 2;
+the list with what was applied is in impl_C_notes.md, "Review fixes"). Besides the B and C changes above:
+- **Let-go cars** (A3-5, A3-7): `WorldFade` and `WorldDestroy` share one rule, `WorldLetGoCar`: a car copy this
+  player sits in becomes its taken car (named as the host's), one another player's character sits in or is getting
+  into becomes a car copy that player's pose drives; the crew copies sitting in it leave the table with it as 2.1's
+  pulled-out drivers (removed 4 s on, once out of the car; `ReleaseOrphanDrivers` now runs every update on a client,
+  world mode too) and go back to the host as "gone here", so its offer starts over. Before, they stayed copies of a car
+  no longer in the table and were faded and destroyed next to this player.
+- **2.1's copies dropped with a player in them** (A3-12, the `world = 1` drop and the out-of-range drop): this
+  player's becomes its taken car with the crew as pulled-out drivers, another player's character's a car copy
+  (`AdoptSharedCar`); before, the car became an anonymous car of this game and its crew this game's own people.
+- **A seated create whose seat a player has here** waits (`WorldMake` returns made / wait / failed), declined "pool"
+  after 3 s like a full pool, instead of three failed tries (A3-10).
+- **The host's person events** (actions, calls, hit reactions, effects) go to every game only while 2.1's people stream
+  has that person (players with `world = 0`), else only to the members of the area (`QueuePersonEvent`, A3-13).
+- **Diagnostics** (A3-15): `WWA1`'s dropped "model" / "chunk" counts are the ones since the last `WWA1`; the per-type
+  counts of the host's world messages are kept only for the `world = 0` line; a stand-in copy's original model no longer
+  counts against the 11 people-model slots (the stand-in replaced it for good).
+- **The chunk mask** (A3-17) is sent and not used yet: world.h skips an entry whose chunk a member hasn't loaded, and
+  coop.cpp names no entry's chunk. The bit is the index in the list `0x829A97E8`, the same chunk on both games only if
+  that list keeps the image's order; the two games' `World chunks here` lines decide that first. Then the owner can
+  set `Entry.chunk` from the object's chunk and hold offers a member can't load.
+- **Another player's character kept past 130 m** (AB-5): out there its clothing isn't put on again (the game unloads
+  it at that distance); once it is back within 60 m its slot is checked at once and dressed again when anything went
+  (`R back within 60 m after d m (kept past 130 m: a member of the host's area): clothing lost, dressing again | all
+  there (...)`, 20).
+- **Trains** (AB-9): `spawn_trains` is a console variable in the image's data: its one writer is the console handler
+  `8242C128` and its one reader the train manager `8242EFB0` (H), so no script sets it and the save can't keep the 0
+  (M: no other reference to `0x827ACF87`, direct or as `+10407`). A 0 written while it is held stays unknown to the put-back.
+- **Protocol 7** (A3-16, AB-8): a step build of 2.2 is refused at the join; the same build on every game.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
-parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies,
-the host's people's rounds on a member's own car).
+parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
