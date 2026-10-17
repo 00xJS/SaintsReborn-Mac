@@ -549,7 +549,8 @@ sets those bytes, H):
 On the host, 20 times a second (`WorldOwnerTick`): the members are the clients whose pose says they show the host's
 world (`kPoseHostWorld`, 2.1's rule for the host's police: the client shows the host's traffic or people - from 120 m,
 kept to 200 m - and the host's character, made within 60 m and removed past 130 m, held 2 s; with mod.ini police = 0
-the bit is never set and nobody is a member yet); their camera from the pose (`eye`, the forward row of `cam`). The registry's state is read from the game: positions; the car's chunk bit (`+120` 0x04000000, what
+the bit is never set and nobody is a member yet); their camera from the pose (`eye`, the forward row of `cam`). The
+registry's state is read from the game: positions; the car's chunk bit (`+120` 0x04000000, what
 `vehicle_in_loaded_chunk` `824DAB38` reads: a car whose chunk unloaded is parked without physics and doesn't stream);
 resting (slower than 0.3 m/s or no physics: 2 Hz) and a change of hit points, damage, siren or driver; a person's
 activity (`+200`), seat (`+2496`/`+2500`: a seated person is a crew record of its car), and the rules 2.1 kept: mission

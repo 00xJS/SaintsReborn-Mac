@@ -11755,7 +11755,7 @@ void NetworkLoop(sockaddr_in host_address, bool host) {
     const int n=NetRecv(buffer,capacity,from);
     if(n==int(sizeof(kV1Hello)-1) && !std::memcmp(buffer,kV1Hello,size_t(n))) {
       static bool told=false;
-      if(!told) { told=true; ProbeLog("A player with an older co-op (1.71 or earlier) tried to join"); Notify("Co-op: a player with an older co-op version tried to join. Both players need co-op 2.1."); }
+      if(!told) { told=true; ProbeLog("A player with an older co-op (1.71 or earlier) tried to join"); Notify("Co-op: a player with an older co-op version tried to join. Both players need co-op 2.2."); }
       return 0;
     }
     if(n>0) ++packets_in;
@@ -11838,7 +11838,7 @@ void NetworkLoop(sockaddr_in host_address, bool host) {
       if (!host && !sess.Joined() && !told_slow_join && now-started>20000 && sess.DenyReason().empty()) {
         told_slow_join=true;
         ProbeLog("V2 no answer from the host after 20 s");
-        Notify("Co-op: no answer from the host yet. Both players need co-op 2.1; still trying...");
+        Notify("Co-op: no answer from the host yet. Both players need co-op 2.2; still trying...");
       }
     }
     if (connected.load()) SendDue(sess,st,host,now);
