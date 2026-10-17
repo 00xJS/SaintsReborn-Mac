@@ -31,4 +31,10 @@ bool CoopResumePulse();
 // row, which gets a "Zombies" entry.
 void LobbyRowAdded(uint8_t* base, uint32_t label, uint32_t item, int row);
 
+// The matchmaking screen (sub_823647A8) / a multiplayer lobby (sub_823963D0)
+// ran its update in the last 1.5 s. The game's own matchmaking bytes
+// (0x8370EB4F +1606 / +1608) stay set after leaving, so they can't tell.
+bool MatchmakingScreenActive();
+bool LobbyScreenActive();
+
 }  // namespace sr

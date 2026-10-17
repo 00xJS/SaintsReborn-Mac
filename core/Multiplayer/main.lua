@@ -14,8 +14,18 @@
 -- (Players needed before a Ranked / Player Match starts, the game's
 -- "mp_auto_mm_conn_needed" at 0x827ADF04, is set in MULTIPLAYER > OPTIONS >
 -- "Players to Start" now; the exe keeps it in mp_min_players.txt.)
+-- 0.6: a game that JOINED a session (byte 0x8370E9F6 net active = 1, byte
+-- 0x8370E9DF hosts = 0) is never alone in a match. The player count above is
+-- built from the player objects on that game and could stay below 2 there,
+-- which left the switch on for everyone except the host: in Protect tha Pimp
+-- (ranked and custom) the other players could run around during the round
+-- countdown and after a round ended. The round freeze itself is the game's
+-- own (sub_823DFE28 / sub_823E5088 -> sub_823DC188 locks the pad) and runs on
+-- every game; it only needs the switch off.
 local solo = wml.setting("solo_start", true)
 local ALLOW_SINGLE = 0x8370F28A
+local NET_ACTIVE = 0x8370E9F6
+local NET_HOST = 0x8370E9DF
 
 local function guest_ptr(p)
   return p >= 0x82000000 and p < 0xA0000000
@@ -37,6 +47,9 @@ wml.on_frame(function()
   local top = wml.read_u32(0x827D578C)  -- 6 lobby / menus, 7..31 a match
   local in_match = top > 6 and top <= 31
   local want = 1
-  if in_match and players_in_match() >= 2 then want = 0 end
+  if in_match then
+    local joined = wml.read_u8(NET_ACTIVE) == 1 and wml.read_u8(NET_HOST) == 0
+    if joined or players_in_match() >= 2 then want = 0 end
+  end
   if wml.read_u8(ALLOW_SINGLE) ~= want then wml.write_u8(ALLOW_SINGLE, want) end
 end)
