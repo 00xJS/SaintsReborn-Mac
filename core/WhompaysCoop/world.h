@@ -42,6 +42,22 @@ inline bool IsCar(uint8_t kind) { return kind < 16; }
 enum : uint8_t {
   kPedSign = 1, kPedMission = 2, kPedDead = 4, kPedCrouch = 8, kPedRagdoll = 16, kPedBurning = 32, kPedHidden = 64, kPedSeated = 128,
 };
+// PedRec / SeatedRec weapon byte (Package C): the gun in hand as weapon table
+// index + 1 (0 none; an index past 62 goes as 0), the gun raised (+216
+// 0x80000000, the 2.5 s hold 82449708 sets), and a FireExt after the record.
+enum : uint8_t { kWeaponGun = 0x3F, kWeaponRaised = 0x40, kWeaponFire = 0x80 };
+// FireExt.fire: the rounds the person fired (the owner's running count mod
+// 16), trigger held (a burst gun that fired in the last 250 ms), the last
+// round a blank (82470A50 r6), aim valid (the last round's first pellet's hit
+// point), drive-by mode (seated, +516 == 3).
+enum : uint8_t { kFireCount = 0x0F, kFireHeld = 0x10, kFireBlank = 0x20, kFireAim = 0x40, kFireDriveBy = 0x80 };
+// CarRec.damage bits 6-7 (Package C): the brake lights (the 10-frame brake
+// average v+53500 over 0.2, the tail lights' own test) and reversing ((int8)
+// E+180, 82535C00). CarRec.drive: the steering E+412 + E+416 in 6 bits (two's
+// complement, x 31), the horn (825241F0 ran in the last 150 ms) and the
+// engine bit v+53976 0x08000000 (both lights need it).
+enum : uint8_t { kCarBrake = 0x40, kCarReverse = 0x80 };
+enum : uint8_t { kDriveSteer = 0x3F, kDriveHorn = 0x40, kDriveEngine = 0x80 };
 // WWR1 reasons (1 "out of interest" does not exist in 2.2; 2 "trimmed" never did).
 enum : uint8_t { kRemoveGone = 0, kRemoveInterest = 1, kRemoveAreaLeft = 3 };
 // Registry entry flags.
@@ -72,8 +88,9 @@ struct CarRec {
   int16_t rot[3];     // smallest-three quaternion, 1/32767; rot[0] low 2 bits = the dropped component
   int16_t vel[3];     // 1/128 m/s
   int8_t ang[3];      // 1/16 rad/s
-  uint8_t damage;     // CarDamage (bits 0 fire, 1 smoke, 2 wrecked, 5 heavy smoke) | CarSiren (3 lights, 4 siren); bits 6-7 spare (Package C)
+  uint8_t damage;     // CarDamage (bits 0 fire, 1 smoke, 2 wrecked, 5 heavy smoke) | CarSiren (3 lights, 4 siren) | kCarBrake | kCarReverse
   uint8_t hp;         // CarHealth 0-255
+  uint8_t drive;      // steering (kDriveSteer) | kDriveHorn | kDriveEngine
 };
 struct PedRec {         // a person on foot
   uint32_t id;
@@ -85,12 +102,19 @@ struct PedRec {         // a person on foot
   uint16_t action;    // +756
   int8_t vel[2];      // x / z, 1/16 m/s
   uint8_t team;       // +232
-  uint8_t weapon;     // gun in hand: index + 1, 0 none
+  uint8_t weapon;     // kWeapon*: gun in hand index + 1 (0 none), raised, a FireExt follows
 };
 struct SeatedRec {      // a person in a car: one id with car + seat
   uint32_t id, car;
   uint8_t seat, team, weapon;
   uint8_t flags;      // kPed* with kPedSeated set (byte 11, as PedRec)
+};
+// After a PedRec / SeatedRec whose weapon has kWeaponFire: sent with every
+// record of a person who fired in the last second (so the last count and the
+// trigger's release always arrive); never in a WWC1's first record.
+struct FireExt {
+  uint8_t fire;       // kFire*
+  int16_t aim[3];     // 2 cm from the header's ref (QPos)
 };
 // WWC1: reliable, unicast, one per object per member. Tail: name[name_len],
 // look[look_len] (8238B0B8 block), paint[paint_len] (CarLookPacket content),
@@ -138,9 +162,10 @@ struct OwnerMapRec {
   struct { uint8_t area, owner; } slots[kMaxSlots];   // area kSolo: its own world
 };
 #pragma pack(pop)
-static_assert(sizeof(UpdateHeader) == 25 && sizeof(CarRec) == 29 && sizeof(PedRec) == 20 && sizeof(SeatedRec) == 12, "wire format");
+static_assert(sizeof(UpdateHeader) == 25 && sizeof(CarRec) == 30 && sizeof(PedRec) == 20 && sizeof(SeatedRec) == 12 && sizeof(FireExt) == 7, "wire format");
 static_assert(sizeof(CreateRec) == 39 && sizeof(RemoveRec) == 15 && sizeof(AdmitRec) == 26 && sizeof(DigestRec) == 16 && sizeof(OwnerMapRec) == 30, "wire format");
 static_assert(offsetof(PedRec, flags) == 11 && offsetof(SeatedRec, flags) == 11, "a reader peeks byte 11 for kPedSeated");
+static_assert(offsetof(PedRec, weapon) == 19 && offsetof(SeatedRec, weapon) == 10, "a reader peeks the weapon byte for a FireExt");
 
 constexpr size_t kMaxName = 46, kMaxLook = 127, kMaxPaint = 320, kMaxDeclined = 32, kMaxModels = 32;
 constexpr size_t kDigestMaxIds = 80;    // per WWD1 message (more go in parts)
@@ -173,6 +198,8 @@ inline int8_t QPedVel(float v) { return Clamp8(Round(v / kPedVelUnit)); }
 inline float UnqPedVel(int8_t q) { return q * kPedVelUnit; }
 inline uint8_t QYaw(float rad) { return uint8_t(Round(rad * (128 / kPi)) & 255); }
 inline float UnqYaw(uint8_t q) { return q * (kPi / 128); }
+inline uint8_t QSteer(float s) { return uint8_t(std::max(-31, std::min(31, Round(s * 31))) & kDriveSteer); }
+inline float UnqSteer(uint8_t d) { const int v = d & kDriveSteer; return float(v & 0x20 ? v - 64 : v) / 31; }
 inline float YawOf(const float fwd[3]) { return std::atan2(fwd[0], fwd[2]); }   // y up: heading as coop.cpp's atan2(fx, fz)
 inline uint8_t QHp(float hp, float max) { return uint8_t(std::max(0, std::min(255, max > 0 ? Round(255 * hp / max) : 0))); }
 
@@ -281,24 +308,40 @@ inline bool ReadAdmit(const uint8_t* d, size_t n, AdmitMsg& a) {
 
 // WWS1 messages from one tick's records: cars, then people on foot, then
 // seated; a new message (with the header again) whenever the next record
-// would not fit. A reader tells PedRec from SeatedRec by byte 11 (flags).
+// would not fit. A reader tells PedRec from SeatedRec by byte 11 (flags),
+// and a FireExt after either by its weapon byte (kWeaponFire). peds_ext /
+// seated_ext run parallel to peds / seated (empty: none; zero when absent).
 struct UpdateMsg {
   UpdateHeader head{};
   std::vector<CarRec> cars;
   std::vector<PedRec> peds;
   std::vector<SeatedRec> seated;
+  std::vector<FireExt> peds_ext, seated_ext;
 };
-inline std::vector<std::vector<uint8_t>> PackUpdates(UpdateHeader head, const std::vector<CarRec>& cars, const std::vector<PedRec>& peds, const std::vector<SeatedRec>& seated) {
+inline std::vector<std::vector<uint8_t>> PackUpdates(UpdateHeader head, const std::vector<CarRec>& cars, const std::vector<PedRec>& peds, const std::vector<SeatedRec>& seated,
+                                                     const std::vector<FireExt>& peds_ext = {}, const std::vector<FireExt>& seated_ext = {}) {
   std::vector<std::vector<uint8_t>> out;
   SetMagic(head.magic, "WWS1");
   size_t ci = 0, pi = 0, si = 0;
   auto fits = [](const std::vector<uint8_t>& m, size_t n) { return m.size() + n <= size_t(kMaxMessage); };
+  auto add = [](std::vector<uint8_t>& m, const void* rec, size_t n, bool ext, const std::vector<FireExt>& exts, size_t i) {
+    const auto* b = static_cast<const uint8_t*>(rec); m.insert(m.end(), b, b + n);
+    if (ext) { FireExt f{}; if (i < exts.size()) f = exts[i]; const auto* e = reinterpret_cast<const uint8_t*>(&f); m.insert(m.end(), e, e + sizeof(FireExt)); }
+  };
   while (ci < cars.size() || pi < peds.size() || si < seated.size()) {
     std::vector<uint8_t> m(sizeof(head));
     uint8_t nc = 0, np = 0;
     for (; ci < cars.size() && nc < 255 && fits(m, sizeof(CarRec)); ++ci, ++nc) { const auto* b = reinterpret_cast<const uint8_t*>(&cars[ci]); m.insert(m.end(), b, b + sizeof(CarRec)); }
-    for (; pi < peds.size() && np < 255 && fits(m, sizeof(PedRec)); ++pi, ++np) { const auto* b = reinterpret_cast<const uint8_t*>(&peds[pi]); m.insert(m.end(), b, b + sizeof(PedRec)); }
-    for (; si < seated.size() && np < 255 && fits(m, sizeof(SeatedRec)); ++si, ++np) { const auto* b = reinterpret_cast<const uint8_t*>(&seated[si]); m.insert(m.end(), b, b + sizeof(SeatedRec)); }
+    for (; pi < peds.size() && np < 255; ++pi, ++np) {
+      const bool ext = peds[pi].weapon & kWeaponFire;
+      if (!fits(m, sizeof(PedRec) + (ext ? sizeof(FireExt) : 0))) break;
+      add(m, &peds[pi], sizeof(PedRec), ext, peds_ext, pi);
+    }
+    for (; si < seated.size() && np < 255; ++si, ++np) {
+      const bool ext = seated[si].weapon & kWeaponFire;
+      if (!fits(m, sizeof(SeatedRec) + (ext ? sizeof(FireExt) : 0))) break;
+      add(m, &seated[si], sizeof(SeatedRec), ext, seated_ext, si);
+    }
     head.n_cars = nc; head.n_people = np;
     std::memcpy(m.data(), &head, sizeof(head));
     out.push_back(std::move(m));
@@ -308,16 +351,23 @@ inline std::vector<std::vector<uint8_t>> PackUpdates(UpdateHeader head, const st
 inline bool ReadUpdate(const uint8_t* d, size_t n, UpdateMsg& u) {
   if (n < sizeof(UpdateHeader) || !HasMagic(d, "WWS1")) return false;
   std::memcpy(&u.head, d, sizeof(u.head));
-  u.cars.clear(); u.peds.clear(); u.seated.clear();
+  u.cars.clear(); u.peds.clear(); u.seated.clear(); u.peds_ext.clear(); u.seated_ext.clear();
   size_t o = sizeof(u.head);
   for (int i = 0; i < u.head.n_cars; ++i) {
     if (o + sizeof(CarRec) > n) return false;
     CarRec c; std::memcpy(&c, d + o, sizeof(c)); o += sizeof(c); u.cars.push_back(c);
   }
+  // (a record cut inside its FireExt is refused)
+  auto ext = [&](uint8_t weapon, std::vector<FireExt>& out) {
+    FireExt f{};
+    if (weapon & kWeaponFire) { if (o + sizeof(FireExt) > n) return false; std::memcpy(&f, d + o, sizeof(f)); o += sizeof(f); }
+    out.push_back(f);
+    return true;
+  };
   for (int i = 0; i < u.head.n_people; ++i) {
     if (o + sizeof(SeatedRec) > n) return false;
-    if (d[o + 11] & kPedSeated) { SeatedRec s; std::memcpy(&s, d + o, sizeof(s)); o += sizeof(s); u.seated.push_back(s); }
-    else { if (o + sizeof(PedRec) > n) return false; PedRec p; std::memcpy(&p, d + o, sizeof(p)); o += sizeof(p); u.peds.push_back(p); }
+    if (d[o + 11] & kPedSeated) { SeatedRec s; std::memcpy(&s, d + o, sizeof(s)); o += sizeof(s); u.seated.push_back(s); if (!ext(s.weapon, u.seated_ext)) return false; }
+    else { if (o + sizeof(PedRec) > n) return false; PedRec p; std::memcpy(&p, d + o, sizeof(p)); o += sizeof(p); u.peds.push_back(p); if (!ext(p.weapon, u.peds_ext)) return false; }
   }
   return o == n;
 }
@@ -424,6 +474,7 @@ struct Entry {
   int16_t chunk = -1;           // chunk list index when known (parked records' +56), else -1
   uint16_t model = 0;
   uint16_t create_bytes = 0;    // the member's create size (0: the default by kind)
+  uint8_t extra = 0;            // people: bytes after the record this tick (a FireExt while it fired in the last second)
   uint32_t id = 0, car = 0;     // car: a seated person's car id
   uint32_t activations = 1;     // the same human coming through 8247A6D0 again (model reload, queued mission NPC)
   uint64_t created_at = 0, changed_at = 0;   // changed_at: hp / flags / occupant changed (a resting object sends at band rate once)
@@ -432,7 +483,7 @@ struct Entry {
   std::string name;             // people: the model name for the create
   Offer offer[kMaxSlots];
   bool Seated() const { return !IsCar(kind) && car != 0; }
-  size_t RecordBytes() const { return IsCar(kind) ? sizeof(CarRec) : Seated() ? sizeof(SeatedRec) : sizeof(PedRec); }
+  size_t RecordBytes() const { return IsCar(kind) ? sizeof(CarRec) : (Seated() ? sizeof(SeatedRec) : sizeof(PedRec)) + extra; }
   uint16_t CreateBytes() const { return create_bytes ? create_bytes : IsCar(kind) ? kCreateBytesCar : kCreateBytesPed; }
   bool Streams() const { return !(flags & (kEntryInactive | kEntryExcluded)); }
 };
@@ -508,7 +559,7 @@ inline bool InCone(const float eye[3], const float fwd[3], const float pos[3], f
 }
 inline int BandOf(float d) { return d <= kBandNear ? 0 : d <= kBandMid ? 1 : 2; }
 
-struct Planned { Key key = 0; uint8_t kind = 0, band = 0; uint16_t bytes = 0; float priority = 0; };
+struct Planned { Key key = 0; uint8_t kind = 0, band = 0; uint16_t bytes = 0; float priority = 0; bool seated = false; };   // bytes: the record's and its FireExt
 struct PlannedRemove { Key key = 0; uint8_t reason = 0; uint16_t fade_ms = 0; };
 struct MemberPlan {
   std::vector<Planned> creates, updates;   // in send order (crew right after its car)
@@ -622,7 +673,7 @@ class Scheduler {
       if (!o.created && !IsCar(e.kind) && m.HasModel(e.model)) prio += kPrioModel;
       Cand c{&e, &o, prio, d, 0, BandOf(d), 0, 0, e.id, 0, false, false, false, false, false, false, size_t(-1)};
       c.seated = e.car && reg.Find(e.owner, e.car);   // (a car that is gone: on foot until its own hook says otherwise)
-      c.bytes = uint16_t(IsCar(e.kind) ? sizeof(CarRec) : c.seated ? sizeof(SeatedRec) : sizeof(PedRec));
+      c.bytes = uint16_t(IsCar(e.kind) ? sizeof(CarRec) : (c.seated ? sizeof(SeatedRec) : sizeof(PedRec)) + e.extra);
       // Streams: created before this tick (the create carries the first record) and not a car a player drives.
       c.streams = o.created && o.offered_at != now && !(IsCar(e.kind) && (e.authority != e.owner || (e.flags & kEntryPlayerCar)));
       if (c.streams) {
@@ -731,7 +782,7 @@ class Scheduler {
       vnow[c.band] = std::max(vnow[c.band], c.tag);
       c.o->last_sent = now; c.o->tag = std::max(c.o->tag + float(c.interval), vnow[c.band]);
       ++m.band[c.band].planned; m.band[c.band].bytes += c.bytes; m.band[c.band].rest_planned += c.rest;
-      p.updates.push_back({MakeKey(c.e->owner, c.e->id), c.e->kind, uint8_t(c.band), c.bytes, c.priority});
+      p.updates.push_back({MakeKey(c.e->owner, c.e->id), c.e->kind, uint8_t(c.band), c.bytes, c.priority, c.seated});
     }
     // Rebase every band's tags on its virtual now (0 next tick): only the differences matter.
     for (size_t i : idx) { Cand& c = cands[i]; if (c.streams) c.o->tag = std::max(-kTagMax, std::min(kTagMax, c.o->tag - vnow[c.band])); }

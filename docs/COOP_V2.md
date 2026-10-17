@@ -496,11 +496,12 @@ multiplayer mirrors its world, instead of 2.1's streams with their 90 / 200 / 25
 Q 2.1): every object the authority simulates is created once on each member (reliable), updated by priority within a
 byte budget per member (unreliable, newest wins) and removed once (reliable); the member decides what it can hold and
 says so. In 2.2 the host is the owner of the one area; a client is a member of it or runs its own world (solo), as
-in 2.1. Package A of the round is built in steps; steps 1 to 4 are in, and Package B/1 (content around every member).
+in 2.1. Package A of the round is built in steps; steps 1 to 4 are in, Package B/1 (content around every member) and
+Package C (the area's actions and effects: gunfire, driver inputs, burning, explosions; with A/9).
 The 2.1 streams are kept for players with mod.ini `world = 0` (switchable for the tests) and go to nobody else.
 
 **Step 1: `world.h`** (no game code; `tests/world_test.cpp`). The records: `WWS1` updates (25-byte header with the
-owner slot, the OwnerMap epoch, the owner's clock and a reference point; `CarRec` 29 bytes: id, vehicle-table index,
+owner slot, the OwnerMap epoch, the owner's clock and a reference point; `CarRec` 29 bytes (30 with Package C's drive byte): id, vehicle-table index,
 position in 2 cm from the reference point, smallest-three quaternion, velocity 1/128 m/s, angular velocity, the
 damage / siren bits of 2.1 and the hit points; `PedRec` 20 bytes on foot: position, heading, flags (orientation sign,
 mission, dead, crouching, ragdoll, burning, hidden or cutscene, seated), state `+516 << 4 | +520`, animation set,
@@ -798,5 +799,97 @@ pass of each kind, `parked re-state vetoed for record R (spot S) near slot S` (1
 `people made for slot S deleted at birth` (10), and any call a member's people pass makes to `82479AB0` / `820E9550`
 from elsewhere than the spawn's own call (plan_B's check). Perf parts `B parked`, `B people`, `B keep`.
 
-Not built yet: Package A/9 (`kEventCarDamage`: a member's bullet hits on the host's cars), Package B/2-6 (personal
-cars as records, occupant events, the pose relay filter), Package C.
+**Package C: the area's actions and effects** ("The shared area: actions and effects", notes/coop-2.2/plan_C.md). What
+the host's people and cars do shows on every member's screen the way the game's own MP mirrors its NPCs (`823A8240`
+applies a fire byte, a burn byte and the aim from the NPC's state, not an event per shot). mod.ini `world_actions` (1;
+0 turns all of it off on that game, sent and applied alike; each game tells the others its setting with
+`kEventVehicleTable` a[4] when a player joins, and Package C runs between two games only when both have it on).
+Protocol 6 is kept: no protocol-6 build went to testers.
+H for every address below (read in the asm):
+- **Wire**: `PedRec` / `SeatedRec` keep their sizes; the weapon byte is the gun's weapon-table index + 1 in bits 0-5
+  (an index past 62 goes as 0, counted), bit 6 the gun raised (`+216` 0x80000000, the 2.5 s hold `82449708` sets) and
+  bit 7 "a `FireExt` follows" (7 bytes: the person's running round count mod 16, trigger held, blank, aim valid,
+  drive-by mode, and the last round's first-pellet hit point in 2 cm from the header's reference). A person who fired in
+  the last second carries one in every record (so the last count and the release always arrive), never in a create;
+  the scheduler charges it (`Entry.extra`, 27 / 19 bytes a record). `CarRec` is 30 bytes: damage bits 6-7 brake lights
+  and reversing, and a drive byte (the steering `E+412 + E+416` in 6 bits, the horn, the engine bit `+53976`
+  0x08000000). `kEventExplosion` (28) and WPJ1's `shooter` are new; `kEventVehicleTable` also carries the explosion
+  defs (`*0x8370D114`) and weapon counts, compared at the join.
+- **Gunfire**: on the host `FireHook` runs a world person's `82470A50` call with the rounds counted (a round re-arms
+  the refire timer, ammo `+24`, or uses one, `+16`: 1-4 per call), its blank flag (`r6`), its gun's Trigger_Type
+  (`+96`) and the first pellet's hit point (`BulletRayHook` by the shooter `r5` of `8246FD18`); a seated person's
+  records go at the band rate while it fires. The member takes the count difference per record (exact while records
+  come: a record without a fire part means no round for a second, so the first round after quiet plays too; from the
+  first fire part or after a gap of 1.5 s with no records only onwards); single-trigger guns queue up to 4 rounds,
+  each played as other players' shots are (`TryRemoteShots`: the gun matched, never empty, raised on foot, the "run
+  180" turn stopped, the trigger latch `ammo+12` 0xA0 cleared, `+24` = the clock, `+40` = 0) with `82470A50(copy, 0,
+  &hit point, blank)`; automatic guns hold the trigger (`+3592` 0x40, a call each update when the refire timer is due,
+  so the gun's own rate) and release it (`82474738` + `82476B70`) when the hold bit goes or its fire part is 300 ms
+  old. All under `fire_replay_depth` (no damage, no blood or shove) and `copy_fire_replay_depth` (`DetonateHook`: no
+  car takes the round's hit, the member's own car included, as 2.1); within 150 m of the camera, 8 calls an update in
+  all, a round older than 750 ms dropped with its last wait. A seated copy fires blanks (flash and sound; drive-by mode
+  on copies is later). Its gun settles like the other players' (400 ms to another, 1.5 s to none, kept while rounds
+  wait); `MatchWeapon` logs copies as "World copy gun". The copy's own replayed rocket or throw is refused
+  (`ProjectileCreateHook`); the host's person's projectile comes as WPJ1 with its id (unicast to each member of the
+  area; the member's copy is credited to the copy of that person), its explosion too after the person is gone.
+- **Driver inputs**: the member answers the brake getter `82533DA8` (r3 handle, f1 = `E+408` with `E = *(v+224)`
+  while byte `v+50300` is 1) and the reversing test `82535C00` (r3 the vehicle: physics up, `info+284` != 6, `(int8)
+  E+180`) for a car copy with the host's bits from the last second (a lock-free slot per handle index, since any thread
+  may ask): the tail lights `8255A730` read the 10-frame brake average `v+53500` that `82527ED8` fills from the getter
+  (> 0.2 lights them), the reverse lights `8255ACA0` need `82535C00` and the engine bit, which is written to the
+  host's while it brakes or reverses. The horn is held with `825241F0(copy)` each update while the host's sounded in
+  the last 150 ms (`825231A0` stops it on a frame without a call); the host notes its own horns with a post-hook on
+  `825241F0`. `E+412` (only `825872E0` writes it; the physics' packer `82583810` steers by `E+412 + E+416`) gets the
+  host's sum less this copy's own `E+416` once per record, for a copy with physics.
+- **Burning**: PedRec flag 5 (`+216` 0x00400000) lights the copy with `8245E3A0(copy, 0, 0, 0, f1 = 0.0)` as
+  `823A8240` does, its refusal bits `+120` 0xD0000000 masked for the call (counted), once a second while it differs;
+  `8245E0B8(handle, 0)` puts it out. `IgniteHook` refuses the member's own ignites of copies (explosions `82458A50`,
+  fire patches `82142E18`, spreading `8245ED40`, burning cars `82529838`, by their return addresses). When the 4 burn
+  slots (`0x8309A9E8`, 24 bytes, 12 with the MP byte) are full the ignite puts out a dead or gone one, else the one
+  furthest from the camera; a copy is not lit when that would be this player or another player's character.
+- **Explosions**: on the host `ExplosionHook` sends a prop's death (`82138AE8` from `823FAA38`, LR `823FAC68`: the
+  def `*(*(state+136)+140)`, the mover's uid `*(*(mover+216)+40)` and sub `+224`) and a car's second explosion
+  (`8252B870`, LR `8252B9B0`: def `info+872`, the call's `+92` word `info+24`) as `kEventExplosion` to the members
+  within 200 m (def index `(def - 0x829ACEB8) / 140` below `*0x8370D114`, position, the forward row, the attacker:
+  the host's player, a player's character or a person of its world); wrecks (`8252CBAC`: the member's wreck replay
+  explodes), projectiles (WPJ1), the deferred queue and replays are counted, not sent. The member plays it with
+  `82138AE8(def, source, attacker, rows, pos, 0, 0, 0)` under `world_boom_depth` (the source: its mover by
+  `824995B0(uid, sub)`, or its car copy, whose own `info+24` goes in the `+92` word; never this player), skips one
+  this player caused (its own game exploded it) and a prop that exploded here in the last 120 s; a local explosion of
+  a prop the host's exploded here, or of one a copy's replayed round broke (the host's round decides), is held
+  (`823FAA38` then shows only its own visual fallback), and a copy car's own explosion (not the wreck replay, LR
+  `82542BFC`) is held: the host's comes. The host no longer forwards its people's explosion and fire hits on a member's
+  character (`kEventPlayerHitByPed` under `explosion_depth` / `fire_update_depth`) to a member that plays them itself:
+  each game plays explosions and fire on its own player (R 3.0).
+- **A/9, a member's bullets on the host's cars**: the member's `DetonateHook` sends `825397E0`'s arguments from the
+  bullet path (`82536270`, LR `82536470`, the caller's `+84` = 2) for this player's round on a car copy of the
+  host's world (`kEventCarDamage` 25: the car's id, the weapon's table index, the damage `r10`, the hit point `r7`,
+  the normal `r8`, the push `r9`) and the copy takes nothing; the host applies it with `825397E0(v, the member's
+  character, 0, weapon info, ...)` and the call's constants (`f1` `*0x820380CC`, `f2` `*0x8208A354`, `+84` = 2,
+  `+92` the push) under `replicated_depth`, and its replay of that member's round leaves a car of its world alone (the
+  member's screen decides the hit). A car a player drives is left to the replays of the round, as in 2.1. The
+  other direction (the host's people's rounds on a member's own car) is not built: that car takes no NPC bullets.
+
+Logs (every 10 s): the owner's `World (owner) gunfire: rounds r by p people (bursts, blanks, hit points, aim past 655 m,
+guns past index 62), fire parts in n records (KB)`, `World (owner) driving: car records with brake / reverse / horn /
+steering (of n with physics, n in all); lights forced on / off`, `World (owner) explosions: sent (props, cars' second),
+skipped as wrecks / projectiles / queue / replays / far / other, bad def; NPC projectiles sent, exploded`, `World
+(owner) members' bullets on its cars: applied (car gone, a player drives it, bad); their replayed rounds' car hits left
+to their events`; the member's `World (member) gunfire: rounds played (single, held frames, releases, blanks) of n
+counted from the host; waited/dropped: not set up, lying, other gun, no ammo, raising, refused, too old, past 150 m,
+frame cap; guns given (carried, failed), raises; cost ms/s (us a call)`, `World (member) driving: brake shown (getter
+answers), reverse shown (answers), horns frames, steer written (no physics, mean |E+416|), engine bit written`, `World
+(member) burning: lit, put out, relit; refused (in a car, slots full kept own, +120 masked, +3694, dead, water, other);
+own ignites of copies refused (explosions, fire patches, spreading, cars, other)`, `World (member) explosions: played
+(props with the prop here / without; cars' second, copy missing), skipped here already / own act, held again here,
+held from copies' rounds, chain props recorded, local copy-car explosions held, bad def; NPC projectile copies made (exploded), copies' own
+launches refused; this player's bullets on the host's cars sent (weapon not named), copies' replayed rounds on cars
+skipped`. One-shots: `World copy ID (model): round of GUN not played: why` (20, the first of each reason), `World copy
+gun: ...` (20), `World copy ID not set alight: why (+120, +216, +3694, +2496)` (10), `World explosion from the host: def
+n (kind k) at x y z, source found|none, attacker who` (10), `World (owner): slot S's bullet hit car ID here (weapon,
+damage)` (10), `Explosion defs / weapons: slot S has a / b, this game c / d: the same | DIFFERENT`. Perf part `world
+fire` (in `world apply`).
+
+Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
+parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies,
+the host's people's rounds on a member's own car).

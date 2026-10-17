@@ -115,8 +115,9 @@ int main(int argc, char** argv) {
   const unsigned seed = argc > 1 ? unsigned(std::strtoul(argv[1], nullptr, 10)) : 12345u;
   std::mt19937 rng(seed);
   auto U = [&](float a, float b) { return std::uniform_real_distribution<float>(a, b)(rng); };
-  std::printf("world_test seed %u: CarRec %zu PedRec %zu SeatedRec %zu UpdateHeader %zu CreateRec %zu RemoveRec %zu AdmitRec %zu DigestRec %zu OwnerMapRec %zu\n",
-              seed, sizeof(CarRec), sizeof(PedRec), sizeof(SeatedRec), sizeof(UpdateHeader), sizeof(CreateRec), sizeof(RemoveRec), sizeof(AdmitRec), sizeof(DigestRec), sizeof(OwnerMapRec));
+  std::printf("world_test seed %u: CarRec %zu PedRec %zu SeatedRec %zu FireExt %zu UpdateHeader %zu CreateRec %zu RemoveRec %zu AdmitRec %zu DigestRec %zu OwnerMapRec %zu\n",
+              seed, sizeof(CarRec), sizeof(PedRec), sizeof(SeatedRec), sizeof(FireExt), sizeof(UpdateHeader), sizeof(CreateRec), sizeof(RemoveRec), sizeof(AdmitRec), sizeof(DigestRec), sizeof(OwnerMapRec));
+  Check(sizeof(CarRec) == 30 && sizeof(FireExt) == 7 && sizeof(PedRec) == 20 && sizeof(SeatedRec) == 12, "Package C sizes: CarRec 30 (the drive byte), FireExt 7, PedRec / SeatedRec unchanged");
 
   // 1. Quantiser round trips and bounds.
   {
@@ -185,11 +186,43 @@ int main(int argc, char** argv) {
     std::vector<CarRec> gc; std::vector<PedRec> gp; std::vector<SeatedRec> gs;
     bool sizes = true, parse = true;
     for (auto& m : msgs) { sizes &= m.size() <= size_t(kMaxMessage); UpdateMsg u; parse &= ReadUpdate(m.data(), m.size(), u) && u.head.time == 4321 && u.head.epoch == 3; gc.insert(gc.end(), u.cars.begin(), u.cars.end()); gp.insert(gp.end(), u.peds.begin(), u.peds.end()); gs.insert(gs.end(), u.seated.begin(), u.seated.end()); }
-    const size_t total = 30 * 29 + 40 * 20 + 15 * 12;
+    const size_t total = 30 * 30 + 40 * 20 + 15 * 12;
     const bool same = gc.size() == 30 && gp.size() == 40 && gs.size() == 15 && std::memcmp(gc.data(), cars.data(), 30 * sizeof(CarRec)) == 0 && std::memcmp(gp.data(), peds.data(), 40 * sizeof(PedRec)) == 0 && std::memcmp(gs.data(), seated.data(), 15 * sizeof(SeatedRec)) == 0;
     Check(sizes && parse && same && msgs.size() == 2, Fmt("WWS1: 30 cars + 40 people + 15 seated (%g B) pack into %g messages <= kMaxMessage and read back identical", double(total), double(msgs.size())));
     UpdateMsg u; auto m0 = msgs[0]; m0.pop_back();
     Check(!ReadUpdate(m0.data(), m0.size(), u) && !ReadUpdate(buf, 10, u), "WWS1: a cut or short message is refused");
+
+    // Package C: 30 on foot (10 with a FireExt) + 15 seated (5 with one) + 20 cars with the drive byte.
+    {
+      std::vector<CarRec> c2(20); std::vector<PedRec> p2(30); std::vector<SeatedRec> s2(15); std::vector<FireExt> pe(30), se(15);
+      for (size_t i = 0; i < c2.size(); ++i) { c2[i].id = uint32_t(400 + i); c2[i].damage = uint8_t(i & 1 ? kCarBrake : kCarReverse); c2[i].drive = uint8_t(QSteer(-0.5f + 0.05f * float(i)) | (i % 3 ? kDriveEngine : kDriveHorn)); }
+      for (size_t i = 0; i < p2.size(); ++i) {
+        p2[i].id = uint32_t(500 + i); p2[i].weapon = uint8_t(1 + i % 50) | (i % 2 ? kWeaponRaised : 0);
+        if (i % 3 == 0) { p2[i].weapon |= kWeaponFire; pe[i].fire = uint8_t((i & kFireCount) | kFireAim | (i % 2 ? kFireHeld : 0)); pe[i].aim[0] = int16_t(i * 100); pe[i].aim[1] = -7; pe[i].aim[2] = int16_t(-int(i) * 33); }
+      }
+      for (size_t i = 0; i < s2.size(); ++i) {
+        s2[i].id = uint32_t(600 + i); s2[i].car = 400; s2[i].flags = kPedSeated; s2[i].weapon = uint8_t(3);
+        if (i % 3 == 0) { s2[i].weapon |= kWeaponFire; se[i].fire = uint8_t(i | kFireBlank | kFireDriveBy); se[i].aim[2] = 1234; }
+      }
+      auto mm = PackUpdates(h, c2, p2, s2, pe, se);
+      std::vector<CarRec> rc; std::vector<PedRec> rp; std::vector<SeatedRec> rs; std::vector<FireExt> rpe, rse;
+      bool sz = true, ok = true; size_t bytes = 0;
+      for (auto& m : mm) { sz &= m.size() <= size_t(kMaxMessage); bytes += m.size() - sizeof(UpdateHeader); UpdateMsg r; ok &= ReadUpdate(m.data(), m.size(), r) && r.peds_ext.size() == r.peds.size() && r.seated_ext.size() == r.seated.size();
+        rc.insert(rc.end(), r.cars.begin(), r.cars.end()); rp.insert(rp.end(), r.peds.begin(), r.peds.end()); rs.insert(rs.end(), r.seated.begin(), r.seated.end()); rpe.insert(rpe.end(), r.peds_ext.begin(), r.peds_ext.end()); rse.insert(rse.end(), r.seated_ext.begin(), r.seated_ext.end()); }
+      bool same2 = rc.size() == 20 && rp.size() == 30 && rs.size() == 15 && std::memcmp(rc.data(), c2.data(), 20 * sizeof(CarRec)) == 0 && std::memcmp(rp.data(), p2.data(), 30 * sizeof(PedRec)) == 0 && std::memcmp(rs.data(), s2.data(), 15 * sizeof(SeatedRec)) == 0;
+      for (size_t i = 0; i < 30 && same2; ++i) same2 = (p2[i].weapon & kWeaponFire) ? std::memcmp(&rpe[i], &pe[i], sizeof(FireExt)) == 0 : rpe[i].fire == 0;
+      for (size_t i = 0; i < 15 && same2; ++i) same2 = (s2[i].weapon & kWeaponFire) ? std::memcmp(&rse[i], &se[i], sizeof(FireExt)) == 0 : rse[i].fire == 0;
+      Check(sz && ok && same2 && bytes == 20 * 30 + 30 * 20 + 10 * 7 + 15 * 12 + 5 * 7,
+            Fmt("WWS1 with fire parts: 30 on foot (10 firing) + 15 seated (5 firing) + 20 cars (%g B) in %g message(s) read back byte-identical, fire parts too", double(bytes), double(mm.size())));
+      // A message cut inside a FireExt is refused (and one whose last record says a FireExt follows but has none).
+      std::vector<PedRec> one(1); one[0].id = 9; one[0].weapon = 5 | kWeaponFire; std::vector<FireExt> oe(1); oe[0].fire = 3;
+      auto m1 = PackUpdates(h, {}, one, {}, oe, {})[0];
+      UpdateMsg r1; const bool whole = ReadUpdate(m1.data(), m1.size(), r1) && r1.peds_ext.size() == 1 && r1.peds_ext[0].fire == 3;
+      bool cut = true; for (int k = 1; k <= 7; ++k) cut &= !ReadUpdate(m1.data(), m1.size() - size_t(k), r1);
+      Check(whole && cut && m1.size() == sizeof(UpdateHeader) + 27, "WWS1: a record with its FireExt reads back (27 B); the message cut anywhere inside the FireExt is refused");
+      int worst = 0; for (int i = -40; i <= 40; ++i) { const float s = float(i) / 40.0f; worst = std::max(worst, int(std::lround(std::fabs(UnqSteer(QSteer(s)) - s) * 1000))); }
+      Check(worst <= 17 && UnqSteer(QSteer(2.0f)) == 1.0f && UnqSteer(QSteer(-2.0f)) == -1.0f, Fmt("steering in 6 bits: within 1/62 (worst %.3f), clamped to -1..1", worst / 1000.0));
+    }
 
     std::vector<uint32_t> ids; for (int i = 0; i < 190; ++i) ids.push_back(uint32_t(1000 + i * 3));
     auto parts = WriteDigest(0, 5555, ids);
@@ -476,6 +509,29 @@ int main(int argc, char** argv) {
     std::printf("      crowd: near %.1f Hz (min %.1f over %d member-objects); max %u B of 570\n", r.sum[0] / std::max(1, r.n[0]), r.min[0], r.n[0], w.max_bytes);
     Check(r.n[0] == 12 * 55 && r.min[0] >= 8 && r.n[1] == 0, "crowd of 12 at 570 B/tick: every member's near band >= 8 Hz for every one of the 55 objects");
     Check(r.min[0] >= 1.5 && w.over_budget == 0, "crowd: nothing below 1.5 Hz, budget kept");
+  }
+
+  // 8b. Package C: people firing carry 7 B more per record (Entry.extra): 20
+  //     firing people in a member's near band at 570 B/tick are charged 27 B a
+  //     record and the budget holds; the crowd test with 15 of its 55 objects
+  //     firing keeps the near band >= 7 Hz (the floor 8 becomes 7 for it).
+  {
+    World w(seed);
+    const float eye[3] = {0, 1.5f, 0}, fwd[3] = {0, 0, 1};
+    w.Join(1, eye, fwd, 570);
+    for (int i = 0; i < 20; ++i) { const float pos[3] = {w.U(-30, 30), 0, w.U(-30, 30)}; w.AddPed(7000 + i, pos).extra = sizeof(FireExt); }
+    for (int i = 0; i < 10; ++i) { const float pos[3] = {w.U(-30, 30), 0, w.U(-30, 30)}; w.AddCar(7100 + i, pos); }
+    bool charged = true; int firing_updates = 0;
+    for (int t = 0; t < 200; ++t) { auto p8 = w.Tick(); for (auto& u : p8[1].updates) if (!IsCar(u.kind)) { charged &= u.bytes == sizeof(PedRec) + sizeof(FireExt) && !u.seated; ++firing_updates; } }
+    Check(charged && firing_updates > 0 && w.over_budget == 0, Fmt("20 firing people near a member at 570 B/tick: each record charged 27 B (%g records), the budget never exceeded", double(firing_updates)));
+    World c(seed);
+    for (int s = 0; s < kMaxSlots; ++s) { const float e2[3] = {c.U(-10, 10), 1.5f, c.U(-10, 10)}; const float a = c.U(0, 2 * kPi); const float f2[3] = {std::sin(a), 0, std::cos(a)}; c.Join(s, e2, f2, 570); }
+    for (int i = 0; i < 20; ++i) { const float pos[3] = {c.U(-20, 20), 0, c.U(-20, 20)}; c.AddCar(2000 + i, pos); }
+    for (int i = 0; i < 35; ++i) { const float pos[3] = {c.U(-20, 20), 0, c.U(-20, 20)}; Entry& e = c.AddPed(3000 + i, pos); if (i < 15) e.extra = sizeof(FireExt); }
+    c.Run(400);
+    const Rates r = rates(c, 100, 400);
+    std::printf("      crowd with 15 firing: near %.1f Hz (min %.1f over %d member-objects); max %u B of 570\n", r.sum[0] / std::max(1, r.n[0]), r.min[0], r.n[0], c.max_bytes);
+    Check(r.n[0] == 12 * 55 && r.min[0] >= 7 && c.over_budget == 0, "crowd of 12 at 570 B/tick with 15 of 55 objects firing: near band >= 7 Hz for every object, budget kept");
   }
 
   // 9. Long run: 60 s at 20 Hz, 12 members and 300 objects all moving, at
