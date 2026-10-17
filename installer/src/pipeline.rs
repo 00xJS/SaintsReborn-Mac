@@ -852,7 +852,8 @@ impl KeptSaves {
             for e in rd.flatten() {
                 let name = e.file_name();
                 let n = name.to_string_lossy();
-                let save_dir = (n.len() == 8 || n.len() == 16) && n.chars().all(|c| c.is_ascii_hexdigit());
+                let save_dir =
+                    (n.len() == 8 || n.len() == 16) && n.chars().all(|c| c.is_ascii_hexdigit());
                 if !save_dir || !e.path().is_dir() {
                     continue;
                 }
@@ -862,8 +863,9 @@ impl KeptSaves {
                     // Left over from an earlier run that stopped: that copy is the player's.
                     fsx::remove_dir(&e.path())?;
                 } else {
-                    fs::rename(e.path(), &to)
-                        .with_context(|| format!("could not keep your saves ({})", e.path().display()))?;
+                    fs::rename(e.path(), &to).with_context(|| {
+                        format!("could not keep your saves ({})", e.path().display())
+                    })?;
                 }
                 names.push(name);
             }
@@ -878,7 +880,11 @@ impl KeptSaves {
         if !names.is_empty() {
             r.log("Keeping your saves (online character and money, profile, story saves).");
         }
-        Ok(Self { game_dir: game_dir.to_path_buf(), keep, names })
+        Ok(Self {
+            game_dir: game_dir.to_path_buf(),
+            keep,
+            names,
+        })
     }
 
     fn put_back(&self, r: &Reporter) -> Result<()> {
@@ -895,8 +901,13 @@ impl KeptSaves {
             if to.exists() {
                 fsx::remove_dir(&to)?;
             }
-            fs::rename(&from, &to)
-                .with_context(|| format!("your saves are in {} - copy them back to {}", from.display(), to.display()))?;
+            fs::rename(&from, &to).with_context(|| {
+                format!(
+                    "your saves are in {} - copy them back to {}",
+                    from.display(),
+                    to.display()
+                )
+            })?;
         }
         let _ = fs::remove_dir(&self.keep);
         r.log("Saves put back.");
