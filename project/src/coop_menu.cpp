@@ -1165,6 +1165,29 @@ void InjectPress(uint8_t* base, uint32_t code) {
   W32(base, 0x83710690u + 88, R32(base, 0x83710690u + 88) | mask);
 }
 
+// The row at `index` of a list menu (+0 first row; rows are a ring, +4 next)
+// and the item the row adder gave it (row +16, sub_8228BAB0). The lobby's
+// sub pages (Match Settings and the others, run by this same update with the
+// page number at lobby +16) reuse the list, so the cursor being on row 1 or
+// on the last row doesn't mean it is on the Mode or Players to Start row:
+// left / right on the settings page's second row used to switch Zombies on
+// and off (and the game's mode / map with it) instead of changing that
+// setting - the "custom settings menu stuck" bug.
+uint32_t RowItemAt(uint8_t* base, uint32_t menu, int index) {
+  if (!menu || index < 0) return 0;
+  const int rows = int(R16(base, menu + 58));
+  if (index >= rows || rows > 256) return 0;
+  uint32_t row = R32(base, menu + 0);
+  for (int i = 0; row && i < index; ++i) row = R32(base, row + 4);
+  return row ? R32(base, row + 16) : 0;
+}
+
+std::atomic<int64_t> g_lobby_update_ms{0}, g_mm_update_ms{0};
+int64_t SteadyMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 PPC_FUNC(sub_823963D0) {
   bool call_game = true;
   bool mode_right = false, mode_to_first = false;
@@ -1178,10 +1201,13 @@ PPC_FUNC(sub_823963D0) {
     constexpr uint32_t kInputState = 0x83710690u;
     uint8_t saved_input[128];
     std::memcpy(saved_input, Host(base, kInputState), sizeof(saved_input));
+    g_lobby_update_ms = SteadyMs();
     const int cursor = menu ? int(R16(base, menu + 62)) : -1;
-    bool ours = g_mode_item && menu == g_mode_menu && cursor == g_mode_row;
+    const uint32_t cursor_item = RowItemAt(base, menu, cursor);
+    const bool on_mode_row = g_mode_item && menu == g_mode_menu && cursor == g_mode_row && cursor_item == g_mode_item;
+    bool ours = on_mode_row;
     if (menu && menu == g_lobby_selectors_menu)
-      for (auto& sel : g_lobby_selectors) ours = ours || (sel.row >= 0 && cursor == sel.row);
+      for (auto& sel : g_lobby_selectors) ours = ours || (sel.row >= 0 && cursor == sel.row && cursor_item == sel.item);
     const bool input = ours && !g_dialog_open.load() && GuestBool(ctx, base, __imp__sub_82288750, 0);
     const bool left = input && GuestBool(ctx, base, __imp__sub_8216ED48, 39);
     const bool right = input && !left && GuestBool(ctx, base, __imp__sub_8216ED48, 40);
@@ -1192,8 +1218,8 @@ PPC_FUNC(sub_823963D0) {
     // again (the game doesn't move for either), left from Zombies goes on to
     // the game's last mode, and right from the last mode (the game wraps to
     // Gangsta Brawl) lands on Zombies.
-    if (g_mode_item && menu == g_mode_menu && g_mode_row >= 0 && cursor == g_mode_row &&
-        g_mode_row < int(R16(base, menu + 58)) && R32(base, g_mode_item) == kSelectorVtable && (left || right)) {
+    if (on_mode_row && g_mode_row >= 0 && g_mode_row < int(R16(base, menu + 58)) &&
+        R32(base, g_mode_item) == kSelectorVtable && (left || right)) {
       REXLOG_INFO("Multiplayer lobby: {} on the Mode row (zombies {}, shows Gangsta Brawl {})", left ? "left" : "right",
                   g_zombie_mode, ModeShows(base, "Gangsta Brawl"));
       if (g_zombie_mode && right) { ShowZombieMode(base, false); g_mode_was_gb = true; call_game = false; }
@@ -1213,6 +1239,7 @@ PPC_FUNC(sub_823963D0) {
     if (menu && menu == g_lobby_selectors_menu) {
       for (auto& sel : g_lobby_selectors) {
         if (sel.row < 0 || int(R16(base, menu + 58)) <= sel.row) continue;
+        if (RowItemAt(base, menu, sel.row) != sel.item) continue;  // a sub page uses the list now
         if (cursor == sel.row && (left || right)) {
           rex::CallFrame frame(ctx);
           frame.ctx.r3.u64 = sel.item;
@@ -1380,19 +1407,22 @@ bool sr::CoopResumePulse() {
 
 // A matchmade game hosted by this player starts its countdown only when the
 // player count changes (sub_82362108 on join / leave sets the start time
-// [0x8282B708] = clock [0x827AA6E0] + 10 s); a host alone with "Players to
-// Start: 1" waited forever on "Searching for additional players". With
-// matchmaking on (0x8370EB4F +1608 / +1613, the same flags sub_82362108
-// checks), enough players (count at 0x8370EB4F) and no start time yet, set
-// one 5 s ahead.
+// [0x8282B708] = clock [0x827AA6E0] + 10 s, 30 s with 4 players); a host
+// alone with "Players to Start: 1" waited forever on "Searching for
+// additional players".
+// Since 2026-10-17 this only acts while the matchmaking screen itself runs
+// (its update sub_823647A8 ran in the last second) and only when the game has
+// no start time at all. Before, it went by bytes 0x8370EB4F +1606 / +1608,
+// which stay set after leaving matchmaking, and it also cut the game's own
+// countdown to 5 s whenever that was further away: a match then started
+// while other players were still joining, and they ended up searching on
+// their own. A host alone now waits 20 s, so searching players can still
+// find this game first.
+constexpr uint32_t kSoloStartWaitMs = 20000;
 void SoloStartPoll(uint8_t* base) {
   constexpr uint32_t kMm = 0x8370EB4Fu, kStartAt = 0x8282B708u, kClock = 0x827AA6E0u;
   ApplyMinPlayers(base);  // keeps ranked at 2+ even if the lobby kind changed after the menus were built
-  // A matchmade game this player hosts (after the search found nobody) runs
-  // the host loop sub_823637E0: it sets byte 0x8370F195 (= kMm + 1606) on
-  // entry with start time [0x8282B708] = -1, and starts the match once the
-  // clock passes a start time - which only a join sets. With "Players to
-  // Start: 1" a host alone sat on "Searching for additional players" forever.
+  const bool screen = SteadyMs() - g_mm_update_ms.load() < 1000;
   const uint8_t mm_host = Host(base, kMm + 1606)[0];
   const uint8_t searching = Host(base, kMm + 1608)[0], hosting_mm = Host(base, kMm + 1613)[0];
   const uint32_t count = Host(base, kMm)[0];
@@ -1400,26 +1430,37 @@ void SoloStartPoll(uint8_t* base) {
   const int32_t start_at = int32_t(R32(base, kStartAt));
   const uint32_t clock = R32(base, kClock);
   const int64_t left = start_at >= 0 ? int64_t(start_at) - int64_t(clock) : -1;
+  if (!screen) return;
   {
     static auto next = std::chrono::steady_clock::time_point{};
     const auto now = std::chrono::steady_clock::now();
-    if ((mm_host || searching || hosting_mm) && now >= next) {
+    if (now >= next) {
       next = now + std::chrono::seconds(5);
       REXLOG_INFO("Matchmaking state: host loop {} searching {} mm-host {} players {} needed {} start at {} (in {} ms)",
                   mm_host, searching, hosting_mm, count, need, start_at, left);
     }
   }
-  const uint32_t players = std::max<uint32_t>(count, mm_host ? 1u : 0u);
   if (!(mm_host || (searching && hosting_mm))) return;
-  // Only on the matchmaking screen (top-level mode 4), never in a match (13)
-  // or back in the menus.
-  if (R32(base, 0x827D578Cu) != 4) return;
-  if (players == 0 || players < need || players >= 4) return;
-  if (RankedLobby(base) && players < uint32_t(kRankedMinPlayers)) return;  // never a ranked match alone
-  if (start_at >= 0 && left >= 0 && left <= 6000) return;  // starting soon anyway
-  W32(base, kStartAt, (clock + 5000u) % 0x6B49D200u);
-  REXLOG_INFO("Matchmaking: {} player(s), {} needed: match starts in 5 s (start time was {})", players, need, start_at);
+  if (!MatchmadeLobby(base)) return;
+  // Only a host alone with "Players to Start: 1": with more players the
+  // game's own join / leave handling sets (and keeps) the countdown.
+  const uint32_t players = std::max<uint32_t>(count, 1u);
+  if (players != 1 || need != 1 || RankedLobby(base)) return;
+  if (start_at >= 0) return;  // the game has a start time: never shorten it
+  W32(base, kStartAt, (clock + kSoloStartWaitMs) % 0x6B49D200u);
+  REXLOG_INFO("Matchmaking: alone with Players to Start 1: match starts in {} s unless someone joins",
+              kSoloStartWaitMs / 1000);
 }
+
+// The matchmaking screen's update (search, then the host loop sub_823637E0).
+extern "C" void __imp__sub_823647A8(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_823647A8) {
+  g_mm_update_ms = SteadyMs();
+  __imp__sub_823647A8(ctx, base);
+}
+
+bool sr::MatchmakingScreenActive() { return SteadyMs() - g_mm_update_ms.load() < 1500; }
+bool sr::LobbyScreenActive() { return SteadyMs() - g_lobby_update_ms.load() < 1500; }
 
 // Map packs online: in a public lobby (Player Match / Ranked, lobby kind 1 /
 // 2) only disc maps can be picked, so a public match never lands on a map

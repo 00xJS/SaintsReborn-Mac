@@ -8928,10 +8928,10 @@ index 2b222da..1b58324 100644
      case 0x000B0071: {
 diff --git a/src/kernel/xam/apps/xgi_live.inc b/src/kernel/xam/apps/xgi_live.inc
 new file mode 100644
-index 0000000..6ca2795
+index 0000000..e181806
 --- /dev/null
 +++ b/src/kernel/xam/apps/xgi_live.inc
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,419 @@
 +// Saints Reborn: Xbox Live sessions over Epic Online Services (included by
 +// xgi_app.cpp; only active with the cvar xam_signed_in_to_live).
 +//
@@ -9272,6 +9272,21 @@ index 0000000..6ca2795
 +
 +}  // namespace
 +
++namespace rex::kernel::xam {
++// For XNetQosLookup (xam_net.cpp) when the host's QoS data (SRQOS) hasn't
++// arrived: does that session take public joins? 1 yes, 0 a Private Party
++// (invite-only slots), -1 no advert for it.
++int LiveSessionPublic(const uint8_t kid[8]) {
++  for (const auto& t : rex::system::eoslan::LiveAdverts(0)) {
++    Advert a;
++    if (!ParseAdvert(t.text, a) || std::memcmp(a.info, kid, 8) != 0) continue;
++    if (a.priv) return 0;
++    return (a.open_pub + a.filled_pub) > 0 ? 1 : (a.open_priv + a.filled_priv) > 0 ? 0 : 1;
++  }
++  return -1;
++}
++}  // namespace rex::kernel::xam
++
 +// MULTIPLAYER > LOBBIES (game: online_players.cpp). SrPublicLobbies: first line
 +// "#ready" / "#connecting" / "#modded" / "#off", then one line per public
 +// lobby another unmodded game hosts:
@@ -9297,6 +9312,15 @@ index 0000000..6ca2795
 +        if (id == 0x800B) mode = int(value);
 +      std::string puid;
 +      const std::string where = rex::system::eoslan::SessionHostWhere(a.info, puid);
++      // The host's activity (SRACT; older games only have SRWHERE, which says
++      // "Hosting a Player Match" whether it is in its lobby, searching or in
++      // a match - those count as joinable: a try beats a row that never works).
++      // Before 2026-10-17 every hosted lobby fell through to "searching", so
++      // A on any row only said "searching, not joined".
++      int state = 0;
++      if (where.find("lobby") != std::string::npos || where.rfind("Hosting", 0) == 0) state = 0;
++      else if (where.find("match") != std::string::npos) state = 1;
++      else if (!where.empty()) state = 2;
 +      std::string name = a.name.empty() ? t.name : a.name;
 +      for (char& c : name)
 +        if (c == '|' || c == '\n' || c == '\r') c = ' ';
@@ -9305,7 +9329,7 @@ index 0000000..6ca2795
 +      text += Hex(std::vector<uint8_t>(a.info, a.info + 60)) + "|" + name + "|" + (a.ranked ? "r" : "s") + "|" +
 +              std::to_string(mode) + "|" + std::to_string(std::max<uint32_t>(filled, 1)) + "|" +
 +              std::to_string(std::max<uint32_t>(total, 1)) + "|" +
-+              (where.find("lobby") != std::string::npos ? "0" : where.find("match") != std::string::npos ? "1" : "2") + "\n";
++              std::to_string(state) + "\n";
 +    }
 +  }
 +  const int n = std::min<int>(int(text.size()), size - 1);
@@ -9778,7 +9802,7 @@ index 9dcab94..759fdc9 100644
  
  u32 XamGetPrivateEnumStructureFromHandle_entry(u32 handle, mapped_u32 out_object_ptr) {
 diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
-index 58e36a4..1634d2b 100644
+index 58e36a4..a59c064 100644
 --- a/src/kernel/xam/xam_net.cpp
 +++ b/src/kernel/xam/xam_net.cpp
 @@ -12,7 +12,19 @@
@@ -9809,7 +9833,7 @@ index 58e36a4..1634d2b 100644
  #include <rex/logging.h>
  #include <rex/hook.h>
  #include <rex/types.h>
-@@ -44,10 +57,112 @@
+@@ -44,10 +57,116 @@
  #include <sys/socket.h>
  #endif
  
@@ -9826,6 +9850,10 @@ index 58e36a4..1634d2b 100644
 +}  // namespace rex::system
 +
 +REXCVAR_DECLARE(bool, xam_signed_in_to_live);
++
++namespace rex::kernel::xam {
++int LiveSessionPublic(const uint8_t kid[8]);  // xgi_live.inc: 1 public, 0 Private Party, -1 no advert
++}
 +
  namespace rex {
  namespace kernel {
@@ -9922,7 +9950,7 @@ index 58e36a4..1634d2b 100644
  using namespace rex::system::xam;
  
  // https://github.com/G91/TitanOffLine/blob/1e692d9bb9dfac386d08045ccdadf4ae3227bb5e/xkelib/xam/xamNet.h
-@@ -231,9 +346,15 @@ u32 NetDll_XNetGetOpt_entry(u32 one, u32 option_id, mapped_void buffer_ptr,
+@@ -231,9 +350,15 @@ u32 NetDll_XNetGetOpt_entry(u32 one, u32 option_id, mapped_void buffer_ptr,
  }
  
  u32 NetDll_XNetRandom_entry(u32 caller, mapped_void buffer_ptr, u32 length) {
@@ -9941,7 +9969,7 @@ index 58e36a4..1634d2b 100644
  
    return 0;
  }
-@@ -300,18 +421,40 @@ u32 NetDll_WSARecvFrom_entry(u32 caller, u32 socket, ppc_ptr_t<XWSABUF> buffers_
+@@ -300,18 +425,40 @@ u32 NetDll_WSARecvFrom_entry(u32 caller, u32 socket, ppc_ptr_t<XWSABUF> buffers_
                               ppc_ptr_t<XSOCKADDR_IN> from_addr,
                               ppc_ptr_t<XWSAOVERLAPPED> overlapped_ptr,
                               mapped_void completion_routine_ptr) {
@@ -9992,7 +10020,7 @@ index 58e36a4..1634d2b 100644
  }
  
  // If the socket is a VDP socket, buffer 0 is the game data length, and buffer 1
-@@ -346,7 +489,10 @@ u32 NetDll_WSASendTo_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XWSABUF> buf
+@@ -346,7 +493,10 @@ u32 NetDll_WSASendTo_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XWSABUF> buf
    }
  
    N_XSOCKADDR_IN native_to(to_ptr);
@@ -10003,7 +10031,7 @@ index 58e36a4..1634d2b 100644
  
    // TODO: Instantly complete overlapped
  
-@@ -436,27 +582,23 @@ struct XnAddrStatus {
+@@ -436,27 +586,23 @@ struct XnAddrStatus {
  };
  
  u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
@@ -10045,7 +10073,7 @@ index 58e36a4..1634d2b 100644
  }
  
  u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
-@@ -476,25 +618,145 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
+@@ -476,26 +622,146 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
    rex::string::copy_truncating(string_out, "666.666.666.666", string_size);
  }
  
@@ -10180,14 +10208,14 @@ index 58e36a4..1634d2b 100644
 +  for (int i = 0; i < 16; ++i) info[44 + i] = uint8_t((v * 2654435761u) >> (i * 3));
 +  rex::system::eoslan::Activate("Xbox Live session created");
 +  RememberKid(info, "live session");
-+}
-+
+ }
+ 
 +u32 NetDll_XNetRegisterKey_entry(u32 caller, mapped_void xnkid, mapped_void xnkey) {
 +  if (NetLogOnce("XNetRegisterKey")) REXKRNL_INFO("NET XNetRegisterKey");
 +  rex::system::eoslan::Activate("System Link key registered");
 +  RememberKid(static_cast<void*>(xnkid), "registered");
 +  return 0;
- }
++}
 +u32 NetDll_XNetUnregisterKey_entry(u32 caller, mapped_void xnkid) {
 +  if (NetLogOnce("XNetUnregisterKey")) REXKRNL_INFO("NET XNetUnregisterKey");
 +  return 0;
@@ -10197,10 +10225,11 @@ index 58e36a4..1634d2b 100644
 +  return 2;  // XNET_CONNECT_STATUS_CONNECTED
 +}
 +u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) { return 0; }
- 
++
  // https://github.com/ILOVEPIE/Cxbx-Reloaded/blob/master/src/CxbxKrnl/EmuXOnline.h#L39
  struct XEthernetStatus {
-@@ -506,7 +768,9 @@ struct XEthernetStatus {
+   static const uint32_t XNET_ETHERNET_LINK_ACTIVE = 0x01;
+@@ -506,7 +772,9 @@ struct XEthernetStatus {
  };
  
  u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
@@ -10211,7 +10240,7 @@ index 58e36a4..1634d2b 100644
  }
  
  u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
-@@ -559,7 +823,111 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
+@@ -559,7 +827,124 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
  
  u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
                                 u32 flags) {
@@ -10270,7 +10299,17 @@ index 58e36a4..1634d2b 100644
 +    std::vector<uint8_t> data;
 +    const bool got = has_kid[i] && rex::system::eoslan::QosData(kids[i].data(), data);
 +    if (!got && !last_chance && has_kid[i]) return false;
-+    if (!got) data.assign(1, 0);  // unknown host: one zero byte, as a host with default settings
++    // The host's data never arrived: make it up from its advert. Byte 0 bit 0
++    // is what the joiner goes by (sub_8236CBD0): 1 = join a public slot, 0 =
++    // a private (invite) slot. Always 0 before 2026-10-17, so a join to a
++    // public lobby whose data was late asked the host for a private slot,
++    // the host refused, and the player got "Host Disconnected" until a
++    // later try (by then the data was there).
++    int pub = -1;
++    if (!got) {
++      pub = has_kid[i] ? LiveSessionPublic(kids[i].data()) : -1;
++      data.assign(1, pub == 1 ? 1 : 0);
++    }
 +    const uint32_t n = std::min<uint32_t>(uint32_t(data.size()), kDataRoom);
 +    const uint32_t data_guest = qos_guest + 8 + 24 * std::max<uint32_t>(count, 1) + i * kDataRoom;
 +    std::memcpy(base + (data_guest - qos_guest), data.data(), n);
@@ -10284,7 +10323,10 @@ index 58e36a4..1634d2b 100644
 +    info.down_bits_per_sec = 4000000;
 +    info.flags = 0x01 | 0x02 | 0x08;  // COMPLETE | TARGET_CONTACTED | DATA_RECEIVED
 +    REXKRNL_INFO("NET XNetQosLookup target {}: {} byte(s) of QoS data{}", i, n,
-+                 got ? " from the host" : " (host's data not found, default)");
++                 got ? " from the host"
++                     : pub == 1 ? " (host's data not found: public lobby by its advert)"
++                     : pub == 0 ? " (host's data not found: Private Party by its advert)"
++                                : " (host's data not found, no advert: default)");
 +    return true;
 +  };
 +  uint32_t pending = 0;
@@ -10324,7 +10366,7 @@ index 58e36a4..1634d2b 100644
  }
  
  u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
-@@ -591,7 +959,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
+@@ -591,7 +976,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
      XThread::SetLastError(error);
      return -1;
    }
@@ -10334,7 +10376,7 @@ index 58e36a4..1634d2b 100644
    return socket->handle();
  }
  
-@@ -605,6 +974,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+@@ -605,6 +991,7 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
  
    // TODO: Absolutely delete this object. It is no longer valid after calling
    // closesocket.
@@ -10342,7 +10384,7 @@ index 58e36a4..1634d2b 100644
    socket->Close();
    socket->ReleaseHandle();
    return 0;
-@@ -652,6 +1022,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
+@@ -652,6 +1039,8 @@ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void
    }
  
    X_STATUS status = socket->IOControl(cmd, arg_ptr);
@@ -10351,7 +10393,7 @@ index 58e36a4..1634d2b 100644
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
      return -1;
-@@ -670,6 +1042,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
+@@ -670,6 +1059,8 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> nam
    }
  
    N_XSOCKADDR_IN native_name(name);
@@ -10360,7 +10402,7 @@ index 58e36a4..1634d2b 100644
    X_STATUS status = socket->Bind(&native_name, namelen);
    if (XFAILED(status)) {
      XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
-@@ -795,9 +1169,71 @@ struct host_set {
+@@ -795,9 +1186,71 @@ struct host_set {
    }
  };
  
@@ -10432,7 +10474,7 @@ index 58e36a4..1634d2b 100644
    host_set host_readfds = {};
    fd_set native_readfds = {};
    if (readfds) {
-@@ -825,8 +1261,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+@@ -825,8 +1278,67 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
                                               reinterpret_cast<int32_t*>(&timeout.tv_usec));
      timeout_in = &timeout;
    }
@@ -10502,7 +10544,7 @@ index 58e36a4..1634d2b 100644
    if (readfds) {
      host_readfds.UpdateFrom(&native_readfds);
      host_readfds.Store(readfds);
-@@ -852,7 +1347,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
+@@ -852,7 +1364,13 @@ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 bu
      return -1;
    }
  
@@ -10517,7 +10559,7 @@ index 58e36a4..1634d2b 100644
  }
  
  u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
-@@ -871,6 +1372,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
+@@ -871,6 +1389,19 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u3
    uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
    int ret =
        socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
@@ -10537,7 +10579,7 @@ index 58e36a4..1634d2b 100644
  
    if (from_ptr) {
      from_ptr->sin_family = native_from.sin_family;
-@@ -916,9 +1430,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
+@@ -916,9 +1447,49 @@ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32
    }
  
    N_XSOCKADDR_IN native_to(to_ptr);
@@ -10587,7 +10629,7 @@ index 58e36a4..1634d2b 100644
  u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
    const uint8_t max_fd_count = std::min((uint32_t)fd_set->fd_count, uint32_t(64));
    for (uint8_t i = 0; i < max_fd_count; i++) {
-@@ -1030,25 +1584,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
+@@ -1030,25 +1601,25 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
  REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
  REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
  REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
@@ -10621,7 +10663,7 @@ index 58e36a4..1634d2b 100644
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
-@@ -1098,5 +1652,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
+@@ -1098,5 +1669,5 @@ REX_EXPORT_STUB(__imp__NetDll_XnpToolSetCallbacks);
  REX_EXPORT_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
  REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
  REX_EXPORT_STUB(__imp__NetDll_getpeername);
@@ -10872,10 +10914,10 @@ index fc46d86..7987be3 100644
      target_compile_definitions(rexruntime PUBLIC REX_HAS_D3D12=1)
 diff --git a/src/system/eos_lan.cpp b/src/system/eos_lan.cpp
 new file mode 100644
-index 0000000..2b589ae
+index 0000000..ceb5873
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,2007 @@
+@@ -0,0 +1,2075 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -11000,6 +11042,12 @@ index 0000000..2b589ae
 +// Lent: the co-op mod plays online and has Epic (SrEosLend / SrEosReturn below).
 +enum class State { Off, Idle, Starting, LoggingIn, Joining, Ready, Failed, Lent };
 +std::atomic<State> state{State::Off};
++// Worker thread: when to try the Epic login / LAN lobby join again after it
++// failed (a moment of no internet, Epic busy, the lobby full). Before
++// 2026-10-17 one failure left this game off the virtual LAN for the whole run:
++// no players, no lobbies, no invites in or out.
++std::chrono::steady_clock::time_point rejoin_at{};
++int lobby_details_failed = 0;  // refreshes in a row without the lobby's details (dropped from it)
 +std::mutex activate_mutex;                // Activate / SrEosLend / SrEosReturn
 +std::atomic<bool> worker_running{false};  // the worker thread owns an EOS platform
 +std::atomic<bool> release_wanted{false};  // the worker leaves the lobby, releases its platform and ends
@@ -11104,6 +11152,17 @@ index 0000000..2b589ae
 +bool has_pending = false, has_accepted = false;
 +Invite pending_invite, accepted_invite;
 +std::map<std::string, std::string> invite_seen;  // puid -> last SRINV value seen
++// 2026-10-17: SRINV / SRFREQ carry the SENDER's clock. An invite was only
++// taken when it was at most 120 s (friend request 600 s) old by the
++// RECEIVER's clock, so a PC whose clock (or time zone setting) is a few
++// minutes off never saw invites or friend requests - and without friends
++// nobody shows in the INVITE list. Now a value that changes while this game
++// already watches that player is new by definition and is taken whatever the
++// clocks say; only the first look at a player (it may still publish an old
++// invite) uses the time. The sender withdraws its invite after 120 s by its
++// own clock (my_invite_at).
++int64_t my_invite_at = 0;                        // local time SRINV was set (sender)
++std::map<std::string, std::string> activity_by_puid;  // SRACT (what the game does), under invite_mutex
 +std::vector<OnlinePlayer> players_snapshot;      // RefreshMembers, under invite_mutex
 +
 +// Friends (friends.txt next to the exe, one per line:
@@ -11294,8 +11353,9 @@ index 0000000..2b589ae
 +  p_EOS_Lobby_JoinLobbyById(lobby_if, &j, nullptr, [](const EOS_Lobby_JoinLobbyByIdCallbackInfo* d) {
 +    if (d->ResultCode == EOS_EResult::EOS_Success) { OnJoined(); return; }
 +    if (d->ResultCode == EOS_EResult::EOS_NotFound) { CreateLobby(); return; }
-+    REXSYS_WARN("EOS LAN: joining the LAN lobby failed: {}", R(d->ResultCode));
++    REXSYS_WARN("EOS LAN: joining the LAN lobby failed: {} - trying again in 10 s", R(d->ResultCode));
 +    state = State::Failed;
++    rejoin_at = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 +  });
 +}
 +void Online() {
@@ -11314,14 +11374,20 @@ index 0000000..2b589ae
 +    c.ApiVersion = EOS_CONNECT_CREATEUSER_API_LATEST;
 +    c.ContinuanceToken = d->ContinuanceToken;
 +    p_EOS_Connect_CreateUser(connect_if, &c, nullptr, [](const EOS_Connect_CreateUserCallbackInfo* u) {
-+      if (u->ResultCode != EOS_EResult::EOS_Success) { REXSYS_WARN("EOS LAN: creating the player: {}", R(u->ResultCode)); state = State::Failed; return; }
++      if (u->ResultCode != EOS_EResult::EOS_Success) {
++        REXSYS_WARN("EOS LAN: creating the player: {} - trying again in 15 s", R(u->ResultCode));
++        state = State::Failed;
++        rejoin_at = std::chrono::steady_clock::now() + std::chrono::seconds(15);
++        return;
++      }
 +      me = u->LocalUserId;
 +      Online();
 +    });
 +    return;
 +  }
-+  REXSYS_WARN("EOS LAN: login failed: {}", R(d->ResultCode));
++  REXSYS_WARN("EOS LAN: login failed: {} - trying again in 15 s", R(d->ResultCode));
 +  state = State::Failed;
++  rejoin_at = std::chrono::steady_clock::now() + std::chrono::seconds(15);
 +}
 +void Login() {
 +  state = State::LoggingIn;
@@ -11559,7 +11625,18 @@ index 0000000..2b589ae
 +  c.LobbyId = kLobbyId;
 +  c.LocalUserId = me;
 +  EOS_HLobbyDetails details = nullptr;
-+  if (p_EOS_Lobby_CopyLobbyDetailsHandle(lobby_if, &c, &details) != EOS_EResult::EOS_Success || !details) return;
++  if (p_EOS_Lobby_CopyLobbyDetailsHandle(lobby_if, &c, &details) != EOS_EResult::EOS_Success || !details) {
++    // Epic no longer has this game in the LAN lobby (connection lost a while,
++    // removed after a timeout): join it again instead of staying deaf.
++    if (++lobby_details_failed >= 5 && !creating) {
++      REXSYS_WARN("EOS LAN: not in the LAN lobby any more - joining it again");
++      lobby_details_failed = 0;
++      in_lobby = false;
++      JoinOrCreate();
++    }
++    return;
++  }
++  lobby_details_failed = 0;
 +  EOS_LobbyDetails_GetMemberCountOptions mc{};
 +  mc.ApiVersion = EOS_LOBBYDETAILS_GETMEMBERCOUNT_API_LATEST;
 +  const uint32_t count = p_EOS_LobbyDetails_GetMemberCount(details, &mc);
@@ -11685,13 +11762,23 @@ index 0000000..2b589ae
 +    }
 +    // An invite for this game?
 +    std::lock_guard<std::mutex> il(invite_mutex);
++    {
++      bool act_found = false;
++      const std::string act = attr(m, "SRACT", act_found);
++      if (act_found) activity_by_puid[pi.puid] = act;
++      else activity_by_puid.erase(pi.puid);
++    }
++    const bool watched = invite_seen.count(pi.puid) != 0;  // seen in an earlier refresh
 +    std::string& seen = invite_seen[pi.puid];
 +    if (inv != seen) {
 +      seen = inv;
 +      const size_t bar = inv.find('|');
 +      const int64_t sent_at = bar == std::string::npos ? 0 : std::atoll(inv.substr(0, bar).c_str());
 +      const bool for_me = bar != std::string::npos && !my_puid.empty() && inv.find(my_puid, bar) != std::string::npos;
-+      if (for_me && !pi.imposter && inv_session.size() == 120 && std::llabs(now_s - sent_at) <= kInviteSeconds) {
++      const bool fresh = watched || std::llabs(now_s - sent_at) <= kInviteSeconds;
++      if (for_me && !watched && !fresh)
++        REXSYS_INFO("EOS LAN: old invite from '{}' ignored ({} s by the two clocks)", name, now_s - sent_at);
++      if (for_me && !pi.imposter && inv_session.size() == 120 && fresh) {
 +        pending_invite = Invite{pi.puid, name.empty() ? std::string("Player") : name, inv_session,
 +                                XuidFromPuid(pi.puid), now_s};
 +        has_pending = true;
@@ -11765,7 +11852,9 @@ index 0000000..2b589ae
 +        if (!f.recent) { f.recent = true; dirty = true; }
 +        f.seen_at = now_s;
 +      }
-+      // A friend request for this game?
++      // A friend request for this game? (A change while watching this player
++      // is new whatever the two clocks say, see invite_seen.)
++      const bool watched = freq_seen.count(pi.puid) != 0;
 +      std::string& seen = freq_seen[pi.puid];
 +      if (pi.freq != seen) {
 +        seen = pi.freq;
@@ -11773,7 +11862,7 @@ index 0000000..2b589ae
 +        const int64_t sent_at = bar == std::string::npos ? 0 : std::atoll(pi.freq.substr(0, bar).c_str());
 +        const bool for_me = bar != std::string::npos && !my_puid.empty() &&
 +                            pi.freq.find(my_puid, bar) != std::string::npos;
-+        if (for_me && std::llabs(now_s - sent_at) <= 600) {
++        if (for_me && (watched || std::llabs(now_s - sent_at) <= 600)) {
 +          Friend* f = FindFriendLocked(pi.puid);
 +          if (f && f->added) {
 +            if (!f->mutual) {
@@ -12104,11 +12193,19 @@ index 0000000..2b589ae
 +    std::string where = rex::cvar::GetFlagByName("online_session");
 +    if (where.empty()) where = rex::cvar::GetFlagByName("online_activity");
 +    want["SRWHERE"] = where.substr(0, 60);
++    // What the game itself is doing ("In a multiplayer lobby", "Searching for
++    // players", "In a multiplayer match"...): the LOBBIES list tells joinable
++    // lobbies by it. SRWHERE says "Hosting a Player Match" in all three cases.
++    want["SRACT"] = rex::cvar::GetFlagByName("online_activity").substr(0, 60);
 +  }
 +  want["SRMOD"] = rex::system::online::Modded() ? "modded 1 " + rex::system::online::ModdedReason().substr(0, 200)
 +                                                : std::string("clean 1");
 +  {
 +    std::lock_guard<std::mutex> il(invite_mutex);
++    if (!my_invite.empty() && int64_t(std::time(nullptr)) - my_invite_at > kInviteSeconds) {
++      my_invite.clear();  // withdrawn: receivers no longer need to trust the time in it
++      my_invite_session.clear();
++    }
 +    want["SRINV"] = my_invite;
 +    want["SRINVS"] = my_invite.empty() ? std::string() : my_invite_session;
 +    want["SRFREQ"] = my_freq;
@@ -12311,6 +12408,16 @@ index 0000000..2b589ae
 +        next_stats = now + std::chrono::seconds(10);
 +      }
 +    } else if (state == State::Failed) {
++      if (rejoin_at != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() >= rejoin_at) {
++        rejoin_at = {};
++        if (me) {
++          REXSYS_INFO("EOS LAN: joining the LAN lobby again");
++          JoinOrCreate();
++        } else {
++          REXSYS_INFO("EOS LAN: logging in again");
++          Login();
++        }
++      }
 +      std::this_thread::sleep_for(std::chrono::milliseconds(100));
 +      continue;
 +    }
@@ -12619,6 +12726,7 @@ index 0000000..2b589ae
 +  }
 +  if (!n) return 0;
 +  my_invite = std::to_string(int64_t(std::time(nullptr))) + "|" + list;
++  my_invite_at = int64_t(std::time(nullptr));
 +  my_invite_session = my_session_hex;
 +  REXSYS_INFO("EOS LAN: invite sent to {}", names);
 +  rex::system::online::Notice("Invite sent to " + names + ".");
@@ -12677,7 +12785,9 @@ index 0000000..2b589ae
 +  for (const auto& p : players_snapshot)
 +    if (p.in_session && std::memcmp(p.session_id, kid, 8) == 0) {
 +      host_puid = p.puid;
-+      return p.where;
++      auto act = activity_by_puid.find(p.puid);
++      if (act != activity_by_puid.end() && !act->second.empty()) return act->second;
++      return p.where;  // an older game: SRWHERE only
 +    }
 +  host_puid.clear();
 +  return {};

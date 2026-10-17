@@ -24,6 +24,7 @@
 // when MULTIPLAYER opens; co-op online borrows Epic from the runtime
 // (SrEosLend / SrEosReturn) and the list comes back after co-op.
 #include "online_players.h"
+#include "coop_menu.h"
 
 #include "saintsrow_config.h"
 #include "saintsrow_init.h"
@@ -801,15 +802,19 @@ void sr::PlayersActivityPoll(uint8_t* base) {
   const uint32_t mode = R32(base, kTopMode);
   std::string a;
   // Matchmaking (Player Match / Ranked search, or hosting while it waits for
-  // players: bytes 0x8370EB4F +1606 host loop, +1608 searching, as in
-  // coop_menu.cpp SoloStartPoll): the matchmaking screen runs as top mode 4.
-  const bool matchmaking = Host(base, 0x8370EB4Fu + 1606)[0] || Host(base, 0x8370EB4Fu + 1608)[0];
-  if (mode == 6) a = "In a multiplayer lobby";
-  else if (matchmaking && !(mode >= 13 && mode <= 31)) a = "Searching for players";
-  else if (mode >= 13 && mode <= 31) a = "In a multiplayer match";
+  // players) and the lobbies run as top mode 4 like the menus. The game's
+  // matchmaking bytes (0x8370EB4F +1606 / +1608) stay set after leaving it,
+  // so a host back in its party lobby showed "Searching for players" for the
+  // rest of the run and nobody could join it from LOBBIES. Now: whether the
+  // matchmaking screen / a lobby ran its update in the last 1.5 s
+  // (coop_menu.cpp).
+  const bool in_match = mode >= 13 && mode <= 31;
+  if (in_match) a = "In a multiplayer match";
+  else if (sr::MatchmakingScreenActive()) a = "Searching for players";
+  else if (mode == 6 || sr::LobbyScreenActive()) a = "In a multiplayer lobby";
+  else if (Host(base, kMpMenusFlag)[0]) a = "In the Multiplayer menus";
   else if (mode == 4) a = "Playing the story";
   else if (mode == 5) a = "Playing a mission";
-  else if (Host(base, kMpMenusFlag)[0]) a = "In the Multiplayer menus";
   else a = "In the menus";
   if (HMODULE m = GetModuleHandleW(L"WhompaysCoop.dll")) {
     if (auto f = reinterpret_cast<int (*)()>(GetProcAddress(m, "WhompaysCoopState")))
