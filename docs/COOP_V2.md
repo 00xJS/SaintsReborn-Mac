@@ -496,8 +496,8 @@ multiplayer mirrors its world, instead of 2.1's streams with their 90 / 200 / 25
 Q 2.1): every object the authority simulates is created once on each member (reliable), updated by priority within a
 byte budget per member (unreliable, newest wins) and removed once (reliable); the member decides what it can hold and
 says so. In 2.2 the host is the owner of the one area; a client is a member of it or runs its own world (solo), as
-in 2.1. Package A of the round is built in steps; steps 1 to 3 are in (the 2.1 streams are still sent, and shown
-with mod.ini `world = 0`).
+in 2.1. Package A of the round is built in steps; steps 1 to 4 are in, and Package B/1 (content around every member).
+The 2.1 streams are kept for players with mod.ini `world = 0` (switchable for the tests) and go to nobody else.
 
 **Step 1: `world.h`** (no game code; `tests/world_test.cpp`). The records: `WWS1` updates (25-byte header with the
 owner slot, the OwnerMap epoch, the owner's clock and a reference point; `CarRec` 29 bytes: id, vehicle-table index,
@@ -692,7 +692,111 @@ gets at least 6 KB/s, more than the setting in all when many share it, and at mo
 stream shown on a member; 0: 2.1's streams, and on the host no world stream; set it the same everywhere). `WWC1`
 carries its reference point (39 bytes), `WWA1` the near counts (26 bytes).
 
-Next (Package A, step 4): the 2.1 streams go (`CaptureTraffic`, `CapturePeds`, `UpdateSharedTraffic`,
-`UpdateSharedPeds`, their packets and the five maps, folded into the one table), the membership becomes the host's own
-(90 m / 140 m with 2 s / 5 s of hysteresis, the OwnerMap's epoch), and the member's levers of A/10 (trains, the
-one-time removal of its own parked / response / special cars, `824290D0`).
+**Step 4: the cut-over, kept switchable** ("The shared area mirrored (co-op 2.2, step 4: the cut-over)").
+- Membership is the host's (spec 3.1/3): a client whose pose says it shows the world stream (`kPoseWorldStream`, pose
+  bit 23: mod.ini `world = 1` there and the host's world messages within 3 s) joins the area within `member_join_m` of
+  the host's character (2D, `PosePacket.pos`) after 2 s in a row and leaves past `member_leave_m` after 5 s; at once
+  when its pose is 3 s old, it stops showing the stream or it left. mod.ini on the host, 40-400 m, leave at least join
+  + 20; 150 / 200 m with Package B (90 / 140 m for a test of A alone). The OwnerMap's epoch changes with each join and
+  leave as before.
+- 2.1's traffic and people streams (`CaptureTraffic` / `CapturePeds`, `kMsgTraffic`, `kMsgTrafficNames`, `kMsgPeds`,
+  `kMsgPedLook`) go only to the clients that don't show the world stream (their `world = 0`, or no OwnerMap seen yet;
+  sent to those slots alone, or to everyone when that is everyone), and nothing is captured or named as sent when no
+  client needs them. The 2.1 code stays for that case; the owner line says per client whether they still go.
+- `kPoseHostWorld` has its 2.1 meaning again ("this client's own police are off": `OwnPoliceOff`), the input of the
+  host's police response. On a client in world mode `OwnPoliceOff` = a member by the OwnerMap and the host's character
+  shown here (held 2 s), one membership rule. Another player's character is kept to `member_leave_m + 30` m (the host:
+  a member's; a member: the host's) instead of 130 m, still made within 60 m, so the host's police can come for a
+  wanted member anywhere in the area.
+- A member's levers of spec 3.8/36 that were missing: `824290D0` (the spawn-region manager: hood gang members and cops
+  `82427548`, the special spawns; one caller, `824131F0`; the MP client's skip) returns while the area is shown (its
+  enable bytes `0x83AE3A90/91` are left to the scripts), and `spawn_trains` `0x827ACF87` (read by the train manager
+  `8242EFB0` as `+10407` off `0x827AA6E0` right before it starts a train, `8242E3D0`) is 0 on a member and on a host
+  with members (3.8/37: trains are not mirrored; running ones finish their route); put back as it was afterwards. The
+  one-time removal of a member's own parked / response / special cars is `RemoveOwnParked`'s sweep (every unoccupied
+  car of this game's own within 160 m, every 500 ms) and the response removal at `OwnPoliceOff`'s edge, as in step 3.
+- The games compare their vehicle tables when a player joins (`kEventVehicleTable` 27: the row count `*0x8371023C` and
+  a hash of the rows' name hashes `+120`): a difference is logged (`Vehicle table:`) and shown (review A2-12). A car's
+  paint is read once a tick whoever its create goes to (A2-16); `Session::LinkStats`' reliable bytes in flight are kept
+  as they change instead of walked (A2-17).
+- The step 3 review (notes/coop-2.2/review_A3.md): the stream counts as there while the host is paused
+  (`HostPauseHold`) and for 10 s while its state packets still come (its game thread stalled or loading), and from any
+  world message, not only the OwnerMap; a member that leaves on its own says it doesn't show the stream until the
+  host's OwnerMap has it out, so the host starts its offers over and the two never disagree silently (A3-1); the
+  member's area, epoch, declines, tombs, early records and digest start over at each session's start and end, and an
+  OwnerMap more than 1000 epochs behind is a new host's (A3-2); world.h re-offers a declined id only into the room the
+  member reported, counting the tick's own creates as held until the next WWA1, doubles the hold on each repeat decline
+  (3, 6, 12 ... 30 s; forgotten once a create has held 30 s) and re-offers a person only while the member can load its
+  model (it has it, or fewer than 11 people models there) (A3-3, world_test 6b); a car named driven gets its owner's
+  records again 1 s on (a lost "back" event, A3-4); a copy a create replaces is destroyed within the 4-an-update budget
+  (A3-6); the velocity vectors handed to the motion's setters are 16-byte aligned (`lvx`, A3-8).
+
+Logs: the owner's per-member line starts `World (owner) slot S (in the area at d m; 2.1's traffic and people streams to
+it: off | still sent)`; one-shot `World (owner): slot S joined the area at d m ... / left the area at d m (why)` (40),
+`World (owner): 2.1's traffic and people streams to slot S on | off (why)` (40), `World: new trains off here ...` /
+`trains back`, `Vehicle table: slot S has n rows (hash), this game n (hash): the same | DIFFERENT`; the member line ends
+`this game's hood / special spawn passes skipped n, trains off | as the game has them`; `World (member): the host's
+OwnerMap has this game out too: it can join again` (20).
+
+**Package B/1: content around every member** ("The shared area: content around every member", notes/coop-2.2/plan_B.md).
+The engine fills the world only around the viewpoint its spawners read (parked cars 80 m in 2D from the player
+`*0x8309ABEC`, traffic 130-140 m and people 90 m from the camera `0x827D9778`, research S 0.2), so on the host each
+spawner also runs for one member's viewpoint at a time, its radii unchanged and its caps shared by the area (one street
+of 12 cars, 26 people, 6 parked). The viewpoints: this game's camera and player, and each member's pose (eye, the
+camera's forward row, position, forward speed from its car's velocity or its camera's moves), refreshed by the owner
+tick for poses under 500 ms; nothing runs without members, in a cutscene, or with the host's `world = 0` (H for every
+address below, read in the asm):
+- **Parked cars**: `8241D930` (one caller, `824131F0`) only spawns records already queued (state 2, list `0x8309A480`;
+  record `+100` the state) and re-states those beyond 80 m of `*0x8309ABEC` (`r26`, read once: `+20`/`+28`) through
+  `8241D210(rec, 0|1)` at `8241DA10` / `8241DA24`; `8241DC78(0)` queues new ones from the 6 nearest candidates
+  `8241DAE0` picks (state 1, `0x8309A47C`; `+20/+24/+28` of the player). After the game's own pass the hook runs
+  `8241D930` and `8241DC78(0)` once more for one member (each at most every 200 ms) with `*0x8309ABEC` on a stand-in
+  that holds only the member's position (zero elsewhere: handle 0, type 0); `8241E378` (the spawn: the vehicle
+  constructor, seats, model references) and `8241D210` (model references, the car's destroy) run with the real player.
+  `8241D930`'s re-states (LR `8241DA14` / `8241DA28`) are vetoed for a record within 80 m of any viewpoint, so one
+  pass doesn't undo another's queue; `8241D6B0`'s array (`0x8309A444`, {record, distance squared} x 6, count
+  `0x8309A474`; the only input of `8241D5C0`, which makes room) loses the records near a member.
+- **Traffic**: `824129C8` asks `82412298(out, &centre, &dir, f1 speed, r7 ahead)` (one call, LR `82412F30`) for spots
+  around the camera; `82412298` reads no camera and the player only for its highway flag (`+21260`). On a member's turn
+  the hook gives it the member's eye (written to the caller's free `r1+80`), its forward (into the caller's copy at
+  `r1+96`, which `r5` points to), its speed and "ahead" (over 2.2352 m/s); the turn goes to the member furthest below
+  its share of the wanted count (the cars within 140 m of each eye), not a full one, the host's own at least every
+  other tick. One car per tick (200-300 ms) for the whole area, as the game spawns. `82412878` (the despawn test: r4
+  the car, returns 1 to remove) keeps a car within 140 m (3D) of a member's eye.
+- **People**: `8240FBB0` spawns on the updates where its timer `0x82832744` hasn't run out against `*0x827AA6E0` and
+  `*0x8370FEBC` is set; on those, after it, a member below its share of the wanted people (90 m of its eye; 10 passes a
+  second in all, each member at most every 250 ms) gets `8240F148(1, !moving)` with the camera's eye (`+44`) and
+  forward row (`+104`) the member's: its picker `8240EC88` and the spawn `8240DD40` read only those of the camera (and
+  the view's FOV). The constructor `82479AB0` (LR `8240E178`) and the set-up `820E9550` (LR `8240E1AC`), whose callees
+  reach the camera code, run with the real pose; never the make-room path (`8240E448`) for a member: the pass runs only
+  below the wanted count and `8240E338` says "not removable" inside it. `8240FA90` (returns 1 beyond 90 m of the camera)
+  keeps a person within 90 m (2D) of a member's eye; `8240E338` (make room's "removable", one caller) says no for one.
+  A person made in a chunk the host hasn't loaded is queued for deletion inside the constructor (the region check
+  `8243EB60`): counted.
+- **The slot allocator**: `82400968` calls `823FFF78(sys, kind, level)` when a creation finds its pool full; it tries
+  the categories of a lower priority through their evict functions `823FFA48` (people, list `+0`) / `823FFC48` (cars,
+  `+4`), which take the valid record (`+12` handle, `+20` state, not a visible one in pass 1) with the largest `+24`,
+  the distance squared from the host's player: a member's first. The hooks give the records near a member the lowest
+  score for the call; with nothing else there the creation is refused (it retries), unless its kind's priority
+  (`0x82038858 + 28 x kind`) is 0 (a mission's, a script's, co-op's copies), which always gets its slot.
+- **Density**: `824194A8` (traffic wanted, <= 12) and `82419208` (people, <= 26) return `x (1 + member_density x
+  members)`, capped at the game's limits; the street is the area's, shared by its viewpoints.
+- mod.ini (host): `member_spawns` 1 parked, 2 traffic, 4 people (7; 0: only the keep-alive and the allocator's cover),
+  `member_density` (1.0; 0 off), `member_join_m` / `member_leave_m` 150 / 200.
+
+Logs (every 10 s with the World lines): `World (owner) B: viewpoints n (members m: slots); wanted cars w (boosted from
+w0) / people p (from p0); parked: member passes, candidates near members (of the state-1 records), made for members,
+re-states vetoed, removals kept; traffic: turns t of T ticks (0 spots z), made for members (in their view); people:
+member passes (full), made (deleted by the region check at birth); kept alive people / cars; make room spared;
+evictions refused (protected taken for a priority-0 creation, covered)`; per member `World (owner) B slot S: d m from
+this player (in since t s); near its eye (people 50 m / cars 100 m): this game has a / b (registry; streaming); made for
+it parked / traffic / people`; on the member `World (member) B: near me (people 50 m / cars 100 m of my eye) by distance
+to the host: <40 m: people a0, cars b0 (n0 s); 100-150 m: people a1, cars b1 (n1 s); session ratio a1/a0 = x%, b1/b0 =
+y%` (the pass: x >= 60 %, y >= 80 % with n0, n1 >= 60 s, A's numbers unchanged). One-shots: `World (owner) B: hooks on
+(parked/traffic/people, member_density; the traffic ring *0x82832724 and the removal radii *0x83AD2640/44)`, the first
+pass of each kind, `parked re-state vetoed for record R (spot S) near slot S` (10), `eviction refused for kind K` (10),
+`people made for slot S deleted at birth` (10), and any call a member's people pass makes to `82479AB0` / `820E9550`
+from elsewhere than the spawn's own call (plan_B's check). Perf parts `B parked`, `B people`, `B keep`.
+
+Not built yet: Package A/9 (`kEventCarDamage`: a member's bullet hits on the host's cars), Package B/2-6 (personal
+cars as records, occupant events, the pose relay filter), Package C.
