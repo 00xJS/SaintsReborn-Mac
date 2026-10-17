@@ -10796,11 +10796,21 @@ uint16_t FadeLeft(uint32_t start,uint32_t ms) {
 // The registry's positions, flags, crews and authority, from the game objects (the owner, every tick).
 void WorldRefresh(uint32_t player,uint64_t now) {
   const uint8_t me=world_slot;
-  // The players' cars here: this player's, each other player's character's, the car one is getting into.
-  uint32_t in_car[kSlots]{}, entering[kSlots]{};
-  in_car[me]=api->read_u32(player+2496);
-  for(int s=0;s<kSlots;++s) if(s!=me) { in_car[s]=AvatarCar(s); if(remotes[s].enter_car && now<remotes[s].enter_until) entering[s]=remotes[s].enter_car; }
-  auto driver_of=[&](uint32_t h) { for(int s=0;s<kSlots;++s) if(h && (in_car[s]==h || entering[s]==h)) return s; return -1; };
+  // The players' cars here: this player's, each other player's character's
+  // (and its seat), the car one is getting into. The driver's pose carries a
+  // car; a car with players as passengers only, the first of them.
+  uint32_t in_car[kSlots]{}, seat[kSlots]{}, entering[kSlots]{};
+  in_car[me]=api->read_u32(player+2496); seat[me]=api->read_u32(player+2500);
+  for(int s=0;s<kSlots;++s) if(s!=me) {
+    if(const uint32_t av=AvatarObjOf(s)) if(ResolveVehicle(api->read_u32(av+2496))) { in_car[s]=api->read_u32(av+2496); seat[s]=api->read_u32(av+2500); }
+    if(remotes[s].enter_car && now<remotes[s].enter_until) entering[s]=remotes[s].enter_car;
+  }
+  auto driver_of=[&](uint32_t h) {
+    if(!h) return -1;
+    for(int s=0;s<kSlots;++s) if(in_car[s]==h && seat[s]==0) return s;
+    for(int s=0;s<kSlots;++s) if(in_car[s]==h || entering[s]==h) return s;
+    return -1;
+  };
   const bool mission=share_missions && MissionActive();
   std::vector<std::pair<cw::Key,uint16_t>> faded;
   for(auto& [k,e]:world_reg.Entries()) {
