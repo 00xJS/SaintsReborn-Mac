@@ -152,14 +152,14 @@ int main(int argc, char** argv) {
 
   // 2. Message round trips: create, admit, update packing, digest parts.
   {
-    CreateMsg c; c.head.id = 0x12345678; c.head.time = 777; c.head.kind = kKindTraffic; c.head.authority = 0; c.head.model = 42; c.head.team = 3;
+    CreateMsg c; c.head.id = 0x12345678; c.head.time = 777; c.head.ref[0] = 1500.5f; c.head.ref[2] = -320.25f; c.head.kind = kKindTraffic; c.head.authority = 0; c.head.model = 42; c.head.team = 3;
     c.paint.assign(300, 0x5A); c.crew = {1, 2, 3};
     CarRec car{}; car.id = c.head.id; car.model = 42; car.hp = 200; car.damage = 0x21;
     c.first.assign(reinterpret_cast<uint8_t*>(&car), reinterpret_cast<uint8_t*>(&car) + sizeof car);
     uint8_t buf[kMaxMessage];
     const size_t n = WriteCreate(c, buf, sizeof buf);
     CreateMsg back;
-    const bool car_ok = n == sizeof(CreateRec) + 300 + 12 + sizeof(CarRec) && ReadCreate(buf, n, back) && back.head.id == c.head.id && back.paint == c.paint && back.crew == c.crew && back.first == c.first && HasMagic(buf, "WWC1");
+    const bool car_ok = n == sizeof(CreateRec) + 300 + 12 + sizeof(CarRec) && ReadCreate(buf, n, back) && back.head.id == c.head.id && back.head.ref[0] == 1500.5f && back.head.ref[2] == -320.25f && back.paint == c.paint && back.crew == c.crew && back.first == c.first && HasMagic(buf, "WWC1");
     CreateMsg p; p.head.id = 9; p.head.kind = kKindCrew; p.head.car = 0x12345678; p.head.seat = 2; p.name = "PD_cop_a"; p.look.assign(127, 7);
     SeatedRec sr{}; sr.id = 9; sr.car = 0x12345678; sr.seat = 2; sr.flags = kPedSeated;
     p.first.assign(reinterpret_cast<uint8_t*>(&sr), reinterpret_cast<uint8_t*>(&sr) + sizeof sr);
@@ -170,11 +170,11 @@ int main(int argc, char** argv) {
     const bool bounds = WriteCreate(bad, buf, sizeof buf) == 0 && !ReadCreate(buf, n2 - 1, back2);
     Check(car_ok && ped_ok && bounds, "WWC1: car with paint and crew, seated person with name and look, round trip; oversized name refused, a cut message refused");
 
-    AdmitMsg a; a.head.cars_held = 16; a.head.cars_cap = 16; a.head.people_held = 40; a.head.people_cap = 56; a.head.chunks = 0x8000000000000005ull; a.head.dropped_chunk = 2;
+    AdmitMsg a; a.head.cars_held = 16; a.head.cars_cap = 16; a.head.people_held = 40; a.head.people_cap = 56; a.head.chunks = 0x8000000000000005ull; a.head.dropped_chunk = 2; a.head.near_cars = 7; a.head.near_people = 19;
     a.models = {5, 1, 9}; for (uint32_t i = 0; i < kMaxDeclined; ++i) a.declined.push_back(0x20000 + i);
     const size_t na = WriteAdmit(a, buf, sizeof buf);
     AdmitMsg ab;
-    Check(na == sizeof(AdmitRec) + 6 + 4 * kMaxDeclined && ReadAdmit(buf, na, ab) && ab.models == a.models && ab.declined == a.declined && ab.head.chunks == a.head.chunks && ab.head.cars_cap == 16 && !ReadAdmit(buf, na - 1, ab), "WWA1: counts, 3 models, 32 declined ids round trip; a cut message refused");
+    Check(na == sizeof(AdmitRec) + 6 + 4 * kMaxDeclined && ReadAdmit(buf, na, ab) && ab.models == a.models && ab.declined == a.declined && ab.head.chunks == a.head.chunks && ab.head.cars_cap == 16 && ab.head.near_cars == 7 && ab.head.near_people == 19 && !ReadAdmit(buf, na - 1, ab), "WWA1: counts, near counts, 3 models, 32 declined ids round trip; a cut message refused");
 
     std::vector<CarRec> cars(30); std::vector<PedRec> peds(40); std::vector<SeatedRec> seated(15);
     for (size_t i = 0; i < cars.size(); ++i) { cars[i].id = uint32_t(100 + i); cars[i].hp = uint8_t(i); }
@@ -397,6 +397,24 @@ int main(int argc, char** argv) {
     due = false;
     for (int t = 0; t < 210 && !due; ++t) { auto p = w.Tick(); if (p[2].digest_due) { due = true; digest = p[2].digest; } }
     Check(due && std::binary_search(digest.begin(), digest.end(), 706u), "the digest to a member includes the ids it declined (the proof line counts them apart)");
+    // An entry that stops streaming (its chunk or model unloaded on the owner, review A2-2): for 2 s nothing
+    // (no records, no remove, still in the digest) and its records resume; for 6 s one reason 0 remove where it
+    // was created, then one create when it streams again.
+    auto inactive_for = [&](uint32_t id, int ticks, int& removes, int& records, int& creates, bool& in_digest) {
+      removes = records = creates = 0; in_digest = false;
+      w.reg.Find(0, id)->flags |= kEntryInactive;
+      for (int t = 0; t < ticks; ++t) { auto p = w.Tick(); for (auto& r : p[1].removes) removes += IdOf(r.key) == id; for (auto& u : p[1].updates) records += IdOf(u.key) == id; if (p[1].digest_due) in_digest = std::binary_search(p[1].digest.begin(), p[1].digest.end(), id); }
+      w.reg.Find(0, id)->flags &= uint8_t(~kEntryInactive);
+      int after = 0;
+      for (int t = 0; t < 20; ++t) { auto p = w.Tick(); for (auto& c : p[1].creates) creates += IdOf(c.key) == id; for (auto& u : p[1].updates) after += IdOf(u.key) == id; }
+      records = records ? -records : after;   // (records while inactive count negative)
+    };
+    int rm = 0, rec = 0, cr = 0; bool dig = false;
+    w.members[1].last_digest = w.now - kDigestMs + 20 * kTickMs;   // (a digest falls inside the 2 s)
+    inactive_for(702, 40, rm, rec, cr, dig);
+    Check(rm == 0 && cr == 0 && rec > 0 && dig, Fmt("an entry inactive for 2 s: no remove, still in the digest, no new create, its records resume (%g)", rec));
+    inactive_for(702, 120, rm, rec, cr, dig);
+    Check(rm == 1 && cr == 1 && rec >= 0, "an entry inactive for 6 s: one reason 0 remove where it was created, no records meanwhile, one create when it streams again");
   }
 
   // 8. Crowd: 12 members within 30 m of 55 objects at 570 B/tick: the near band

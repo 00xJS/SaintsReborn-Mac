@@ -98,6 +98,7 @@ struct SeatedRec {      // a person in a car: one id with car + seat
 struct CreateRec {
   char magic[4];      // WWC1
   uint32_t id, time;
+  float ref[3];       // the first record's positions are offsets from here (the owner's stream point at the create)
   uint8_t kind, authority;
   uint16_t model;     // vehicle info index or people model id
   uint8_t team;
@@ -119,6 +120,7 @@ struct AdmitRec {
   uint16_t cars_held, cars_cap, people_held, people_cap;
   uint64_t chunks;    // bit i: chunk list index i loaded here
   uint8_t dropped_model, dropped_chunk;   // 10 s counts
+  uint8_t near_cars, near_people;         // copies shown within 50 m of the member's camera (the owner's World match line)
   uint8_t n_models;   // people models resident here
   uint8_t n_declined; // declined or evicted since the last report (<= kMaxDeclined)
 };
@@ -137,7 +139,7 @@ struct OwnerMapRec {
 };
 #pragma pack(pop)
 static_assert(sizeof(UpdateHeader) == 25 && sizeof(CarRec) == 29 && sizeof(PedRec) == 20 && sizeof(SeatedRec) == 12, "wire format");
-static_assert(sizeof(CreateRec) == 27 && sizeof(RemoveRec) == 15 && sizeof(AdmitRec) == 24 && sizeof(DigestRec) == 16 && sizeof(OwnerMapRec) == 30, "wire format");
+static_assert(sizeof(CreateRec) == 39 && sizeof(RemoveRec) == 15 && sizeof(AdmitRec) == 26 && sizeof(DigestRec) == 16 && sizeof(OwnerMapRec) == 30, "wire format");
 static_assert(offsetof(PedRec, flags) == 11 && offsetof(SeatedRec, flags) == 11, "a reader peeks byte 11 for kPedSeated");
 
 constexpr size_t kMaxName = 46, kMaxLook = 127, kMaxPaint = 320, kMaxDeclined = 32, kMaxModels = 32;
@@ -387,6 +389,7 @@ constexpr uint32_t kBudgetMinBps = 6000, kBudgetMaxBps = 24000;
 constexpr uint32_t kBackpressureBacklog = 16 * 1024;
 constexpr uint16_t kCreateBytesCar = 120, kCreateBytesPed = 160;   // charged per create until the game thread knows the look sizes
 constexpr uint16_t kDefaultFadeMs = 1000;
+constexpr uint32_t kInactiveMs = 5000;   // an entry not streaming this long is removed where it was created
 
 // Bytes per 50 ms tick per member: world_upload_kbps shared by the members, clamped to 6-24 KB/s each.
 inline uint32_t TickBudget(uint32_t kbps, int members) {
@@ -417,6 +420,7 @@ struct Entry {
   uint32_t id = 0, car = 0;     // car: a seated person's car id
   uint32_t activations = 1;     // the same human coming through 8247A6D0 again (model reload, queued mission NPC)
   uint64_t created_at = 0, changed_at = 0;   // changed_at: hp / flags / occupant changed (a resting object sends at band rate once)
+  uint64_t inactive_since = 0;  // not streaming since (Plan keeps it)
   float pos[3] = {0, 0, 0};
   std::string name;             // people: the model name for the create
   Offer offer[kMaxSlots];
@@ -516,6 +520,7 @@ class Scheduler {
   std::array<MemberPlan, kMaxSlots> Plan(uint64_t now, Registry& reg, std::array<Member, kMaxSlots>& members, const float ref[3]) {
     std::array<MemberPlan, kMaxSlots> plans;
     const std::vector<Removal> removals = reg.TakeRemovals();
+    for (auto& [k, e] : reg.Entries()) { if (e.Streams()) e.inactive_since = 0; else if (!e.inactive_since) e.inactive_since = now; }
     for (int s = 0; s < kMaxSlots; ++s) {
       Member& m = members[s];
       MemberPlan& p = plans[s];
@@ -581,7 +586,16 @@ class Scheduler {
     cands.reserve(reg.Size());
     std::map<uint32_t, size_t> car_index;   // car id -> cand (for its crew)
     for (auto& [k, e] : reg.Entries()) {
-      if (!e.Streams()) continue;
+      if (!e.Streams()) {
+        // Not streaming (inactive: its chunk or model unloaded, a mission
+        // person after the mission; excluded): no records. A member it was
+        // created on keeps it (the digest still lists it: a model reload is
+        // over in under 5 s); after kInactiveMs it is removed there (reason 0)
+        // and created again when it streams.
+        Offer& o = e.offer[s];
+        if (o.created && e.inactive_since && now - e.inactive_since >= kInactiveMs) { p.removes.push_back({k, kRemoveGone, kDefaultFadeMs}); ++m.removes; o = Offer{}; }
+        continue;
+      }
       if (e.chunk >= 0 && e.chunk < 64 && !((m.chunks >> e.chunk) & 1)) { ++m.skipped_chunk; continue; }
       if (Dist(e.pos, ref) >= kPosMax) { ++m.skipped_far; continue; }
       Offer& o = e.offer[s];
@@ -707,7 +721,7 @@ class Scheduler {
     if (now - m.last_digest >= kDigestMs) {
       m.last_digest = now;
       p.digest_due = true;
-      for (auto& [k, e] : reg.Entries()) { const Offer& o = e.offer[s]; if (e.Streams() && (o.created || o.declined_until)) p.digest.push_back(e.id); }
+      for (auto& [k, e] : reg.Entries()) { const Offer& o = e.offer[s]; if (o.created || (e.Streams() && o.declined_until)) p.digest.push_back(e.id); }
       std::sort(p.digest.begin(), p.digest.end());
       p.digest_hash = DigestHash(p.digest);
     }
