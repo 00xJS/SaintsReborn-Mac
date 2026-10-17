@@ -157,7 +157,7 @@ class Session {
     if (slot < 0 || slot >= kMaxSlots || !links_[slot].used) return s;
     const auto& k = links_[slot];
     s.rtt = k.rtt; s.backlog = uint32_t(k.unrel.size()); s.in_flight = uint32_t(k.rel_out.size()); s.dropped = k.dropped;
-    for (const auto& o : k.rel_out) s.in_flight_bytes += uint32_t(o.bytes.size());
+    s.in_flight_bytes = k.rel_bytes;
     return s;
   }
 
@@ -236,6 +236,7 @@ class Session {
     bool recv_any = false; uint16_t recv_latest = 0; uint32_t recv_bits = 0;
     uint16_t rel_next = 0, rel_expect = 0;
     std::deque<Out> rel_out;
+    uint32_t rel_bytes = 0;                              // what rel_out holds (LinkStat, kept as it changes)
     std::map<uint16_t, std::vector<uint8_t>> rel_hold;  // reliable messages that came early
     std::vector<Sent> sent = std::vector<Sent>(4096);   // by packet seq & 4095 (outlives a full send window)
     std::vector<uint8_t> unrel;                          // whole messages for the next flush
@@ -258,7 +259,7 @@ class Session {
     if (h.flags & 1) h.id = k.rel_next++;
     std::memcpy(m.data(), &h, sizeof(h));
     if (h.len) std::memcpy(m.data() + sizeof(h), data, h.len);
-    if (h.flags & 1) k.rel_out.push_back({h.id, std::move(m)});
+    if (h.flags & 1) { k.rel_bytes += uint32_t(m.size()); k.rel_out.push_back({h.id, std::move(m)}); }
     else k.unrel.insert(k.unrel.end(), m.begin(), m.end());
   }
   void SendControl(Link& k, uint8_t type, const void* data, uint16_t len, bool reliable) {
@@ -327,7 +328,7 @@ class Session {
     k.rtt += (float(now - s.at) - k.rtt) * 0.1f;
     for (uint16_t id : s.ids)
       for (auto it = k.rel_out.begin(); it != k.rel_out.end(); ++it)
-        if (it->id == id) { k.rel_out.erase(it); break; }
+        if (it->id == id) { k.rel_bytes -= uint32_t(it->bytes.size()); k.rel_out.erase(it); break; }
     s = Sent{};
   }
 

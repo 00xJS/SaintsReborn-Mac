@@ -343,6 +343,53 @@ int main(int argc, char** argv) {
     Check(early == 0 && late == 1, "a declined id with room is still not re-offered before 3 s, and is right after");
   }
 
+  // 6b. Re-offers (review A3-3): one free slot reported -> one re-offer until
+  //     the next WWA1 (the planned creates count as held); a repeat decline
+  //     doubles the hold; a person whose model the member can't load (11
+  //     models there, not its) isn't re-offered until it can.
+  {
+    World w(seed);
+    const float eye[3] = {0, 1.5f, 0}, fwd[3] = {0, 0, 1};
+    w.Join(2, eye, fwd, 1200);
+    for (int i = 0; i < 30; ++i) { const float pos[3] = {float(5 + i * 4), 0, 0}; w.AddCar(800 + i, pos); }
+    w.Run(20);
+    AdmitMsg a; a.head.cars_held = 20; a.head.cars_cap = 20; a.head.people_cap = 56;
+    for (int i = 20; i < 30; ++i) a.declined.push_back(800 + i);
+    w.sched.OnAdmit(w.now, w.reg, w.members[2], 2, 0, a);
+    w.Run(70);   // 3.5 s, full
+    a.head.cars_held = 19; a.declined.clear();   // one free slot
+    w.sched.OnAdmit(w.now, w.reg, w.members[2], 2, 0, a);
+    std::vector<uint32_t> re;
+    for (int t = 0; t < 20; ++t) { auto plans = w.Tick(); for (auto& c : plans[2].creates) re.push_back(IdOf(c.key)); }   // 1 s without a WWA1
+    Check(re.size() == 1 && re[0] == 820, Fmt("one free slot reported: %g re-offer in the second before the next WWA1 (the nearest, 820)", double(re.size())));
+    // The member declines 820 again: held 6 s this time.
+    a.head.cars_held = 20; a.declined = {820};
+    w.sched.OnAdmit(w.now, w.reg, w.members[2], 2, 0, a);
+    a.head.cars_held = 15; a.head.cars_cap = 40; a.declined.clear();   // room for everything from now on
+    w.sched.OnAdmit(w.now, w.reg, w.members[2], 2, 0, a);
+    int at4 = 0, at7 = 0;
+    for (int t = 0; t < 110; ++t) { auto plans = w.Tick(); for (auto& c : plans[2].creates) if (IdOf(c.key) == 820) ++at4; }   // 5.5 s
+    for (int t = 0; t < 20; ++t) { auto plans = w.Tick(); for (auto& c : plans[2].creates) if (IdOf(c.key) == 820) ++at7; }    // to 6.5 s
+    Check(at4 == 0 && at7 == 1, Fmt("declined a second time: not re-offered in 5.5 s with room (%g), re-offered once the 6 s hold is over (%g)", at4, at7));
+    // A person declined while the member's 11 models don't include its model.
+    World w3(seed);
+    w3.Join(4, eye, fwd, 1200);
+    const float ppos[3] = {8, 0, 0};
+    Entry& pe = w3.AddPed(0x900, ppos); pe.model = 77;
+    w3.Run(5);
+    AdmitMsg m; m.head.cars_cap = 26; m.head.people_held = 10; m.head.people_cap = 56;
+    for (uint16_t i = 1; i <= 11; ++i) m.models.push_back(i);
+    m.declined = {0x900};
+    w3.sched.OnAdmit(w3.now, w3.reg, w3.members[4], 4, 0, m);
+    int model_reoffers = 0;
+    for (int t = 0; t < 200; ++t) { auto plans = w3.Tick(); model_reoffers += int(plans[4].creates.size()); }   // 10 s
+    m.declined.clear(); m.models.push_back(77);
+    w3.sched.OnAdmit(w3.now, w3.reg, w3.members[4], 4, 0, m);
+    int with_model = 0;
+    for (int t = 0; t < 4; ++t) { auto plans = w3.Tick(); with_model += int(plans[4].creates.size()); }
+    Check(model_reoffers == 0 && with_model == 1, Fmt("a person declined for its model: %g re-offers in 10 s while 11 others are loaded there, re-offered once its model is (%g)", double(model_reoffers), double(with_model)));
+  }
+
   // 7. Removes: gone -> reason 0 with the fade to members holding it, nothing
   //    to a member that declined it; leaving the area -> reason 3 for everything
   //    held and nothing for declined ids; a car driven by a player gets no

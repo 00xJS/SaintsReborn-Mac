@@ -385,6 +385,12 @@ constexpr uint32_t kRestMs = 500;                // kEntryRest objects unless ch
 constexpr float kTagMax = 60000.0f;              // a start tag's range (ms of the band's virtual time; a guard, not a limit)
 constexpr int kCreatesPerTick = 4;
 constexpr uint32_t kDeclineMs = 3000, kDigestMs = 10000, kBackpressureMs = 2000;
+// A declined id waits kDeclineMs, doubled on each repeat decline up to
+// kDeclineMaxMs (the count is forgotten once a create has held that long);
+// a person is re-offered only while the member can load its model (it has it,
+// or fewer than kModelSlots people models are loaded there).
+constexpr uint32_t kDeclineMaxMs = 30000;
+constexpr size_t kModelSlots = 11;
 constexpr uint32_t kBudgetMinBps = 6000, kBudgetMaxBps = 24000;
 constexpr uint32_t kBackpressureBacklog = 16 * 1024;
 constexpr uint16_t kCreateBytesCar = 120, kCreateBytesPed = 160;   // charged per create until the game thread knows the look sizes
@@ -409,6 +415,7 @@ struct Offer {
   uint64_t declined_until = 0;  // declined by the member: no updates, re-offered after this when it has room
   float tag = 0;                // start tag (start-time fair queuing): ms of its band's virtual time until its turn; +interval a send
   uint8_t band = 255;           // the band it was last planned in (a change starts the tag over at the band's virtual now)
+  uint8_t declines = 0;         // declines in a row (the hold doubles each time)
   bool created = false;         // a create went to this member and was not declined / removed since
 };
 
@@ -543,14 +550,20 @@ class Scheduler {
   }
 
   // A member's WWA1: caps, held, models, chunks; its declined ids are not
-  // re-offered for 3 s and then only while it reports room.
+  // re-offered for 3 s (6, 12, ... 30 s when declined again) and then only
+  // while it reports room (counting the creates planned since).
   void OnAdmit(uint64_t now, Registry& reg, Member& m, int slot, uint8_t owner, const AdmitMsg& a) {
     m.cars_held = a.head.cars_held; m.cars_cap = a.head.cars_cap; m.people_held = a.head.people_held; m.people_cap = a.head.people_cap;
     m.chunks = a.head.chunks;
     m.models = a.models; std::sort(m.models.begin(), m.models.end());
     m.last_admit = now;
     for (uint32_t id : a.declined)
-      if (Entry* e = reg.Find(owner, id)) { Offer& o = e->offer[slot]; o.created = false; o.declined_until = now + kDeclineMs; ++m.declines; }
+      if (Entry* e = reg.Find(owner, id)) {
+        Offer& o = e->offer[slot];
+        o.created = false; o.declined_until = now + std::min<uint64_t>(uint64_t(kDeclineMs) << std::min<int>(o.declines, 4), kDeclineMaxMs);
+        if (o.declines < 255) ++o.declines;
+        ++m.declines;
+      }
   }
   // Backpressure (LinkStats): half the budget for 2 s.
   static void Backpressure(uint64_t now, Member& m) { if (now >= m.halved_until) ++m.halvings; m.halved_until = now + kBackpressureMs; }
@@ -600,6 +613,8 @@ class Scheduler {
       if (Dist(e.pos, ref) >= kPosMax) { ++m.skipped_far; continue; }
       Offer& o = e.offer[s];
       if (o.declined_until && (now < o.declined_until || !m.HasRoom(e.kind))) continue;
+      if (o.declined_until && !IsCar(e.kind) && !m.HasModel(e.model) && m.models.size() >= kModelSlots) continue;   // (it would be declined "model" again)
+      if (o.created && o.declines && now - o.offered_at >= kDeclineMaxMs) o.declines = 0;   // (held since: the next decline starts at 3 s)
       const float d = Dist(e.pos, m.eye);
       const bool cone = d < kConeNear || InCone(m.eye, m.fwd, e.pos, d);
       const uint64_t age = o.created ? now - o.last_sent : 0;
@@ -646,11 +661,17 @@ class Scheduler {
       Cand& c = cands[i];
       if (c.o->created || creates >= kCreatesPerTick) continue;
       if (c.crew && !cands[c.car].o->created) continue;
+      if (c.o->declined_until && !m.HasRoom(c.e->kind)) continue;   // (the room the member reported is taken by this tick's creates)
       const uint16_t cost = c.e->CreateBytes();
       if (creates && spent + cost > budget) { ++m.over_create_budget; break; }
       spent += cost; ++creates;
       if (c.o->declined_until) ++m.reoffers;
-      *c.o = Offer{}; c.o->created = true; c.o->offered_at = c.o->last_sent = now;
+      const uint8_t declines = c.o->declines;
+      *c.o = Offer{}; c.o->created = true; c.o->offered_at = c.o->last_sent = now; c.o->declines = declines;
+      // Counted as held until the member's next WWA1 says what it holds (a
+      // re-offer only goes into reported room: one free slot, one re-offer).
+      uint16_t& held = IsCar(c.e->kind) ? m.cars_held : m.people_held;
+      if (held < 0xFFFF) ++held;
       p.creates.push_back({MakeKey(c.e->owner, c.e->id), c.e->kind, uint8_t(c.band), cost, c.priority});
       ++m.creates;
     }
