@@ -208,6 +208,31 @@ int main(int argc, char** argv) {
     Check(all, "a burst of 20 full-size unreliable messages reaches every client whole");
   }
 
+  // 5c. LinkStats (2.2: the world stream's backpressure reads it): a link that
+  // can't keep up shows its unreliable backlog cut to the limit, the drops and
+  // the reliable messages in flight; they are acked once it is back.
+  {
+    Endpoint* c = clients[8];
+    const uint8_t slot = c->s->MySlot();
+    const double loss = net.loss, dup = net.dup; net.loss = 0; net.dup = 0;
+    step(500);
+    const coopnet::LinkStat before = host->s->LinkStats(slot);
+    net.cut[c->index] = true;
+    std::vector<uint8_t> big(coopnet::kMaxMessage, 0xCD);
+    for (int n = 0; n < 100; ++n) host->s->Send(slot, 105, big.data(), uint16_t(big.size()), false);
+    for (int n = 0; n < 20; ++n) { uint32_t v = uint32_t(n); host->s->Send(slot, 106, &v, 4, true); }
+    step(5);
+    const coopnet::LinkStat cut = host->s->LinkStats(slot);
+    net.cut[c->index] = false;
+    step(2000);
+    const coopnet::LinkStat after = host->s->LinkStats(slot);
+    net.loss = loss; net.dup = dup;
+    Check(before.backlog == 0 && cut.dropped > before.dropped && cut.backlog <= coopnet::kMaxUnreliableBacklog && cut.in_flight >= 20 && cut.in_flight_bytes > 0,
+          "LinkStats: a flooded link shows its backlog cut to the limit, the drops and the reliable messages in flight (" + std::to_string(cut.dropped) + " dropped, " + std::to_string(cut.backlog) + " B waiting, " + std::to_string(cut.in_flight) + " in flight)");
+    Check(after.in_flight == 0 && after.backlog == 0 && after.rtt > 0 && host->s->LinkStats(0).in_flight == 0 && host->s->LinkStats(13).rtt == 0,
+          "LinkStats: back in, everything is acked and the backlog is empty; the host's own slot and a bad slot read as no link");
+  }
+
   // 6. A message to one slot reaches only that slot.
   for (auto& e : eps) e->got.clear();
   { uint32_t v = 7; clients[0]->s->Send(clients[5]->s->MySlot(), 103, &v, 4, true); }

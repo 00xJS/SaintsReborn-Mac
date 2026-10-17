@@ -37,7 +37,7 @@
 namespace coopnet {
 
 constexpr int kMaxSlots = 12;            // host + 11 clients (the game's player pool)
-constexpr uint8_t kVersion = 5;          // protocol version: a mismatch is refused at join (5: co-op 2.1.2)
+constexpr uint8_t kVersion = 6;          // protocol version: a mismatch is refused at join (5: co-op 2.1.2, 6: 2.2's world stream)
 constexpr uint32_t kMagic = 0x32435253;  // "SRC2"
 constexpr int kMaxPacket = 1170;         // Epic's P2P limit (EOS_P2P_MAX_PACKET_SIZE)
 constexpr int kMaxMessage = kMaxPacket - 16 - 8;  // payload of one message (headers below)
@@ -100,6 +100,16 @@ struct Stats {
   uint32_t packets_out = 0, packets_in = 0, bytes_out = 0, bytes_in = 0;
   uint32_t resent = 0, dropped_unreliable = 0, bad_packets = 0;
 };
+// One link's state (the host: one per client; a client: its link to the
+// host), for a sender that paces itself by it (2.2's world stream halves a
+// member's budget while its backlog grows or its snapshots are dropped).
+struct LinkStat {
+  float rtt = 0;                  // ms, smoothed
+  uint32_t backlog = 0;             // bytes of unreliable messages waiting for the next flush
+  uint32_t in_flight = 0;           // reliable messages queued or sent and not acked yet
+  uint32_t in_flight_bytes = 0;
+  uint32_t dropped = 0;             // unreliable messages dropped past kMaxUnreliableBacklog, since the link began
+};
 
 class Session {
  public:
@@ -140,6 +150,16 @@ class Session {
   std::string DenyReason() const { std::lock_guard l(m_); return deny_reason_; }
   int PlayerCount() const { std::lock_guard l(m_); int n = 0; for (bool p : present_) n += p; return n; }
   Stats TakeStats() { std::lock_guard l(m_); Stats s = stats_; stats_ = {}; return s; }
+  // The link to `slot` (a client: 0, its host), all zero when there is none.
+  LinkStat LinkStats(int slot) const {
+    std::lock_guard l(m_);
+    LinkStat s;
+    if (slot < 0 || slot >= kMaxSlots || !links_[slot].used) return s;
+    const auto& k = links_[slot];
+    s.rtt = k.rtt; s.backlog = uint32_t(k.unrel.size()); s.in_flight = uint32_t(k.rel_out.size()); s.dropped = k.dropped;
+    for (const auto& o : k.rel_out) s.in_flight_bytes += uint32_t(o.bytes.size());
+    return s;
+  }
 
   // Game thread: queue a message for one slot or everyone (kEveryone). Clients
   // send through the host. Returns false when it can't be queued (too big, not joined).
@@ -220,6 +240,7 @@ class Session {
     std::vector<Sent> sent = std::vector<Sent>(4096);   // by packet seq & 4095 (outlives a full send window)
     std::vector<uint8_t> unrel;                          // whole messages for the next flush
     float rtt = 150.0f;
+    uint32_t dropped = 0;                                // unreliable messages dropped (LinkStat)
   };
 
   void Reset() {
@@ -294,7 +315,7 @@ class Session {
     while (k.unrel.size() - drop > kMaxUnreliableBacklog) {
       MessageHeader h; std::memcpy(&h, &k.unrel[drop], sizeof(h));
       drop += sizeof(h) + h.len;
-      ++stats_.dropped_unreliable;
+      ++stats_.dropped_unreliable; ++k.dropped;
     }
     if (drop) k.unrel.erase(k.unrel.begin(), k.unrel.begin() + drop);
   }

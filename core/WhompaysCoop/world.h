@@ -49,6 +49,7 @@ enum : uint8_t {
   kEntryRest = 1,      // parked / resting car or a seated person: 2 Hz unless something changed
   kEntryInactive = 2,  // not streamed this frame (chunk unloaded, +120 0x04000000 clear); counted
   kEntryExcluded = 4,  // never streamed (train car, named story character); counted in the owner line
+  kEntryPlayerCar = 8, // a car a player sits in or gets into (authority: that player, the owner's own included): its pose carries it, no record
 };
 
 constexpr uint8_t kSolo = 0xFF;             // OwnerMapRec.area: the slot runs its own world
@@ -593,7 +594,7 @@ class Scheduler {
       c.seated = e.car && reg.Find(e.owner, e.car);   // (a car that is gone: on foot until its own hook says otherwise)
       c.bytes = uint16_t(IsCar(e.kind) ? sizeof(CarRec) : c.seated ? sizeof(SeatedRec) : sizeof(PedRec));
       // Streams: created before this tick (the create carries the first record) and not a car a player drives.
-      c.streams = o.created && o.offered_at != now && !(IsCar(e.kind) && e.authority != e.owner);
+      c.streams = o.created && o.offered_at != now && !(IsCar(e.kind) && (e.authority != e.owner || (e.flags & kEntryPlayerCar)));
       if (c.streams) {
         const bool rest = (e.flags & kEntryRest) && e.changed_at <= o.last_sent;
         c.interval = rest ? std::max(kRestMs, kBandMs[c.band]) : kBandMs[c.band];

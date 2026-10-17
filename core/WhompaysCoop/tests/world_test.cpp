@@ -356,6 +356,14 @@ int main(int argc, char** argv) {
     for (int t = 0; t < 20; ++t) { auto p = w.Tick(); for (auto& u : p[1].updates) { if (IdOf(u.key) == 703) ++car_updates; else ++other_updates; if (IdOf(u.key) == 800) (u.bytes == sizeof(PedRec) ? crew_on_foot : crew_seated)++; } }
     Check(w.reg.Find(0, 800) && w.reg.Find(0, 800)->offer[1].created && crew_on_foot > 0 && crew_seated == 0, "the crew of a removed car stays in the registry and streams as a person on foot");
     Check(car_updates == 0 && other_updates > 0, "a car with a player's authority gets no WWS1 record; the others do");
+    // The owner's own player gets into car 704: the authority stays the owner's slot, the flag says a pose carries it.
+    w.reg.Find(0, 704)->flags |= kEntryPlayerCar;
+    int own_driven = 0;
+    for (int t = 0; t < 20; ++t) { auto p = w.Tick(); for (auto& u : p[1].updates) own_driven += IdOf(u.key) == 704; }
+    w.reg.Find(0, 704)->flags &= uint8_t(~kEntryPlayerCar);
+    int own_back = 0;
+    for (int t = 0; t < 20; ++t) { auto p = w.Tick(); for (auto& u : p[1].updates) own_back += IdOf(u.key) == 704; }
+    Check(own_driven == 0 && own_back > 0, "a car the owner's own player drives (kEntryPlayerCar) gets no record, and gets them again once it is back");
     // Member 3 leaves the area: 8 cars (10 - 705 - 701) and the crew member.
     w.members[3].in_area = false;
     plans = w.Tick();
