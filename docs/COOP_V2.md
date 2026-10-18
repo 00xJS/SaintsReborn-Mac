@@ -1301,5 +1301,38 @@ notes/coop-2.2/investigation_tweak_poses.md and investigation_corpse_positions.m
   flat tyres, part hit points, dents, repairs; cars whose part count differs here".
 Protocol 8 (kEventAnim and kMsgCarParts are new kinds older games ignore).
 
+**2.2.11: doors, the seat race, guns, poses and corpses again** (the 2.2.10 test, 20 minutes with no freeze on either
+machine, both games with the renderer fix; research notes/coop-2.2/investigation_world_doors.md,
+investigation_seat_race.md, investigation_npc_gunfire_sync.md).
+- **World doors** (the user: "I opened or kicked a door open holding Y on one screen and it did not open on the
+  other"): the kick (action 538) reached the other games, but the person update 82441B00 opens the door the action
+  button found (+2836 / +2840, from 82480768) only in the game that kicked; SR1's MP never synced doors.
+  `WorldDoorHook` (823F57E0 from 0x82442520, this player's person in r31) sends `kEventWorldDoor` (33: the door's
+  name hash, its position, the direction); the others find the same door in their loaded chunks (0x829A9900 by slot,
+  doors from +420, count +416, 60 bytes; the name from the mover *(+0)) within 1 m and open it with 823F57E0. A door
+  locked there stays shut; each game's door manager closes its own.
+- **Poses**: the SR Tweak Menu ends a pose by stopping and resetting the animation player, then putting the old
+  state back; only the state was put back here, and the pose's loop kept playing. Now a state that ends a pose put on
+  here goes with `StopMoves`.
+- **Corpses**: once the host's corpse lies still, the copy is moved there when over 0.3 m (3 times at most), and at
+  once over 2 m (was 4 m and the rest test 8226BDC0, which held most back: 180 moved for 350 deaths).
+- **The seat race** (the user: both jumped into a car at once; one drove, the other was knocked down until he
+  died): both games agreed (the car's owner keeps the wheel), but the Mac's move-over to the passenger seat left the
+  driver's seat (+52316) naming him: the host's character was refused the wheel 82 times there, and once out the
+  car's impact handler 82278E18 (82279174) knocked him down 13 times. `WatchStaleSeat` clears a seat of the car this
+  player sits in or last sat in that names them while they don't sit there (4 times a second); `RefuseImpactFall`
+  refuses the third car-impact fall of this player within 12 s and any for 6 s after.
+- **The host's people's gunfire** (the user: their animations "not exactly in sync"): their fire actions (126-157)
+  went as reliable events (5,916, up to 21 a second) and each held the copy 8 s, so it never turned with the host's
+  person through a fight, while the round's replay played its own fire action too. Now those aren't sent while
+  Package C sends the rounds, a weapon action holds a copy 1.2 s, and a copy's own AI can't change its gun
+  (`EquipHook` on 82446280: only co-op's MatchWeapon, and holstering). The stance (+576) isn't sent yet (a PedRec
+  change: next).
+- **Shots refused "gun raising"** (73 in 40 s on the Mac after the host left a car, until its character was made
+  again): after 3 deferrals in a row its state is applied again (82440200), once a second, logged with +772 / +576.
+- **Log**: "World doors: ..."; "Seats: car seats still naming this player cleared n; car-impact falls of this player
+  refused n"; "Guns: copies' own gun changes refused n; other players' characters stuck raising the gun put right n".
+Protocol 8 (kEventWorldDoor is a new kind older games ignore).
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
