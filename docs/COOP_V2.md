@@ -1513,5 +1513,18 @@ investigation_world_movers.md).
   the host tells its knock-overs only when another player is within 150 m (165 events in 10 s before). Log: "NaN guard:
   characters put back on their path n; item copies removed n".
 
+**2.2.23: the CD prompt, props off** (the 2.2.22 test, research tools/coop_test/TEST-2.2.22-findings.md).
+- The Mac froze a third time: every character's position NaN at once with no item copy and no explosion, then a hang
+  re-making the host's character. The user: a CD was collected on the Mac each time, "they had to accept the CD
+  progress, then they were teleported ... or went to a dark screen", still seeing items on the ground. The Mac's log:
+  the NaN at the pickup, then "Pause skipped ... from 822231F8": the game's prompt sequence (82223610, opened by the
+  collectible handler 824064A8 through 82223930) pauses for the progress screen, fades out, and its unpause fades back;
+  the joiner skipped every pause, so it played on behind a black screen. Now the joiner's own prompt pauses (822231F8)
+  go through while the host isn't in a mission (the mission intro stays co-op's: UpdateMissionIntro). Co-op never sent
+  CD progress; since 2.2.22 CDs aren't shared items either: each player collects their own.
+- The level props sync (2.2.20) is off unless mod.ini `props = 1`: all three Mac freezes (2.2.20-2.2.22) happened with
+  it and none before; it makes props loose from the update hook outside the game's physics callbacks and refuses the
+  game's own knock-overs in its contact handler (M: the shared physics change).
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
