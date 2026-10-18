@@ -1499,5 +1499,19 @@ investigation_world_movers.md).
   follower is skipped and logged ("a NaN position ...: not moved this update"); a prop event with a NaN position is
   ignored.
 
+**2.2.22: the 2.2.21 freeze** (research tools/coop_test/TEST-2.2.21-findings.md).
+- The Mac froze again at the same instruction (8240FBB0+10CD). Its log: the host's character and every person copy
+  near it with a NaN position in the same millisecond, their paths from the host fine, 270 ms after a copy of the
+  host's grenade (weapon 39); no prop was moved this time; 3 dropped-item copies were in its world (also in 2.2.20),
+  and the user saw "a CD collectable registered" on the Mac. The NaN is in the member's own physics after an
+  explosion (H); the first suspect is the item copies, made with rows built from int8 axes (neither unit nor at
+  right angles) for a physics body an explosion then pushes (M).
+- Now: item copies get orthonormal rows (identity if the axes are unusable); only fight drops are shared, by the
+  item's touch handler (a gun 82405F98, money 824067E8 / 82406670, health 82406948 / 82406A40, drugs 82406330), never a
+  collectible (824064A8: a CD is one of each player's 60) or a carried object (82405F00); a follower whose character
+  has a NaN position puts it back on its path (MoveHuman, velocity 0); an item copy whose position goes NaN is removed;
+  the host tells its knock-overs only when another player is within 150 m (165 events in 10 s before). Log: "NaN guard:
+  characters put back on their path n; item copies removed n".
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
