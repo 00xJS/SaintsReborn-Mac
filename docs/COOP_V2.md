@@ -1185,5 +1185,24 @@ the link of the node before them and the walk went to the flipped address (M for
 - `PersonUpdateHook` writes the head into a stale node's next only outside the player pool (that memory is a live
   player-class character's), and marks the list for the rebuild after the update.
 
+**2.2.7: repairing the people's list from its own nodes** (the 2.2.6 test; research tools/coop_test/TEST-2.2.6-findings.md).
+The Mac lasted 11 minutes (2.2.5: 110 s), then hung in the game's people-list walker `82448710` (no node cap) on a list
+gone round in a loop (the report's walk hit its cap of 256 with ~35 people). 2.2.6's `RepairActiveList` had run 90 times
+in the last 2.3 minutes, each time for a player-class node on the list (never a freed one; `8247A6D0` never refused one:
+they come on another way), and it rebuilt the list from the object table's active people - which include people on the
+game's other lists sharing `+3592` / `+3596` (the pending list 0x8290CA80, the inactive one): cross-linked lists, a loop
+(M). For the player class `+3592` is flag bytes (8247BA28 sets it 0, then `+3593` bit 0x80) (H).
+- `RepairActiveList` keeps only the list's own valid nodes (in the object table, not player-class): forward from the
+  head to the first bad one, then backward from the head along the prev links to the first bad one (one broken link
+  loses no one), relinked in a circle; a bad head starts it from its neighbour. A player-class node taken off gets
+  `+3592` back as 8247BA28 sets it. Each repair is logged with the nodes taken off (what each is: this player, another
+  player's character, a free pool slot, not in the table; its links and `+200`).
+- The per-update walk also counts a loop (a node twice before the head again) as damage, so it is repaired before the
+  game's walkers meet it.
+- `PersonUpdateHook` no longer writes into a stale node (it may be another list's node or a live character's memory).
+- The game's other `+3592` linkers (82477B78, 82478E68, 8247A8E0, 8222A0A0, 8222A278, 8222A8D8, 8222AA98, 82211F18,
+  824E1AD0) are hooked to log a player-class character they are handed, with the caller ("Active list: X called with
+  player-class character Y (as rN, from LR)"): what puts them on the list.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
