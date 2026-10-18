@@ -1135,5 +1135,18 @@ still on the active list, or a body freed and used again within the game's updat
 - **Log**: "Bodies: people / cars checked a second (us), bad ..., active list n people, n times one not in the object
   table; skipped by the body guard: shape changes, removals, walks; ...". No wire change: protocol 7.
 
+**2.2.4: the seat request** (the 2.2.3 test; research tools/coop_test/TEST-2.2.3-findings.md). The PC hosted and froze
+getting in where the joiner drove, 150 ms after the joiner's character was seated again: `SeatRequestHook` asked for the
+passenger seat, the player wasn't in the car right after the call ("Passenger seat refused"), and it made the request
+again "the usual way" in the same call. That second request (`8257B2C0` -> `82556E50` -> `82440200`) ran the get-in
+action on `0x8309AD84`, no person: the animation layer update `82433308` took its `+572` as a layer count and wrote -1
+into every 28th byte's word over memory for 8 s (the report's memory showed it everywhere, code included) (H for the
+path and the writes; M for where the bad pointer came from).
+- **The fix**: the passenger request is made once; if the player isn't in the car right after it, the passenger watch
+  seats it from co-op's update (at once when the game started nothing, after 3.5 s while a get-in is under way: `+2556`
+  set), and the request the other games are told of is the passenger one.
+- **The guard**: `82433308(person)` skips a layer count over 8 (only the person's set-up `8243DAE8` writes it: 3) and
+  logs it ("Person guard: 82433308 skipped (from LR): X isn't a person (n animation layers ...)").
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
