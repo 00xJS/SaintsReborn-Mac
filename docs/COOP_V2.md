@@ -1113,5 +1113,27 @@ After the walk `826C86A8` also calls the body's vtable `+44`, and the destructor
   clean-up; taken out this session" and "Car copies: n here (physics on, off); n follow another game's damage, off for
   over 1.5 s: hit points (more than 8 of 255), smoke/fire, wreck: examples". No wire change: protocol 7.
 
+**2.2.3: the body guard** (the 2.2.2 test; research tools/coop_test/TEST-2.2.2-findings.md). The PC froze a third
+time, ~4 minutes in, again 3 s after a car copy was wrecked to match the host, in the same walk through the same person
+update (`82479130` -> `82441B00` -> `8227B6A8` -> `8227CE30` -> `826C86A8` -> `826DC780`; index 0x43CB90DB, a float;
+`+100` 0xC0). 2.2.2's scan had found no bad body all session, and its report found none on any person or car of the
+object table at the freeze (H): the body is reached through something the table doesn't list (M: a person removed but
+still on the active list, or a body freed and used again within the game's update).
+- **The guard**: `8227CE30(C)` (a controller's shape change, its body `*(C+16)`), `826C86A8(world, body)` (a body's
+  removal) and `826DC780(body)` (the walk) are hooked; a body that fails `BodyProblem` is skipped there (no freeze; the
+  game may still trip over it later) and logged ("Body guard: where skipped (from LR): why (the body's vtable, +100,
+  +104), controller; the person with that controller or body: in the object table or not, on the active list or not,
+  +120, +200, hit points, what co-op knows of it", 30 a session). A body checked by the caller isn't checked again
+  down the chain (`body_checked`).
+- **The scan** runs once a second (every update cost a Mac under Wine about 20 ms a second: its page checks) and reads
+  only the fields it uses; it also walks the active person list and logs once each person on it that the object table
+  doesn't hold ("Active list: ..."). The car copies' damage comparison runs every 250 ms (as `ApplyCarDamage`).
+- **Reports**: the live guest register block is found through the host registers (in the 2.2.2 freeze `rdi`: host
+  memory the minidump leaves out), with its guest stack's frames (the back chain, each frame's LR and the r20-r31 its
+  `__savegprlr` saved); `BodyReport` adds the active list's people that the object table doesn't hold or whose body is
+  bad.
+- **Log**: "Bodies: people / cars checked a second (us), bad ..., active list n people, n times one not in the object
+  table; skipped by the body guard: shape changes, removals, walks; ...". No wire change: protocol 7.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
