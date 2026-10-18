@@ -1443,5 +1443,30 @@ notes/coop-2.2/investigation_people_motion.md, investigation_people_visibility.m
 - **Protocol 9** (net.h kVersion): the byte's meaning changed, so an older build is refused at join (2.2.8-2.2.17 were
   all 8 and joined each other quietly missing features).
 
+**2.2.19: weather, waypoints, dropped items** (the user: "start with the quick wins").
+- **Weather**: the stages are *0x8370D1BC (212-byte records, weather.xtbl's order, count *0x8370D1B8), the current one
+  at *(*0x8370D1D8). Each game drew its own. The host sends its stage (`kEventWeather` 35, on a change and every
+  10 s); members lock theirs to it as the weather cheat does (821F57D0: 0x8370D204 = the stage, 0x8370D200 = 1) and
+  let go when the session ends.
+- **Waypoints**: a map waypoint is the GPS route of type 0 (0x8370E0EC, route *0x82FFE744, target 0x839E125C), set by
+  822A95D8(from, to, type, flag) and cleared by 822A9830(type). Each player's own goes to every game (`kEventWaypoint`
+  36), which sets it the same way, never over that game's own waypoint or a mission's route (the user: players with
+  Teleport to Waypoint could otherwise be moved by another player's clicks), at most one per player per 3 s; a clear
+  clears only that player's. mod.ini `waypoints = 0` turns it off.
+- **Dropped items** (research notes/coop-2.2/investigation_dropped_items.md): a dead person's gun (824739D8), cash
+  (8243CFC8 -> 82408B78 coins / 82408C58 big_money) and food (8245A7D8) are loose items (82408190, type 2; given only
+  through 824090E8(human, item)). Each game made its own (a member's copies died with its own random drops), the host's
+  lay on the host only, and the other players' characters picked items up unseen on each game (the pickup walks every
+  player). Now the host owns its loose items (`ItemOwnerTick`: told 1 s after they land as `kEventItemDrop` 37, again
+  every 5 s, kept from the game's 50 m despawn with +208 0x20, removed when no player is within 50 m); a member makes a
+  copy (82408190 with the host's ammo and cash) that its player takes by asking the host (`kEventItemTake` 38): the
+  first ask wins, the host removes it and tells everyone who took it (`kEventItemGone` 39), and the taker's game gives
+  it through 824090E8. Members make no drops for their copies (hooks on 82408B78, 82408C58, 824739D8, 8245A7D8,
+  8247A0B8); other players' characters never pick items up (`ItemTouchHook`). A member's own player's drops (a weapon
+  swap) stay on its game.
+- The `Stances` count is only real changes (the picker runs most frames). Log: "Weather and waypoints: ...", "Dropped
+  items: told n, copies made here n; takes asked n, granted n; gone n; copies' own drops not made n; other players'
+  characters' pickups refused n".
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
