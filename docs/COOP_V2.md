@@ -1052,5 +1052,35 @@ the list with what was applied is in impl_C_notes.md, "Review fixes"). Besides t
   applied: ...`; `World (owner) B: viewpoints ... parked ...` and `World (owner) B: traffic ... kept ...`.
 - The start-up line's history names Packages B and C protocol 7 (F9).
 
+**2.2.1: the car-look freeze** (the first 2.2 test; notes/coop-2.2/impl_C_notes.md "2.2.1"). The PC client froze for
+good after 6 minutes: "inside game function 8254DCC0, last game function called 82535C68" (the paint apply of a car
+copy `WorldMake` had just made; `82535C68` is `CreateVehicle`'s placement). The minidump's game thread was not in the
+blob's walk but in its last step `8254DEB8`, the rebuild that takes the car's physics body out of the world and back:
+`825422D8` -> `8252FD88(*(v+224))` -> `826C86A8(*0x8370DC88, *(*(P+60)+16))` -> `826DC780`, which calls each of the
+body's `+104` entries at `+100`; there `+100` was 0xC0 and `+104` 0x43CB13xx (a float): no live body, 1.1 billion
+turns (H). The look went on in the update the car was made in; the game never does that - the garage (`821C12D8`)
+waits for the car's physics (`8253A378`) and the MP code (`8238B258`) applies a later message's (H). Why the body
+wasn't there yet is not proven (M: the car's set-up not done in its first update; 2.2's balanced car-model references
+let models come and go, 8 loaded of 13-14 asked).
+- **The fix**: `WorldMake` no longer applies the paint; `WorldApplyCar` does from a later update. `ApplyCarLook` (every
+  caller: 2.1's `kMsgCarLook` copies and traffic too) puts a look off (`CarLookWait`) while the car was made by
+  `CreateVehicle` under 250 ms ago, its look state isn't its own (`+4` its handle, `+8` its info + 208, as `8254C650`
+  makes it), its model isn't loaded (stream entry `+0`), or, with physics (`+50300`), the body `826DC780` would walk
+  isn't one (at most 256 entries, each 0 or an object with a vtable) or `*(*(v+244)+88)` isn't; tried every 250 ms,
+  given up after 20 tries (a model: every 1 s, 2 minutes). It returns put on / refused / put off; a refused or given-up
+  look isn't tried again.
+- **The guard**: the look is walked first as `8254DCC0` walks it (`coopworld::PaintWalk` in `world.h`: magic
+  0x0A55B00B, a variant block of at most 64 bytes, the parts and their colours by their own counts, ending exactly at
+  its end, 320 bytes at most) and checked against the car's tables the way `8254DAF8` wrote it (`CarLookMismatch`:
+  slot below the info's slot count, part below the slot's with `part+44` = the slot, colours no more than its colour
+  slots, palette below `*0x83710108`, colour below the palette's count with `colour+0` = the palette); the 320-byte
+  buffer is cleared before the copy. A refused look is logged ("Car look refused: car, model (n bytes, why; where)",
+  20 a session) and so is a given-up one ("Car look given up: ..."). The owner never reads a malformed look into a
+  `WWC1` or `kMsgCarLook` (`ReadCarLook` drops it). No wire change: protocol 7.
+- **Log**: every 10 s while any happened, "Car looks: n put on, n refused (not this car's), n put off (just made, look
+  state, model not loaded, physics body), n given up after 20 tries; n read here malformed (not sent)".
+- `world_test`: a full 320-byte look round-trips in a `WWC1` and walks clean; 321 bytes aren't written; a cut tail, a
+  cut look, a stray byte, another magic and a variant block over 64 are refused.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).

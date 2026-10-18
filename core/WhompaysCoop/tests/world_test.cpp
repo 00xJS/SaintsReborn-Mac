@@ -171,6 +171,28 @@ int main(int argc, char** argv) {
     const bool bounds = WriteCreate(bad, buf, sizeof buf) == 0 && !ReadCreate(buf, n2 - 1, back2);
     Check(car_ok && ped_ok && bounds, "WWC1: car with paint and crew, seated person with name and look, round trip; oversized name refused, a cut message refused");
 
+    // 2.2.1: the paint tail is 8254DAF8's blob; 8254DCC0 walks it by its own counts.
+    std::vector<uint8_t> look = {0x0A, 0x55, 0xB0, 0x0B, 1, 0x33, 1, 2, 0, 155};   // a 1-byte variant block, 1 part: slot 2, part 0, 155 colours
+    for (int i = 0; i < 155; ++i) { look.push_back(uint8_t(i % 12)); look.push_back(uint8_t(i)); }
+    std::vector<uint16_t> look_parts;
+    const bool full_ok = look.size() == kMaxPaint && PaintWalk(look.data(), look.size(), &look_parts) == nullptr && look_parts == std::vector<uint16_t>{7};
+    CreateMsg pc = c; pc.paint = look;
+    const size_t pn = WriteCreate(pc, buf, sizeof buf);
+    CreateMsg pback;
+    const bool tail_ok = pn == sizeof(CreateRec) + kMaxPaint + 12 + sizeof(CarRec) && ReadCreate(buf, pn, pback) && pback.paint == look && !PaintWalk(pback.paint.data(), pback.paint.size());
+    const bool tail_cut = !ReadCreate(buf, sizeof(CreateRec) + 200, pback);   // (cut inside the paint tail)
+    CreateMsg over = pc; over.paint.push_back(0);
+    const bool too_long = WriteCreate(over, buf, sizeof buf) == 0 && PaintWalk(over.paint.data(), over.paint.size()) != nullptr;
+    const std::vector<uint8_t> cut(look.begin(), look.end() - 1);
+    std::vector<uint8_t> padded = {0x0A, 0x55, 0xB0, 0x0B, 0, 1, 4, 1, 1, 2, 7, 0};   // slot 4 part 1, 1 colour, then a stray byte
+    std::vector<uint8_t> bad_magic = look; bad_magic[3] = 0x0C;
+    std::vector<uint8_t> big_variant = {0x0A, 0x55, 0xB0, 0x0B, 65}; big_variant.resize(5 + 65 + 1, 0);
+    std::vector<uint8_t> no_parts = {0x0A, 0x55, 0xB0, 0x0B, 0, 0};
+    const bool refused = PaintWalk(cut.data(), cut.size()) && PaintWalk(padded.data(), padded.size()) && !PaintWalk(padded.data(), padded.size() - 1) &&
+                         PaintWalk(bad_magic.data(), bad_magic.size()) && PaintWalk(big_variant.data(), big_variant.size()) && !PaintWalk(no_parts.data(), no_parts.size()) &&
+                         PaintWalk(no_parts.data(), 5) && PaintWalk(look.data(), 9);
+    Check(full_ok && tail_ok && tail_cut && too_long && refused, "WWC1 paint tail: a full 320 B look round trip and well-formed; 321 B not written; a cut tail, a cut look, a stray byte, another magic, a variant block over 64 refused");
+
     AdmitMsg a; a.head.cars_held = 16; a.head.cars_cap = 16; a.head.people_held = 40; a.head.people_cap = 56; a.head.chunks = 0x8000000000000005ull; a.head.dropped_chunk = 2; a.head.near_cars = 7; a.head.near_people = 19;
     a.models = {5, 1, 9}; for (uint32_t i = 0; i < kMaxDeclined; ++i) a.declined.push_back(0x20000 + i);
     const size_t na = WriteAdmit(a, buf, sizeof buf);

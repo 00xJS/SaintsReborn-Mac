@@ -277,6 +277,29 @@ inline bool ReadCreate(const uint8_t* d, size_t n, CreateMsg& c) {
   return c.first.size() == want;
 }
 
+// A car's paint (8254DAF8's blob, what 8254DCC0 applies; reports/J): u32
+// 0x0A55B00B, u8 n and n bytes of the variant block (8253D840; 82230EC8 keeps
+// it under 65), u8 parts, then per part u8 slot, u8 part, u8 colours and that
+// many {u8 palette, u8 colour}. 8254DCC0 walks it by these counts alone:
+// well-formed when the walk ends at its end (2.2.1). parts: each part's offset
+// (its slot byte), for the checks against the car it goes on.
+inline const char* PaintWalk(const uint8_t* d, size_t n, std::vector<uint16_t>* parts = nullptr) {
+  if (n > kMaxPaint) return "longer than 320 bytes";
+  if (n < 6) return "shorter than its header";
+  if (d[0] != 0x0A || d[1] != 0x55 || d[2] != 0xB0 || d[3] != 0x0B) return "not a car look";
+  if (d[4] > 64) return "a variant block over 64 bytes";
+  size_t p = 5 + size_t(d[4]);
+  if (p >= n) return "cut in its variant block";
+  const unsigned count = d[p++];
+  for (unsigned i = 0; i < count; ++i) {
+    if (p + 3 > n) return "cut in a part";
+    if (parts) parts->push_back(uint16_t(p));
+    p += 3 + 2 * size_t(d[p + 2]);
+    if (p > n) return "cut in a part's colours";
+  }
+  return p == n ? nullptr : "bytes past its last part";
+}
+
 struct AdmitMsg {
   AdmitRec head{};
   std::vector<uint16_t> models;
