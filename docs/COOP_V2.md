@@ -1347,5 +1347,18 @@ fixed).
   pose put on here (the state, then `StopMoves`). Each other player's pose change is logged ("<player> pose: state n,
   custom animation h, action n").
 
+**2.2.13: people spawned on the host** (the 2.2.12 test, ~4 minutes, no freeze; the user: doors, the simultaneous
+get-in, poses and their stop all worked - the PC's log: the Mac's pose 178 put on, then its -1 end).
+- The user: "I spawned people into the world on the host's game, I just want to make sure they sync with everyone if
+  they are added in or removed". The world stream's registry names a person's kind from its creation kind (+4216):
+  0 / 3 / 7 are script people, `kKindMissionPerson`, which go only while a mission runs (a mission's own characters
+  stay standing after it); the SR Tweak Menu makes its spawns with 82479AB0 kind 3 and its scenes with kind 0, so
+  outside a mission they were held back ("mission/script outside a mission" up to 6 in the PC's log) and never
+  shown on the Mac. Now `HumanCreateHook` notes a script-kind person made on the host while no mission runs
+  (`spawned_people`): it streams as the street's people do (created on, and removed from, every member with the
+  registry, the game's own removal reaching them as for anyone), and goes without `kPedMission`, so it is a
+  targetable copy there. A mission's characters keep the old rule. A member's own spawns stay on its own game (members
+  own no world objects in 2.2).
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
