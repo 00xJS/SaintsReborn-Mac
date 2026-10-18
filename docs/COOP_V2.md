@@ -1148,5 +1148,22 @@ path and the writes; M for where the bad pointer came from).
 - **The guard**: `82433308(person)` skips a layer count over 8 (only the person's set-up `8243DAE8` writes it: 3) and
   logs it ("Person guard: 82433308 skipped (from LR): X isn't a person (n animation layers ...)").
 
+**2.2.5: freed people and wrecks that change hands** (the 2.2.4 test; research tools/coop_test/TEST-2.2.4-findings.md).
+The Mac joined and froze: the body guard skipped a body's removal from `8227CE30`, which then hung putting the same body
+back (`826C8580`). The report's active list held `person 00000000 at C3B09268` (not in the object table; handle, `+120`,
+`+200` and hit points 0): freed memory the active list walk still updated. Its controller `+476` is 0, and `8227CE30`
+with a controller of 0 reads its "body" at guest `0x10` - junk (H). The same explains 2.2-2.2.2 (the floats at `+104`)
+and why no scan saw a bad body: a controller of 0 was taken as "none". What frees a person still on the list isn't
+known (M: the list's link was overwritten - the walk ended at it, 9 people of 28).
+- `82479130` (one person's update) is hooked: in a session, a person the object table doesn't hold is skipped and its
+  next link pointed at the head (the walk ends there this update); each update `BodyCheckTick` walks the list and, if
+  it holds such a node, rebuilds it from the object table (the list's order up to the bad node, then every person the
+  table counts active: `+200 & 3 == 3`); `8227CE30` refuses a controller of 0; `826C8580` (a body's add) is guarded as
+  the removal; every guard's calls and skips are counted in the Bodies line; a hook that fails to install is logged.
+- **Wrecks**: the host's car blew up there with the joiner inside; its authority went to the joiner (the only player
+  in it), whose game decided the car from then on and drove it on intact. Now a wrecked car's authority goes back to its
+  owner at once (its records carry the wreck), and `ApplyCarDamage` puts the owner's wreck on a copy this player drives
+  (`WorldApplyCar` asks for it while the copy is driven).
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
