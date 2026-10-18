@@ -1417,5 +1417,16 @@ notes/coop-2.2/investigation_people_motion.md, investigation_people_visibility.m
 - Log: "People motion: host people's events played on the copy's timeline n; held copies nudged toward the host's
   spot n, released more than 0.3 m off n; creates waiting for their look n".
 
+**2.2.17: stand-ins** (the 2.2.16 test; the user: "the cop looked like someone else instead of a cop").
+- The Mac's log: "Host's police shown here: world stand-in ..., host's LW_X_M_Officer_01b team 5, here PD_W_M_Bum
+  team 6". A driver whose model hasn't loaded in 2 s while its car moves gets a lookalike from the models loaded here
+  (`LoadedLookalike`), scored by sex, build and name prefix, plus a bonus for a model the host also has; nothing kept
+  a uniform's family, so a bum drove the police car. Every other copy is made with the host's own model.
+- Now a uniform or a gang only by its own family (LW_: police, FBI, EMT, meter maids; TS_: gangs), its role first
+  (the name's fourth part: Officer / FBI / EMT); none loaded: no stand-in (the real one shows when its model loads).
+- A stand-in was kept for the copy's whole life, and its real model was left out of the wanted models: now still
+  wanted, and once its car is slow (under 1 m/s) the stand-in goes and the copy is made again with the real model
+  (queued as a create). Counted in the People motion line ("driver stand-ins made again as the real person").
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
