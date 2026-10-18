@@ -166,7 +166,7 @@ and is wrecked without the explosion the moment its physics is set up (2.1.4; be
 second for as long as it lasted). One of this game's own cars driven from another game is blown up with `825397E0` as before (3 tries 1 s
 apart when refused, then every 30 s; each try damages every part); only that car passes the hooks (2.0 let the
 whole explosion's area pass damage every copy: chain wrecks). Protocol 3: 2.0 sent 0 hit points and the fade-out
-bit, so it can't join a 2.1 game. Dents and broken parts aren't sent yet.
+bit, so it can't join a 2.1 game. Dents and broken parts: sent since 2.2.10.
 
 **Weapons** (research report R): bullets go from the character's muzzle to the shooter's own hit point (first
 pellet, `8246FD18`), spread off, gun raised first, the game's own deferred shot swallowed, refused shots retried for
@@ -1258,6 +1258,48 @@ player out of a copy it wrecked for its owner (`OrderExitVehicle`; the exit goes
   whose owner's newest look differs from its own (checked once a second). A joiner's own spawned car still shows on
   the host only while the joiner drives it (2.1's player cars; members own no world objects in 2.2).
 No wire change.
+
+**2.2.10: poses and corpses** (the 2.2.9 test, 18 minutes with no freeze on either machine; research
+notes/coop-2.2/investigation_tweak_poses.md and investigation_corpse_positions.md).
+- **Poses** (the user: "one player would go into a pose or action using the tweak menu and the other player would
+  not be able to see it"): a pose is an animation state (`+952`: set_animation_state 824DA2A0; the SR Tweak Menu
+  writes it and applies it with `82440200(h, -1, -1, 0)`), a custom animation a file played by `826F5C20` on the
+  character's animation player `*(*(+568)+3592)` (`+756` 297). Neither reached the other games (the 2.2.9 test: the
+  host's blunt pose, the Mac's "Player 1 floats ... 77114 ms"); an action (82444F88) was held there 600 ms and walked
+  over. `WatchLocalAnim` sends `kEventAnim` (32: `+952`, the custom animation's name hash from `AnimFileHook`
+  (826F5C20: slot -> `0x828E5290 + id x 28 + 4`), its flags and f1-f4, the action still playing) on a change held
+  250 ms and every 5 s; `UpdateAvatar` puts the state on the player's character (when its animation set has it,
+  `82226DA8`), plays the custom animation as play_custom_action_do 824D8FB8 does (`AnimSlotOf`, `826F5B88` /
+  `826F5BC0` / `826F5C20`, `+760` / `+576` / `+756` / `+592`) and stops it (`StopMoves`) when the sender's goes; an
+  action or custom animation of theirs holds the character's moves while their path stands (`Follower::Still`); the
+  action replays pass the game's r10 (`*(0x820144B4)`). Old games ignore kind 32.
+- **Corpses** (the user: "some dead bodies were not always in the same location"): the record of a dead person
+  carries the host's ragdoll root (82443808 copies body 1 to `+20` each frame), and the member never read it after
+  the death; its fall started from the copy's own spot, and 2.2.8's retry dropped corpses again after their ragdoll
+  slot went to a newer fall (82267200 takes a dead person's first: 341 falls again for 173 kills). Now no fall again
+  once a copy lay (`sp.lay`); `PlaceCorpse` puts a standing copy at the host's person before it falls; `FollowCorpse`
+  follows the host's corpse as the game's MP mirror follows a ragdolling NPC (823A8240): over 4 m the ragdoll moved
+  there (`822678F0`) and stopped (`82267848`), 0.3-4 m while the host's moves an impulse (`82267AF0`, offset x 3),
+  once both are still (1.5 s, `8226BDC0`) an offset over 0.5 m moved there. 2.1's copies keep the old behaviour.
+- **Car parts** (the user: "a few vehicles whose damage would show a door off on one vehicle but not the other";
+  research notes/coop-2.2/investigation_car_parts.md): parts break only in the game that runs 825397E0 for the car
+  (825447D0 per part, 82550378 the dent), DetonateHook skips it for every car another game decides, and only hit
+  points, smoke, fire and the wreck were sent. Now the deciding game reads what broke on a car 825397E0 ran on (4 times
+  a second at most: parts from `+252`, 688 bytes each, count `+248`, flags `+108`: 0x20000 off, 0x10000 on its hinge
+  (sent as hanging only below half its hit points: an opened door is on its hinge too), 0x80000 glass, 0x100000 flat;
+  the dents' ring from `*(+54456)` with the MP host's 0.01 share) and sends a change as `kMsgCarParts` (WCP1: the car
+  as CarId names it, the part bytes with their hit points out of 15, the new dents; reliable, everyone). The others put
+  it on the cars they show with the calls of the game's damage restore 821BF290 (82547C40 off, 82547B30 hanging,
+  82547050 glass - its shards only within 50 m -, the flat bit, 82550718 a dent not there yet), checked again every
+  2 s (a copy made again). Breaks only add up (the union of what was sent, as SR1's MP: set-only), so a late message
+  from the game that decided before undoes nothing, for any number of players; a repair (82536F30 on a broken car)
+  is a new generation and repairs the copies. A player who joins gets every broken car in full. Older games ignore
+  the message.
+- **Log**: "Poses: n of this player's sent, n of other players' taken; put on their characters here: states n,
+  custom animations n, refused n"; "Deaths and wrecks: ... corpses placed n, moved n, pushed n toward the owner's";
+  "Car parts: n changes of cars this game decides sent (bytes, repairs), n taken; put on here: off, hanging, glass,
+  flat tyres, part hit points, dents, repairs; cars whose part count differs here".
+Protocol 8 (kEventAnim and kMsgCarParts are new kinds older games ignore).
 
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
