@@ -1165,5 +1165,25 @@ known (M: the list's link was overwritten - the walk ended at it, 9 people of 28
   owner at once (its records carry the wreck), and `ApplyCarDamage` puts the owner's wreck on a copy this player drives
   (`WorldApplyCar` asks for it while the copy is driven).
 
+**2.2.6: player-class characters off the people's list** (the 2.2.5 test; research tools/coop_test/TEST-2.2.5-findings.md).
+The Mac joined and froze again; the 2.2.5 guards fired on `person 00000000 at 83B8D9A8`: the player pool's free slot 10
+(`0x83B8D1A8`, the host's character co-op had given back to the pool 65 s before) with bit 0x800 set. 2.2.4's node
+`0xC3B09268` was `0x83B09268` with bit 0x40000000 set. Both are valid addresses with one bit flipped in a list link. For
+the player class `+3592`-`+3595` are flag bytes, not that link (H: `party_allow_max_followers` 824D81F0 sets 0x80 at
+player+3592; 8247DBB0 clears 0x08 there; 8247E248, 82480660, 82481EE8, 82482AA0, the damage / knockdown / punch / seat
+code write `+3593`-`+3595`). co-op's characters of the other players are player-class (the pool `0x83B57148`) and reach
+the people's active list (`8247A6D0` from the creation 82477EEC and the model pass 8247AA5C): their flag writes flipped
+the link of the node before them and the walk went to the flipped address (M for the whole chain; H for each part).
+2.2.5's rebuild also put every person with `+200 & 3 == 3` back on the list, player-class ones included.
+- `HumanActivateHook` refuses `8247A6D0` for a player-class character in a session ("Active list: player-class character
+  ... not put on the people's list (8247A6D0 from LR)"); they are updated as players through the player list
+  `0x8309AC54`.
+- `BodyCheckTick`'s per-update walk counts a player-class node as damage, and `RepairActiveList` never takes one (the
+  list's own order up to the first bad node, then the table's active people, player-class left out).
+- `ReleasePlayerObject` takes the character off the people's list before `8247DBB0` (which only unlinks the player
+  lists).
+- `PersonUpdateHook` writes the head into a stale node's next only outside the player pool (that memory is a live
+  player-class character's), and marks the list for the rebuild after the update.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
