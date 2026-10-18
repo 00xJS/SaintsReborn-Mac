@@ -1372,5 +1372,24 @@ same people count as the host in every window, spawned people included).
   character here while they are in none, on foot and seated (the user: "when the player got into my car, it showed
   them standing up"; logged "<player> seated here in state n (none where they are): out of it").
 
+**2.2.15: walk styles** (the 2.2.14 test, ~2 minutes: no copy needed 2.2.14's state clear - the difference wasn't
++952; research notes/coop-2.2/investigation_walk_styles.md).
+- The user: "older peds walking with canes, a walker or even with different walking styles ... not always matching
+  on both screens". A person's walk style is its base states: +1064 stand, +1068 walk, +1080 run, +1076 / +1072
+  cower stand / run, +1084 ready (+1088 = +1084 + 64), indices into the state table 0x827D1FA8 (the same on every
+  game). 82432DA0(&+1064, &+1068, &+1080, human) draws them at random (the global pool and CRT rand) when the person
+  is set up (8244B268, before +216 0x4000) and again after it drops its props (8243CC20, +212 0x1000; from 8243CE88 on
+  a state change and 8244DBC0 from ~250 AI callers and the knockdown). The cane (POL1 walk variant 1 `olcane`), the
+  walker (variant 2), a magazine, a forty or a blunt is the prop of that state's animation (824367C0 shows it each
+  frame), not an item. A member's copy drew its own; SR1's MP never sent the style, and its clients never drop or draw
+  (the gate 8243CBB0 returns 0 on an MP client).
+- Now the host sends `kEventPedStyle` (34: the six states as bytes, the dropped bit) to a member right after a
+  person's WWC1 (a set-up person), and to its members after a new draw or a drop of a person it streams
+  (`StyleDrawHook` on 82432DA0, `PropDropHook` on 8243CC20). The member keeps the newest per host handle
+  (`world_styles`) and puts it on the copy in WorldApplyPerson, after its look (`PutPedStyle`: each state its anim
+  set has, the dropped bit without throwing items, then 82440200 when no override state plays); `DropGateHook` on
+  8243CBB0 returns 0 for the copies, as on an MP client. Old games ignore kind 34. Log: "Walk styles: n of the host's
+  people's sent; put on copies here n; copies' own drops and draws refused n".
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
