@@ -1468,5 +1468,21 @@ notes/coop-2.2/investigation_people_motion.md, investigation_people_visibility.m
   items: told n, copies made here n; takes asked n, granted n; gone n; copies' own drops not made n; other players'
   characters' pickups refused n".
 
+**2.2.20: level props** (the user's "flying debris and knocked-over objects"; research notes/coop-2.2/
+investigation_world_movers.md).
+- Every breakable or movable level prop is a mover (type 3) of its level chunk, named the same on every game by its
+  uid (MoverId: *(*(m+216)+40), sub +224, found by 824995B0). It comes loose only in 82499988(mover, 1): from a contact
+  (LR 0x82259C10, the other object's handle at the caller's r24+4), its damage 824982E8 (LR 0x82498350 / 0x82498394)
+  or a person's push (0x82274088). Each game decided its own, so posts stood on one screen and lay on the other.
+- Now the game that owns the cause decides: a car, the game whose player drives it; a person, that player's game;
+  anything else, the host; its own explosion, the game it went off on (a replayed explosion only previews it).
+  `MoverLooseHook` refuses the others' knock-overs and `MoverDamageHook` their damage; the decider sends
+  `kEventMover` (40: uid, step, position, axes, velocity) loose at once, then 5 times a second while it moves (over
+  0.5 m/s), and at rest (500 ms slow, or 8 s); the others make it loose the game's way (unanchored, 82499988) and put
+  its body there (82253D70) with its velocity (82253F10). A claim per uid lasts 10 s (the lower slot wins within
+  300 ms). Not yet: props destroyed outright (glass, a death without an explosion), damage short of a break, a
+  catch-up for a late join. Log: "Level props: this game's knock-overs sent n (events), others' refused here n; other
+  games' put on here n (moved into place n), not loaded here n".
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
