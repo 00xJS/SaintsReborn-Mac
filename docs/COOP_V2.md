@@ -1360,5 +1360,17 @@ get-in, poses and their stop all worked - the PC's log: the Mac's pose 178 put o
   targetable copy there. A mission's characters keep the old rule. A member's own spawns stay on its own game (members
   own no world objects in 2.2).
 
+**2.2.14: states of their own** (the 2.2.13 test, ~6 minutes, no freeze; the Mac's `World match` within 50 m had the
+same people count as the host in every window, spawned people included).
+- The user: "some would be walking and on another screen they are holding their arm or reading a book ... it also
+  affected the other player animation too". A person's animation state (+952: street idles and walks) goes in PedRec
+  (`anim`, 0xFF for none), and a copy got the host's only when there was one: a host person in none (-1) left the copy
+  in whatever its own game gave it when it was made. Now a copy in a state of its own while the host's is in none is
+  taken out of it (-1, then `StopMoves`: animation player stopped and reset, the state applied), once the host's has
+  held 1.5 s and no action holds it. Counted in "People's states: copies out of a state of their own".
+- The same for another player's character: since 2.2.12 only a state co-op put on was ended; now any state on their
+  character here while they are in none, on foot and seated (the user: "when the player got into my car, it showed
+  them standing up"; logged "<player> seated here in state n (none where they are): out of it").
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
