@@ -1334,5 +1334,18 @@ investigation_seat_race.md, investigation_npc_gunfire_sync.md).
   refused n"; "Guns: copies' own gun changes refused n; other players' characters stuck raising the gun put right n".
 Protocol 8 (kEventWorldDoor is a new kind older games ignore).
 
+**2.2.12: the host's pause, the pose's end** (the 2.2.11 test, ~6 minutes, no freeze; the user: bodies and doors
+fixed).
+- **The host's pause menu** (the user: "when the host pressed start, all npcs, cars and the world stopped moving ...
+  could we make sure they keep going"): since 1.61 the host's menu paused its game (8220C778 from 822BFD80) and every
+  client with it. Now in a session the host skips that one pause, as clients always did (its prompts and mission
+  screens that pause the world still do); its menu gets the multiplayer answer (823494D0 -> 2) whenever it runs over
+  a running world, so it still closes; clients pause only when the host's world really is paused under its menu.
+- **The pose's end** (the user: "still did not stop ... same when I tried it the other way"): the SR Tweak Menu puts
+  back the state from before the pose, and a player's own is none (-1); the receiver only took states 0-226, so the
+  end was skipped and the pose stayed (both logs: one state put on, the start). Now a sender back to no state ends the
+  pose put on here (the state, then `StopMoves`). Each other player's pose change is logged ("<player> pose: state n,
+  custom animation h, action n").
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
