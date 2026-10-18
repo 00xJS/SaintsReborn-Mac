@@ -1244,5 +1244,20 @@ notes/coop-2.2/investigation_*.md). Protocol 8.
   told here ..., put on here ...; copies' wrecks held for their owner ..." and "Items: n of this player's uses sent;
   other players' uses played here n, refused n" every 10 s; "<player> uses an item (entry n): played / refused here".
 
+**2.2.9: out of a wreck** (the 2.2.8 test; research tools/coop_test/TEST-2.2.8-findings.md). 2.2.8 held: no list damage,
+deaths matched, the wreck told, the passenger seat, an item played. The host's car blew up with the joiner's character
+inside; the joiner's copy got the MP wreck replay 82542650, which leaves its people seated (the single-player destroy
+8252BF38 throws them out): the joiner sat 85 s in the wreck on both screens. `ApplyCarDamage` now orders this game's
+player out of a copy it wrecked for its owner (`OrderExitVehicle`; the exit goes to the other games as usual). The
+"copies' wrecks held" count counts each wreck once (it counted only copies gone invisible).
+- **A mod-menu car's colours** (the user: a car spawned from the host's mod menu showed one colour there, another on
+  the joiner's screen): a car a script or a mod menu makes (82569700 source 7 / 3, `kKindScriptCar`) gets its paint
+  after it is made, and the world stream reads a car's paint once, at its create. The owner now shares those cars'
+  looks as a player's car's (`WorldShareLooks`: `ShareCarLook` once a second while members are in the area, each car
+  read every 2 s, `kMsgCarLook`; kept by the 2.1 prune through `WorldSharesLook`), and `WorldApplyCar` repaints a copy
+  whose owner's newest look differs from its own (checked once a second). A joiner's own spawned car still shows on
+  the host only while the joiner drives it (2.1's player cars; members own no world objects in 2.2).
+No wire change.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
