@@ -97,7 +97,7 @@ struct PedRec {         // a person on foot
   int16_t pos[3];     // 2 cm from ref
   uint8_t yaw;        // heading, 256 steps per turn (1.4 degrees)
   uint8_t flags;      // kPed* (kPedSeated clear)
-  uint8_t state;      // +516 << 4 | +520
+  uint8_t stance;     // +576, the state playing on layer 0 (0-226: stand / crouch / walk ready, fire), 0xFF none (protocol 9; was +516 << 4 | +520, never read)
   uint8_t anim;       // +952
   uint16_t action;    // +756
   int8_t vel[2];      // x / z, 1/16 m/s

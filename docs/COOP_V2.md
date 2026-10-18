@@ -1428,5 +1428,20 @@ notes/coop-2.2/investigation_people_motion.md, investigation_people_visibility.m
   wanted, and once its car is slow (under 1 m/s) the stand-in goes and the copy is made again with the real model
   (queued as a create). Counted in the People motion line ("driver stand-ins made again as the real person").
 
+**2.2.18: stances, protocol 9** (the 2.2.17 test; no police showed as a civilian on the Mac).
+- The user: "npcs/police were crouched on one screen but not the other while they were shooting at me" and the
+  enemies' movements and firing lagging. A person's stance is the state on layer 0 (+576: stand / crouch / walk
+  ready, strafes, the fire stances), picked by 8244E018(move mode +508, sub +512, human) from 82440200 with the
+  person's own AI target and facing; a member's copy picked its own (research notes/coop-2.2/
+  investigation_npc_gunfire_sync.md 5.3). Now PedRec's spare byte (`state`, +516 / +520, never read) carries
+  `stance` (+576, 0xFF none): `StancePickHook` (post-hook on 8244E018) returns the host's for a copy on foot whose
+  record is under 500 ms old and whose anim set has it (checked once per stance with 82226DA8), and WorldApplyPerson
+  re-picks (82440200(obj, -1, -1, 1)) a copy whose stance differs for 150 ms, at most every 200 ms. Log: "Stances:
+  the host's people's stance put on copies here n; not in a copy's anim set n".
+- Copies' move orders calmer (the motion note's P6): a re-aim needs a 0.5 rad turn (was 0.25) and 200 ms since the
+  last order; players' characters keep theirs.
+- **Protocol 9** (net.h kVersion): the byte's meaning changed, so an older build is refused at join (2.2.8-2.2.17 were
+  all 8 and joined each other quietly missing features).
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
