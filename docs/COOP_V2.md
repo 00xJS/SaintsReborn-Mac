@@ -1484,5 +1484,20 @@ investigation_world_movers.md).
   catch-up for a late join. Log: "Level props: this game's knock-overs sent n (events), others' refused here n; other
   games' put on here n (moved into place n), not loaded here n".
 
+**2.2.21: the Mac's freeze in the 2.2.20 test** (research tools/coop_test/TEST-2.2.20-findings.md).
+- The Mac (joiner) froze 44 s in: its game thread hung inside the people despawn and spawn pass 8240FBB0 (under co-op's
+  PeopleUpdateHook, which only passes through on a member), on the first update after it left the host's area and its
+  own spawners came back on with 29 copies fading; HumanDestroyHook had refused 153 of its removals (copies are kept
+  up to 60 s). The host had dropped the Mac from its area because the Mac's poses stopped arriving (3 s old), and the
+  Mac's log showed a NaN in the host character's follow gap from the window where it put 23 knocked-over props'
+  bodies in place with 82253D70(slot, pos, rows) and 82253F10 (2.2.20). 82253D70 turns the rows into a quaternion
+  (8225FE38) from a layout other than the 36 bytes written (M): a NaN body, carried into characters by physics (M), a
+  NaN pose dropped by the host, and the despawn's distances NaN (M).
+- Now: props another game knocked over come loose here (82499988) but their bodies are not moved (their own physics
+  from there; placing them waits for the transform's layout); a copy removal asked 4 times within 30 ms is let
+  through (a game loop waiting for it; "Copy removal asked 4 times within 30 ms ... let through"); a NaN gap in a
+  follower is skipped and logged ("a NaN position ...: not moved this update"); a prop event with a NaN position is
+  ignored.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
