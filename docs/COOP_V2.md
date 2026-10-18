@@ -1204,5 +1204,45 @@ game's other lists sharing `+3592` / `+3596` (the pending list 0x8290CA80, the i
   824E1AD0) are hooked to log a player-class character they are handed, with the caller ("Active list: X called with
   player-class character Y (as rN, from LR)"): what puts them on the list.
 
+**2.2.8: the cause, deaths, wrecks and seats** (the 2.2.7 test; research tools/coop_test/TEST-2.2.7-findings.md and
+notes/coop-2.2/investigation_*.md). Protocol 8.
+- **The people's-list damage (H)**: `WorldCopyFire`'s held automatic trigger wrote the trigger-held bit `+3592 | 0x40`
+  (what 82480528 / 823B24D0 set after a shot on a player-class character) on copies of the host's people, where
+  `+3592` is the top byte of the people's active list link: the copy's next `0x83Bxxxxx` read `0xC3Bxxxxx` while the
+  trigger was held (2.2.4's `C3B09268`, 2.2.7's ten repairs of `C3B51E28` / `C3B0E588` / `C3B2B708`), and the walk
+  82479638 went there; the people behind it weren't updated (frozen bodies) and the games froze (2.2 - 2.2.6). The bit
+  is no longer written on copies; `TryRemoteShots` clears it only on a player-class character. 2.2.5 - 2.2.7's guards
+  and repairs stay.
+- **Deaths**: `KillCopy` runs under `applying_ped_call`: the death 8244A708's fall `824497F0(h, 0, 0)` (its ragdoll) was
+  refused by `KnockdownHook` on every copy not played for the host, so a copy killed by its record died standing unless
+  the host's knockdown event came first; a refused death is called directly (`+1912 = 0`, `8244A708`). A dead copy not
+  lying (`+780` 0, not in a car) gets the fall again once a second, 10 times. `ApplyPedAction` plays nothing on a dead
+  copy.
+- **Wrecks told**: `kEventCarWrecked` (30; a[0] the car's `CarId`, a[1] its owner): `CarDestroyedHook` sends it for a
+  car a player sat in that the game deciding it wrecked (the driver is thrown out at once, so its pose no longer carried
+  the damage); receivers wreck it through `ApplyCarDamage(..., told)` (the MP replay on a copy, the full destroy on their
+  own car), tried each update for 10 s.
+- **Wrecks held**: a copy's wreck (the MP replay 82542650) also started a fade that drew it invisible 10 s later while
+  the owner (the single-player destroy 8252BF38 and its clean-up 8253F698: 35 s - 2 min) still showed it burning.
+  `HoldCopyWreck` keeps a world-stream / 2.1 traffic copy's wreck in the replay's first state, renewed every 250 ms
+  (`+53976 | 0x00400000`, `+54436` clock + 8 s, `+54444` 2 s, clean-up timers -1); the owner's removal ends it. Other
+  players' own cars (`car_copies`) are left as they were: no removal message reaches those yet.
+- **Seats**: another player's get-in (their `kEventEnterCar`, 8 s, the seat asked) claims its seat (`SeatClaimed`,
+  `RemoteEnteringWheel`): this player's request for that car goes to a free passenger seat, and none at all when every
+  seat is taken or being taken. The passenger watch drops a stuck get-in (`8257C400(player, 19)`, the action ended)
+  before its direct seat. Both pressing within the link's delay is still decided by the existing rule.
+- **Inventory items** (research notes/coop-2.2/investigation_item_use.md): the HUD's use 8229DD58 -> `8245CB28(person,
+  item)` sets `+2380` and plays the use's action (299-316, 323) through 82444F88; co-op sent only that action, so the
+  other games played a bare animation without the use (`+2380` 0 there: no stand/move switch, smoke, bottle or end)
+  that the walk cut off. `ItemUseHook` sends `kEventItemUse` (31: the drugs table entry `0x83082D60` + 68 n, the
+  pour-out byte) and the action no longer goes on its own; the receiver ends a running use (`8245DDF8`), makes the item
+  (`8245C6E0`) and uses it on the player's character (`8245CB28`), freeing it when refused (`8245C7B0`, `823F6240`); a
+  stand variant (flags `0x4080`) holds the character's moves 3.5 s. The effect `8245C488` is skipped on another
+  player's character (health and damage reduction stay the owner's). `ReleasePlayerObject` ends a use and frees the
+  carried items before the character goes back to the pool.
+- **Log**: "Deaths and wrecks: copies killed ... (falls tried again ...); wrecks of cars a player sat in told ...,
+  told here ..., put on here ...; copies' wrecks held for their owner ..." and "Items: n of this player's uses sent;
+  other players' uses played here n, refused n" every 10 s; "<player> uses an item (entry n): played / refused here".
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
