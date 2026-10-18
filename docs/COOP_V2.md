@@ -1526,5 +1526,15 @@ investigation_world_movers.md).
   it and none before; it makes props loose from the update hook outside the game's physics callbacks and refuses the
   game's own knock-overs in its contact handler (M: the shared physics change).
 
+**2.2.24: the gun drop** (the 2.2.23 test: the Mac froze ~33 s in with props off; the user: no CD was picked up).
+- The Mac's log: the host's RPG and car explosions (10 skipped here as the host's cars), a copy of the host's rocket,
+  then every co-op character NaN at 231834148, the window's "copies' own drops not made 20", and the CD prompt 1.06 s
+  after the NaN. So the CD is a result (M: a NaN position passes a collectible's distance test and the prompt is queued
+  1000 ms after, 82223930(34, 1000)), not the cause. All four Mac freezes began after explosions or knockdowns, which
+  drop a person's gun through 824739D8 (from the knockdown 824497F0 and the ignite 8245E3A0); since 2.2.19 a copy's
+  went to GunDropHook, which took the gun with 82446038(h, *(h+3548), 0) in place of the game's drop (M: the suspect).
+  Now 824739D8 is not hooked: a copy's gun drops as the game drops it (a member may see a local gun next to the host's
+  item copy). The cash and food suppression (82408B78, 82408C58, 8245A7D8, 8247A0B8: no item made) stays.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
