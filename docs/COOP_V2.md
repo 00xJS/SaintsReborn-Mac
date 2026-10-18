@@ -1082,5 +1082,36 @@ let models come and go, 8 loaded of 13-14 asked).
 - `world_test`: a full 320-byte look round-trips in a `WWC1` and walks clean; 321 bytes aren't written; a cut tail, a
   cut look, a stray byte, another magic and a variant block over 64 are refused.
 
+**2.2.2: physics bodies** (the 2.2.1 test; research tools/coop_test/TEST-2.2.1-findings.md). The PC client froze for
+good after 111 s, mid police chase, in the same loop: `826DC780+0x132`, loop index 0x43CA0B61 (a float, ~404), `+100`
+0. This time a person's update reached it: `82479638` (the active list) -> `82479130` -> `82441B00` -> `8227B6A8`
+(the character controller `*(h+476)` changing its shape) -> `8227CE30`, which takes the controller's body
+`*(C+16)` out of the Havok world (`826C86A8`) and back (H). Both freezes: an object's physics body pointer leads to
+memory that isn't a body, with ~405.0f at `+104` (H); why is not known (M: a body freed and its memory used again).
+After the walk `826C86A8` also calls the body's vtable `+44`, and the destructors' teardowns (`82447CB0` ->
+`8227DB20` for a person, `825330C8` -> `82550600` for a car) walk it too, so no game call can take such a body out (H).
+- **The check** (`BodyCheckTick`, from the update hook right after co-op's update, so before the game's next one;
+  while connected): every person and car of the object table, as the game uses it - a person's controller readable,
+  its `+8` readable, its body `+16`; a car with physics (`+50300 == 1`) its body `*(*(*(v+224)+60)+16)` and
+  `*(*(v+244)+88)`. A body: readable, a vtable whose `+44` is code, `+104` at most 256, `+100` readable for that many,
+  each entry 0 or an object whose vtable's `+8` is code (what `826DC780` calls).
+- **A bad one** is logged ("Bad physics body: person/car, model, what co-op knows of it (world copy, 2.1's copy,
+  this game's own, a player's), why (the body's vtable, +100, +104), dead / alive; what was done", 30 a session) and,
+  unless a player is it or sits in it, taken out: a person off the active list (`+3592` next, `+3596` prev, head
+  `0x8309ABB8`; self-linked, so the game's own unlink later is harmless), never destroyed (`HumanDestroyHook` refuses
+  its removals, `DestroyObject` skips it); a car's `+50300` set to 0, the game's no-physics state. Either goes out of
+  co-op's tables (`BodyForget`); a world copy is told to the host as gone here (it offers a new one).
+- **Dead copies**: `HumanDestroyHook` lets the corpse clean-up `824793C0`'s ask through for a world copy (the 2.2.1
+  test refused it 300 times in 10 s for a dead copy kept on the active list): it goes here, told to the host as gone
+  (offered again only after its back-off); the host's own clean-up takes the original. 2.1's copies stay kept (its
+  people stream would make the corpse again at once).
+- **Reports**: a freeze report stops the game thread and writes its registers, guest memory at each register that
+  points into it, the guest register blocks (`PPCContext`) on its stack with memory at their r3 / r30 / r31, and every
+  person and car whose body is bad now; a crash report does the same for the crashing thread.
+- **Log**: every 10 s while connected, "Bodies: people / cars checked per update (us), bad: people (taken out), cars
+  (taken out), a player's (logged only); removals of taken-out people refused; dead copies let go to the corpse
+  clean-up; taken out this session" and "Car copies: n here (physics on, off); n follow another game's damage, off for
+  over 1.5 s: hit points (more than 8 of 255), smoke/fire, wreck: examples". No wire change: protocol 7.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
