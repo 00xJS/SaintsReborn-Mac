@@ -1391,5 +1391,31 @@ same people count as the host in every window, spawned people included).
   8243CBB0 returns 0 for the copies, as on an MP client. Old games ignore kind 34. Log: "Walk styles: n of the host's
   people's sent; put on copies here n; copies' own drops and draws refused n".
 
+**2.2.16: smoother people** (the 2.2.15 test, ~5 minutes, no freeze; walk styles put on 300 copies; research
+notes/coop-2.2/investigation_people_motion.md, investigation_people_visibility.md, review_coop_2.2.15.md).
+- The user: "slight moments of delay or lag when I would see a ped jumping or lagging to keep up or reposition".
+  The copies are placed on their path every update (no snap threshold); the lag is in their animations and events:
+  - **Events ahead of positions**: the host's people's actions, calls and reactions (kEventPedAction / PedCall /
+    PedReact) played on arrival, ~130 ms before the position they belong to. Now each waits for its copy's follow
+    delay (`HoldPedEvent` / `PlayHeldPedEvents`, in order).
+  - **Action holds**: a non-weapon action held the copy 8 s with no facing and no position, and it jumped when the
+    host's person moved off. Now 2.5 s, extended while the action still plays here (+756), with the host's facing
+    written each update and a 20 % nudge toward its spot (not while it lies or gets up).
+  - **Walking on the spot**: the standing early return skipped Drive's stop order, so the last walk order kept the
+    legs going under a pinned body. Now it returns only once the copy isn't told to move.
+  - **Velocity**: the gait, heading and stop used the newest records' velocity, ~180 ms ahead of the body; now the
+    path's velocity at the time shown (`Follower::PathAt`, t +/- 50 ms) inside the buffer.
+  - The "floats" lines of other players' characters counted standing too (every one was a walk's start): reset
+    while the path stands.
+- The user: "peds out of sync where I would see one on the joiner screen but not on the host ... clothes could look
+  different from far away". No orphan copy in the logs (digests extra 0, removes all applied, the host's audit
+  clean); the people counts that differed were copies still loading their model. The likely case: a person the
+  host keeps alive near the member (PeopleDespawnHook) far from the host's camera, small or not drawn there. Clothes
+  at a distance are the game's own level of detail (15 m), the same on both; but a create read before the person's
+  look existed left the copy in its own random clothes for good: now a person's create waits up to 1.5 s for its
+  look ("creates waiting for their look").
+- Log: "People motion: host people's events played on the copy's timeline n; held copies nudged toward the host's
+  spot n, released more than 0.3 m off n; creates waiting for their look n".
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
