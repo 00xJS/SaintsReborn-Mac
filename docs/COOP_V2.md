@@ -953,13 +953,28 @@ fire` (in `world apply`).
   the top level (13): the pass `8250D3E0(group, level)` pairs a level's requests only with that level's slots, and
   the top level had only the slots `8241BD40` last moved there (the "8 loaded" plateau of every client log, then 4-6,
   with slots idle at levels 1, 2, 4, 5 that nobody asks at). `ReleasePins` releases at the pin's own level when a
-  reference was taken (`ModelPin.held`). Other groups (car models) keep the top level (`pin_top`).
-- **The quota table.** On a client, once a second, the live table `0x827ACFFC` (14 words; `8241CA80` copies it into
-  the group's `+196`, `8241BD40` grows levels from it and never shrinks one) gets level 0 = the group's slot count
-  (`+0`, `people_models` included) and 0 above when it differs, applied with `8250F780(0, 0x827ACFFC, 14)` (it copies
+  reference was taken (`ModelPin.held`). Other groups (car models) keep the top level (`pin_top`). With mod.ini
+  `people_level0 = 0` or `world = 0` people are pinned at the top level again and the table is left alone (2.1.4).
+- **The quota table** (as corrected by the final review, F1/F3). The game's own people do *not* all ask at level 0:
+  `82419A28(desc, kind, level)` picks a group-0 request's level from the character's category (`8241CBF0`: 2-11 by
+  category, 12 with `desc+600` 0x800; 0 only in MP or without a descriptor) - homies, script-prioritised mission
+  characters, this game's own police and gangs. The live table `0x827ACFFC` (14 words) is rebuilt by `8241BE28`
+  (zeroed, then 12 at level 0 in MP, else from its defaults), copied into the group's `+196` by `8241CA80`, and
+  raised by `8241BD40(0, flag, n)`: for levels 1-13 each level is raised to its count `8250E208(group, level, 5)` (the
+  level's queued requests - bound or waiting, the pass pushes them all back - whose highest kind is exactly 5) out of
+  level 0's spare (`table[0] - n`), never shrinking one, then `8250F780(0, table, 14)`; `82413398` runs all three
+  (co-op's own `SetOwnPedSpawning(false)` and missions call it). On a client, once a second and only while it shows
+  the host's people (`peds_shared`, or in the host's world area), level 0 gets the slots of the levels nobody asks
+  at: a level with anything in its request queue (`*(group+56) + level * 24`, `+0` the count) keeps the game's own
+  slots and at least its kind-5 count (`8250E208`, as `8241BD40` would give it), and keeps them 10 s after its last
+  request (a set that comes and goes doesn't move slots to and fro); the rest go to level 0 (the group's
+  slot count `+0` less the kept ones, `people_models` included). Applied with `8250F780(0, 0x827ACFFC, 14)` (it copies
   each changed word to the group's array and sets its dirty bit `+200` 0x80, so the next pass's balancer `8250D0A8`
-  moves the surplus slots down to level 0); skipped while the group's pass runs (`+200` 0x20). The game's own table
-  is saved first and put back when the session ends (single player keeps the game's 8 1 1 0 1 1 0 ...).
+  moves the surplus slots down); skipped while the group's pass runs (`+200` 0x20). A table that isn't co-op's last
+  was rebuilt by the game: it is the game's (the levels it raised kept for the put-back) and co-op's is applied again
+  10 s after co-op's last write at the soonest, logged. When the client stops showing the host's people, and when the
+  session ends, the game's table goes back, then `8241BD40(0, 0, 0)` as `82413398` does after `8241BE28` / `8241CA80`,
+  so levels with kind-5 requests get their slots at once (single player keeps the game's 8 1 1 0 1 1 0 ...).
 - The 2.1.4 guard (`ModelRefGuard`) stays log-only; it now counts a pin by its reference, at any level. The 10 s
   `slots here` dump keeps each slot's level and the quota line (`slot quota per level 827ACFFC`).
 - **Car copies.** `CreateVehicle` takes the model reference through the game's own `82532360(vehicle, 5)`
@@ -967,9 +982,12 @@ fire` (in `world apply`).
   network creator `823BA888`'s way, which leaves the constructor's -1 at `+50304`): the vehicle destructor `825324D0`
   releases the kind noted at `+50304` when it isn't -1, so a copy's reference goes with the copy.
 
-Logs: `People-model slot quota set: 827ACFFC was q0 .. q13, now n at level 0 and none above` / `put back` (10);
-`Model priority: n models pinned (people p at level 0, cars at the top level), r released, h held; slot quota written w
-times (level 0 holds every slot: yes|no)`; `Car copy ID made: model M, reference kind noted at +50304 = 5` (3; `-1`
+Logs: `People-model slot quota set: 827ACFFC was q0 .. q13, now w0 .. w13 (level 0: the slots of the levels nobody
+asks at here; kept for this game's own requests at level: L (a asking, k kind 5) ...)`, `People-model slot quota
+rebuilt by the game: q0 .. q13 (kept; co-op's applied again 10 s after the last time | co-op's applied again | the
+game's own from now on)`, `People-model slot quota put back: 827ACFFC was ..., the game's ..., after its recompute
+8241BD40 ...` (30 in all); `Model priority: n models pinned (people p at level 0, the rest at the top level), r
+released, h held; slot quota written w times, rebuilt by the game g times (co-op's applied now: yes|no)`; `Car copy ID made: model M, reference kind noted at +50304 = 5` (3; `-1`
 would mean the old way), `Car copy ID made with a model reference noted already` (5), and every 10 s `Car models: per
 model of a copy here its kind-5 references (copies, this game's own; copies noted at +50304): ID k (c, o; noted n) ...;
 m with more references than its cars + 1` next to the 2.1.4 `Car models here` line.
@@ -1004,6 +1022,35 @@ the list with what was applied is in impl_C_notes.md, "Review fixes"). Besides t
   `8242C128` and its one reader the train manager `8242EFB0` (H), so no script sets it and the save can't keep the 0
   (M: no other reference to `0x827ACF87`, direct or as `+10407`). A 0 written while it is held stays unknown to the put-back.
 - **Protocol 7** (A3-16, AB-8): a step build of 2.2 is refused at the join; the same build on every game.
+
+**Final review fixes** (notes/coop-2.2/review_final.md; dispositions in impl_C_notes.md section 8):
+- **People-model quota** (F1, F3): as described under "The quota table" above - only while the host's people are
+  shown, only the idle levels' slots, never a level with requests, the game's rebuilds left alone for 10 s, the game's
+  table and its own recompute `8241BD40(0,0,0)` back at the end. mod.ini `people_level0 = 0` turns the level-0 pins
+  and the table writes off (2.1.4's top-level pins).
+- **What `world = 0` undoes** (F2). With `world = 0` on a game: no world stream shown or sent (2.1's streams), no B
+  passes or keep-alives, no C replays; and, since the final review, people pinned at the top level and the people
+  quota never written (as `people_level0 = 0`). What stays with `world = 0` (fixes, or harmless): the registry, the
+  vehicle-table compare and the train lever (steps 2-4, accepted in review A2-A4); the car copies' model reference
+  through `82532360` (a leak fix: the destructor `825324D0` gives back exactly the one taken, and co-op releases no
+  vehicle-group reference anywhere else, review_final "verified clean"; 2.1.4 kept every car copy's model count up for
+  good); the host keeping cars another player's character sits in from its traffic and parked removals (A2-14, a fix);
+  `QueuePersonEvent` (no effect: with `world = 0` the person is in 2.1's stream); the pulled-out drivers removed after
+  a session (F5, below). So a `world = 0` fallback on both games is 2.1.4 plus those fixes.
+- **Far car copies placed with flag 0** (F4): `WorldSteerCar` calls `82535C68(v, pos, matrix, 0)` for a copy without
+  physics, as the MP car code (`823BB068`, `823BA888`) and `CreateVehicle` do. Flag 1 set `v+53984` bit 0x80, which the
+  physics set-up `8253BF08` reads once to lift the car by its lowest wheel (scripts' "on the ground" teleports): the
+  host's body position is lifted already, so the copy popped up and dropped when its physics came.
+- **Pulled-out drivers after a session** (F5): `ReleaseOrphanDrivers` runs after the session too while any are left
+  (they count in `leftovers`), and the session's end skips their 4 s wait (one still seated: 10 s more, as before).
+- **A let-go crew member offered again on foot** (F6): `WorldMake` takes over its orphan (within 5 m, out of the car,
+  same model) instead of making a second copy next to it, 2.1's pulled-out driver rule (`let go n (their crews m;
+  offered again on foot and carried on k)`).
+- **Nothing put on past 130 m** (F7): the clothing check's dressing (record or count changed, colours) waits while
+  another player's character is out past 130 m; the back-within-60 m check runs first.
+- **Two 10 s lines split** (F8): `World (member of slot 0's area ...)` (held, made, models) and `World (member)
+  applied: ...`; `World (owner) B: viewpoints ... parked ...` and `World (owner) B: traffic ... kept ...`.
+- The start-up line's history names Packages B and C protocol 7 (F9).
 
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
