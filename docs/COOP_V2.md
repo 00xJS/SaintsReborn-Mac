@@ -1536,5 +1536,14 @@ investigation_world_movers.md).
   Now 824739D8 is not hooked: a copy's gun drops as the game drops it (a member may see a local gun next to the host's
   item copy). The cash and food suppression (82408B78, 82408C58, 8245A7D8, 8247A0B8: no item made) stays.
 
+**2.2.25: a diagnostic build** (the 2.2.24 test: the Mac froze the same way ~55 s in with the gun-drop hook gone).
+- Five joiner freezes (2.2.20-2.2.24), each with every co-op character's position NaN at once and then the hang in
+  8240FBB0; none in the long fights of 2.2.10-2.2.17. Props (2.2.20) and the gun-drop hook are already off; no one
+  event comes before all five (TEST-2.2.24-mac.md's table: car explosions skipped here, rocket copies, knockdowns,
+  traffic crews let out, corpse pushes). Left from 2.2.18-2.2.19: the people's stances (StancePickHook on 8244E018,
+  the re-pick) and the dropped items (item copies, ItemTouchHook, the members' drop suppression).
+- mod.ini `stances` and `items` switch them (both 0 in this build's mod.ini); the next tests turn them back on one at
+  a time.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
