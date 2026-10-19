@@ -111,8 +111,12 @@ int main(int argc,char** argv) {
   assert(context.r1.u32==0x83200000);
   for(uint32_t a=0x831fb000;a<0x83200000;++a) assert(*static_cast<uint8_t*>(Ptr(a))==0);
 
-  // Exercise the real network worker over UDP, including the ACK length that
-  // was wrong in the previous implementation. Use ephemeral loopback ports.
+  // Exercise the real network worker over UDP with the co-op 2.0 session
+  // (net.h): the host worker with a test client, then the client worker with
+  // a test host. Use ephemeral loopback ports.
+  WmlMod fake_mod{"Whompays Co-op", "."}; self=&fake_mod;
+  auto udp_send=[](SOCKET s) { return [s](const void* d,int n,const sockaddr_in& to) { return sendto(s,static_cast<const char*>(d),n,0,reinterpret_cast<const sockaddr*>(&to),sizeof(to)); }; };
+  auto udp_recv=[](SOCKET s) { return [s](char* b,int cap,sockaddr_in& from) { int l=sizeof(from); return recvfrom(s,b,cap,0,reinterpret_cast<sockaddr*>(&from),&l); }; };
   WSADATA ws{}; assert(WSAStartup(MAKEWORD(2,2),&ws)==0);
   sock=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP); assert(sock!=INVALID_SOCKET);
   sockaddr_in local{}; local.sin_family=AF_INET; local.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
@@ -120,24 +124,27 @@ int main(int argc,char** argv) {
   int len=sizeof(local); assert(getsockname(sock,reinterpret_cast<sockaddr*>(&local),&len)==0);
   u_long nonblocking=1; assert(ioctlsocket(sock,FIONBIO,&nonblocking)==0);
   SOCKET client=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP); assert(client!=INVALID_SOCKET);
-  DWORD timeout=2000; setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<char*>(&timeout),sizeof(timeout));
+  assert(ioctlsocket(client,FIONBIO,&nonblocking)==0);
   running=true; hosting=true; stop_thread=false; connected=false; native_out=good;
   // Balance the worker's WSACleanup separately from the test's socket lifetime.
   assert(WSAStartup(MAKEWORD(2,2),&ws)==0);
   net_thread=std::thread([local]{NetworkLoop(local,true);});
-  assert(sendto(client,kHello,sizeof(kHello)-1,0,reinterpret_cast<sockaddr*>(&local),sizeof(local))==sizeof(kHello)-1);
-  bool ack=false,npc=false;
-  char bytes[1500];
-  for(int i=0;i<8 && !(ack&&npc);++i) {
-    int n=recv(client,bytes,sizeof(bytes),0); assert(n>0);
-    if(n==sizeof(kAck)-1 && !std::memcmp(bytes,kAck,n)) ack=true;
-    if(n==sizeof(good)) {
-      coop::NativePacket received; std::memcpy(&received,bytes,n);
-      assert(coop::ValidateNpc(received,n));
-      assert(!std::memcmp(&received,&good,n)); npc=true;
+  {
+    coopnet::Session tester(udp_send(client),udp_recv(client));
+    tester.StartClient(local,"tester");
+    bool joined=false,npc=false;
+    for(int i=0;i<400 && !(joined&&npc&&connected.load());++i) {
+      tester.Pump(MonoMs());
+      coopnet::Received m;
+      while(tester.Poll(m)) {
+        if(m.type==coopnet::kJoinOk) joined=true;
+        if(m.type==kMsgNative && m.origin==0 && m.data.size()==sizeof(good) && !std::memcmp(m.data.data(),&good,sizeof(good))) npc=true;
+      }
+      Sleep(5);
     }
+    assert(joined && tester.MySlot()==1 && npc && connected.load());
+    tester.Stop(MonoMs());
   }
-  assert(ack&&npc&&connected.load());
   StopSession(); assert(!net_thread.joinable() && sock==INVALID_SOCKET);
   closesocket(client);
 
@@ -145,22 +152,26 @@ int main(int argc,char** argv) {
   local.sin_port=0;
   assert(bind(fake_host,reinterpret_cast<sockaddr*>(&local),sizeof(local))==0);
   assert(getsockname(fake_host,reinterpret_cast<sockaddr*>(&local),&len)==0);
-  setsockopt(fake_host,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<char*>(&timeout),sizeof(timeout));
+  assert(ioctlsocket(fake_host,FIONBIO,&nonblocking)==0);
   sock=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
   assert(ioctlsocket(sock,FIONBIO,&nonblocking)==0);
   running=true; hosting=false; connected=false; native_received=0; native_pending=false;
   assert(WSAStartup(MAKEWORD(2,2),&ws)==0);
   net_thread=std::thread([local]{NetworkLoop(local,false);});
-  sockaddr_in joining{}; len=sizeof(joining);
-  int n=recvfrom(fake_host,bytes,sizeof(bytes),0,reinterpret_cast<sockaddr*>(&joining),&len);
-  assert(n==sizeof(kHello)-1 && !std::memcmp(bytes,kHello,n));
-  sendto(fake_host,kAck,sizeof(kAck)-1,0,reinterpret_cast<sockaddr*>(&joining),sizeof(joining));
-  sendto(fake_host,reinterpret_cast<char*>(&bad),sizeof(bad),0,reinterpret_cast<sockaddr*>(&joining),sizeof(joining));
-  for(int i=0;i<2;++i) sendto(fake_host,reinterpret_cast<char*>(&good),sizeof(good),0,reinterpret_cast<sockaddr*>(&joining),sizeof(joining));
-  for(int i=0;i<100 && !native_received.load();++i) Sleep(5);
-  Sleep(30);
-  assert(connected.load() && native_received.load()==1);
-  { std::lock_guard lock(probe_mutex); assert(native_pending && !std::memcmp(&native_in,&good,sizeof(good))); }
+  {
+    coopnet::Session test_host(udp_send(fake_host),udp_recv(fake_host));
+    test_host.StartHost("test host");
+    for(int i=0;i<400 && !(test_host.PlayerCount()==2 && connected.load());++i) { test_host.Pump(MonoMs()); coopnet::Received m; while(test_host.Poll(m)) {} Sleep(5); }
+    assert(test_host.PlayerCount()==2 && connected.load());
+    // A bad replica packet is refused, a good one taken, its duplicate dropped.
+    test_host.Send(coopnet::kEveryone,kMsgNative,&bad,sizeof(bad),false);
+    for(int i=0;i<2;++i) test_host.Send(coopnet::kEveryone,kMsgNative,&good,sizeof(good),false);
+    for(int i=0;i<100 && !native_received.load();++i) { test_host.Pump(MonoMs()); Sleep(5); }
+    for(int i=0;i<6;++i) { test_host.Pump(MonoMs()); Sleep(5); }
+    assert(connected.load() && native_received.load()==1);
+    { std::lock_guard lock(probe_mutex); assert(native_pending && !std::memcmp(&native_in,&good,sizeof(good))); }
+    test_host.Stop(MonoMs());
+  }
   StopSession(); closesocket(fake_host); WSACleanup();
-  std::puts("PASS: payloads, native actor ABI/lifecycle mocks, UDP host/client workers, duplicate rejection, shutdown");
+  std::puts("PASS: payloads, native actor ABI/lifecycle mocks, co-op 2.0 UDP host/client workers, duplicate rejection, shutdown");
 }
