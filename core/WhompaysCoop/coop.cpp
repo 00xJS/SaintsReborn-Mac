@@ -3570,6 +3570,7 @@ struct Remote {
   uint32_t enter_car=0; uint64_t enter_until=0, enter_time=0;   // their getting in is playing (car actions)
   int32_t enter_seat=-1;                                          // the seat their request asked for (kEventEnterCar a[3]; -1 / 0 the driver's)
   uint8_t raise_defers=0; uint64_t next_unstick=0;   // (2.2.11: shots deferred in a row while raising the gun)
+  uint8_t fire_refusals=0;   // (2.3.9: shots the fire gate refused in a row)
   uint32_t anim_state=~0u, anim_put=~0u, anim_custom=0, anim_flags=0; float anim_f[4]{}; uint64_t next_anim=0; unsigned custom_misses=0;   // (2.2.10: their pose, kEventAnim)
   uint32_t pending_victim=0; uint64_t victim_deadline=0, victim_exit_at=0;  // a driver they pull out here
   // Their notoriety on the character here (2.1, UpdateNotoriety): the handle
@@ -4457,7 +4458,19 @@ void TryRemoteShots(GuestScratch& scratch,Remote& r,uint32_t obj,uint64_t now) {
     }
     r.raise_defers=0;
     // Fired when the refire timer was re-armed or a round used (as FireHook).
-    if(api->read_u32(ammo+24)!=t || api->read_u32(ammo+16)!=rounds) { ++shots_played; r.shots.pop_front(); continue; }
+    if(api->read_u32(ammo+24)!=t || api->read_u32(ammo+16)!=rounds) { ++shots_played; r.fire_refusals=0; r.shots.pop_front(); continue; }
+    // 2.3.9: refused again and again (the 2.3.8 test: 268 of the host's shots
+    // in VK01's last 30 s): its state applied again once a second, as for
+    // the raise above, with the state the gate saw logged.
+    if(r.fire_refusals<255) ++r.fire_refusals;
+    if(r.fire_refusals>=5 && now>=r.next_unstick) {
+      r.next_unstick=now+1000;
+      static unsigned logged=0;
+      if(logged++<10) { char line[180]; std::snprintf(line,sizeof(line),"%s: shots refused %u times by the fire gate (+772 %d, +576 %d, +212 %08X, car %08X): state applied again",r.tag,r.fire_refusals,int32_t(api->read_u32(obj+772)),int32_t(api->read_u32(obj+576)),api->read_u32(obj+212),api->read_u32(obj+2496)); ProbeLog(line); }
+      scratch.ctx.r3.u64=obj; scratch.ctx.r4.u64=~0ull; scratch.ctx.r5.u64=~0ull; scratch.ctx.r6.u64=0;
+      ++replicated_depth; scratch.Call(0x82440200); --replicated_depth;
+      ++raise_unsticks;
+    }
     held(kHeldFireRefused); return;   // refused: next update (until 750 ms)
   }
 }
@@ -9894,7 +9907,10 @@ bool keep_worn_models=true;  // mod.ini keep_worn_models: worn models keep their
 std::unordered_map<uint32_t,ModelPin> model_pins; // model id -> pin (joiner, game thread)
 unsigned pins_made=0, pins_released=0;
 unsigned pins_people=0;   // (of pins_made: people models, at level 0)
+uint64_t people_pins_held_until=0;   // (2.3.4) CutsceneEndHook: no people pins until then
+void ReleaseWaitNudges(GuestScratch& scratch,uint64_t now);   // (2.3.6, with the cutscene-end hooks)
 void PinModel(GuestScratch& scratch,uint32_t id,uint64_t now) {
+  if((id>>24)==0 && now<people_pins_held_until) return;
   auto it=model_pins.find(id);
   if(it!=model_pins.end()) { it->second.used=now; return; }
   const bool people=(id>>24)==0, low=people && PeopleLevel0();
@@ -9943,6 +9959,13 @@ void ReleasePins(GuestScratch& scratch,uint64_t now,bool all) {
 // 8241BD40(0,0,0) as 82413398 does after it, when the client stops showing
 // the host's people and when the session ends (final review F1, F3).
 std::array<uint32_t,14> quota_game{}, quota_mine{}; bool quota_set=false;
+// 2.3.1: none of co-op's quota during a cutscene and 20 s after one. Ending
+// the joiner's mission cutscene with the host's (821F9700) runs the mission's
+// next step, which loads its people and recomputes the slots (8241BD40 ->
+// 8250E208): with co-op's level-0 quota in place that walk never ended (the
+// joiner on a black screen after VK01's opening cutscene; the game had rebuilt
+// the table in the cutscene and co-op had put its own back 10 s later).
+uint64_t quota_paused_until=0;
 uint64_t quota_hold_until=0, quota_next_again=0, quota_idle_since[14]{};
 unsigned quota_writes=0, quota_rebuilds=0;
 void PeopleQuota(GuestScratch& scratch,bool on,uint64_t now) {
@@ -9958,6 +9981,7 @@ void PeopleQuota(GuestScratch& scratch,bool on,uint64_t now) {
   auto fit=[&](std::array<uint32_t,14>& t) { uint32_t left=slots; for(unsigned i=1;i<14;++i) { t[i]=std::min(t[i],left); left-=t[i]; } t[0]=left; };
   static unsigned logged=0;
   char line[400];
+  const bool game_rebuilt=quota_set && cur!=quota_mine;   // (2.3.4)
   if(!quota_set) quota_game=cur;
   else if(cur!=quota_mine) {   // the game rebuilt it (82413398, 8241BD40): the levels it raised stay the game's
     for(unsigned i=1;i<14;++i) quota_game[i]=std::max(quota_game[i],cur[i]);
@@ -10009,7 +10033,10 @@ void PeopleQuota(GuestScratch& scratch,bool on,uint64_t now) {
   }
   // Put back: the game's table, then its own recompute (82413398's order),
   // so the levels with kind-5 requests get their slots at once.
-  want=quota_game;
+  // 2.3.4: a table the game has just rebuilt stays as it is (2.3.3 wrote
+  // 2 1 1 1 1 1 1 0 0 0 0 0 0 4 over the game's 7 0 0 0 0 0 1 0 0 0 0 0 0 4 at
+  // VK01's opening cutscene: level 0 down to 2 slots).
+  want=game_rebuilt ? cur : quota_game;
   if(want!=cur) {
     for(unsigned i=0;i<14;++i) api->write_u32(kQuota+i*4,want[i]);
     scratch.ctx.r3.u64=0; scratch.ctx.r4.u64=kQuota; scratch.ctx.r5.u64=14;
@@ -10799,7 +10826,7 @@ void UpdateSharedPeds(GuestScratch& scratch,uint32_t player,uint64_t now) {
     sp.follow.Drive(scratch,obj,now,nullptr);
     ++it;
   }
-  { static uint64_t next_pins=0; if(now>=next_pins) { next_pins=now+1000; if(pin_host_models && now-host_models_time<3000) for(uint32_t id:host_models) PinModel(scratch,id,now); mod_stage.store("model memory"); ReleasePins(scratch,now,false); ClearUnusedModelRefs(scratch); if(free_orphan_slots) FreeOrphanSlots(scratch); }
+  { static uint64_t next_pins=0; if(now>=next_pins) { next_pins=now+1000; if(pin_host_models && now-host_models_time<3000) for(uint32_t id:host_models) PinModel(scratch,id,now); mod_stage.store("model memory"); ReleasePins(scratch,now,false); ReleaseWaitNudges(scratch,now); ClearUnusedModelRefs(scratch); if(free_orphan_slots) FreeOrphanSlots(scratch); }
     static uint64_t next_evict=0; if(now>=next_evict) { next_evict=now+2000; mod_stage.store("model room"); EvictNonHostModels(scratch,now); } mod_stage.store("shared people"); }
   {
     static uint64_t next_drop=0;
@@ -11302,11 +11329,19 @@ void DumpPeople(uint32_t player) {
 // is a new mission though: its hash changes, and that ends the old one here
 // for one update so the start (bringing this player over, starting it here)
 // runs again. 1.27 kept the old one going: the joiner stayed behind.
+// 2.3.7: a mission the host passed (its end screen shown here) is over here
+// until the host's mission hash changes: the host's flag kept coming back for
+// a while after VK01's pass (its end sequence), and each time co-op started
+// VK01 here again ("didn't start here (trying again)", busy 1): the joiner in
+// a half-started mission of its own, its title cut off at the top.
+uint32_t passed_mission_hash=0;
 bool HostMissionActive(uint64_t now) {
   static uint64_t last_seen_active=0, gap_until=0;
   static uint32_t active_hash=0;
   const bool flag=host_mission.load() && now-host_state_seen.load()<3000;
   const uint32_t hash=host_mission_hash.load();
+  if(passed_mission_hash && hash && hash!=passed_mission_hash) passed_mission_hash=0;
+  if(passed_mission_hash && hash==passed_mission_hash) { last_seen_active=0; return false; }
   if(flag && hash && active_hash && hash!=active_hash) gap_until=now+500;  // a new mission
   if(flag && hash) active_hash=hash;
   if(now<gap_until) { last_seen_active=0; return false; }
@@ -11325,12 +11360,20 @@ void UpdateMissionFollow(GuestScratch& scratch,uint32_t player,uint64_t now) {
   static bool was_active=false, pending=false;
   static uint64_t next_catch_up=0;
   const bool active=HostMissionActive(now);
-  if(active && !was_active) { pending=true; ProbeLog("Host started a mission; bringing this player over after the cutscene"); }
+  // 2.3.9: the same mission back within 20 s of its end (the host's flag
+  // coming and going in a mission's end sequence: VK01 twice in the 2.3.8
+  // test) is the same mission: no bringing over for it.
+  static uint64_t ended_at=0; static uint32_t ended_hash=0;
+  if(active && !was_active) {
+    const bool again=ended_hash && ended_hash==host_mission_hash.load() && now-ended_at<20000;
+    if(!again) { pending=true; ProbeLog("Host started a mission; bringing this player over after the cutscene"); }
+    else ProbeLog("Host's mission back (its end sequence): carried on");
+  }
   static bool host_cut_was=false;
   const bool host_cut=host_cutscene.load();
   if(active && host_cut_was && !host_cut) pending=true;  // after each of the host's cutscenes
   host_cut_was=host_cut;
-  if(!active && was_active) ProbeLog("Host's mission ended");
+  if(!active && was_active) { ended_at=now; ended_hash=host_mission_hash.load(); ProbeLog("Host's mission ended"); }
   was_active=active;
   if(host_cutscene.load() || CutscenePlaying()) return;
   PlayerPose p;
@@ -11340,10 +11383,16 @@ void UpdateMissionFollow(GuestScratch& scratch,uint32_t player,uint64_t now) {
   {
     // The host's mission moved the host somewhere else (a jump of 30 m+
     // between two updates): follow.
-    static float last[3]{}; static bool have=false;
-    const float jx=p.pos[0]-last[0], jz=p.pos[2]-last[2];
-    if(active && have && jx*jx+jz*jz>30.0f*30.0f && p.vehicle<0) { pending=true; ProbeLog("Host was moved by the mission: following"); }
-    last[0]=p.pos[0]; last[1]=p.pos[1]; last[2]=p.pos[2]; have=true;
+    // 2.3.9: a jump faster than anything drives (over 100 m/s by the host's
+    // own clock), with this player now over 40 m away: the 2.3.8 test's
+    // VK01 chase moved the joiner 5 times (56-167 m) on late updates of a
+    // host running and driving after the kidnapper.
+    static float last[3]{}; static bool have=false; static uint32_t last_time=0;
+    const float jx=p.pos[0]-last[0], jz=p.pos[2]-last[2], jump=std::sqrt(jx*jx+jz*jz);
+    const float secs=std::max(0.05f,float(p.time-last_time)/1000.0f);
+    if(active && have && p.sequence && jump>30.0f && jump/secs>100.0f && d>40.0f && p.vehicle<0) { pending=true; ProbeLog("Host was moved by the mission: following"); }
+    if(jump>0.01f || !have) { last[0]=p.pos[0]; last[1]=p.pos[1]; last[2]=p.pos[2]; last_time=p.time; }
+    have=true;
   }
   // Standing inside each other (a cutscene puts both players on the same
   // spot): the host's player got stuck on this character, fell over every
@@ -11463,6 +11512,181 @@ void ShowMissionMarkers(GuestScratch& scratch) {
   char line[80]; std::snprintf(line,sizeof(line),"Mission markers shown again: %u",shown); ProbeLog(line);
 }
 
+// 2.3.4, joiner: a cutscene's end (821F9700 -> 821F9230 -> 824C4850) waits,
+// with no frame, until every character of the cutscene and of the mission
+// group has its model resident (8241BD40, 8250F098 and 825124C0 in a loop:
+// no culls, no co-op update run in it), so whatever co-op holds in the people
+// group stays held. Before it: the game's own slot quota back and co-op's
+// people pins given back (8250CA48 at once: the group isn't locked here), and
+// no people pins for 15 s. The game's own call (824BFD78) and co-op's.
+// 2.3.5: and the copies of the host's people go (hidden during the cutscene;
+// made again when the host sends them). The wait's slot walk gives a level a
+// slot with users only by marking it for the culls to empty (8250D3E0), and no
+// cull runs in the wait: the 2.3.4 test's slots at VK01's end were worn by
+// copies (users 2-4 on 9 of the 12), and the mission's next characters waited
+// for them for good.
+unsigned RemoveCopiesForCutsceneEnd(GuestScratch& scratch,uint64_t now);   // (2.3.5, with the world stream)
+WmlGuestFunction original_cutscene_end=nullptr;
+void CutsceneEndHook(WmlContext* c,uint8_t* b) {
+  if(connected.load() && !hosting.load() && Readable(kStreamTable,204) && !(api->read_u8(kStreamTable+200)&0x20)) {
+    GuestScratch scratch(c);
+    const uint64_t now=MonoMs();
+    PeopleQuota(scratch,false,now); quota_paused_until=now+20000;
+    unsigned dropped=0;
+    for(auto it=model_pins.begin();it!=model_pins.end();) {
+      if((it->first>>24)!=0) { ++it; continue; }
+      if(it->second.held) {
+        scratch.ctx.r3.u64=kStreamTable; scratch.ctx.r4.u64=it->first;
+        scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=uint64_t(it->second.level); scratch.ctx.r7.u64=0;
+        scratch.Call(0x8250CA48);
+        ++pins_released; ++dropped;
+      }
+      it=model_pins.erase(it);
+    }
+    people_pins_held_until=now+15000;
+    const unsigned removed=RemoveCopiesForCutsceneEnd(scratch,now);
+    static unsigned logged=0;
+    if(logged++<20) {
+      char line[160]; std::snprintf(line,sizeof(line),"Cutscene end here: %u people-model pins dropped, %u copies of other games' people removed, the game's slot quota in place",dropped,removed); ProbeLog(line);
+      LogPeopleSlots("Cutscene end");
+    }
+  }
+  original_cutscene_end(c,b);
+}
+// 2.3.4, diagnostic: 8241BD40(0, 0, 0) is called once per turn of those wait
+// loops (824C4850's at 824C4920 / 824C4AB8, 821F9230's at 821F93E0). Past 5 s
+// in one: the waited characters' models, logged once (the update never runs
+// again in a hang).
+// 2.3.6, the safety net: past 3 s in 824C4850's wait, each waited model not
+// resident gets a kind-5 request at level 0 (8250C750, as PinModel): the slot
+// walk then takes a slot for it at once (8250DFC0) instead of marking a worn
+// one for culls that never run in the wait. Given back 20 s later
+// (ReleaseWaitNudges, the model-memory tick).
+struct WaitNudge { uint32_t id; uint64_t at; };
+std::vector<WaitNudge> wait_nudges;   // game thread
+bool PeopleModelResident(uint32_t id) {
+  const uint32_t group=kStreamTable+(id>>24)*204;
+  if(!Readable(group,204)) return false;
+  const uint32_t head=api->read_u32(group+12);
+  unsigned guard=0;
+  for(uint32_t sl=head;sl && Readable(sl,44) && guard++<64;) {
+    if(api->read_u32(sl+4)==id) return true;
+    sl=api->read_u32(sl+40); if(sl==head) break;
+  }
+  return false;
+}
+void ReleaseWaitNudges(GuestScratch& scratch,uint64_t now) {
+  for(auto it=wait_nudges.begin();it!=wait_nudges.end();) {
+    if(now-it->at<20000) { ++it; continue; }
+    scratch.ctx.r3.u64=kStreamTable+(it->id>>24)*204; scratch.ctx.r4.u64=it->id;
+    scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=0;
+    scratch.Call(0x8250CA48);
+    it=wait_nudges.erase(it);
+  }
+}
+// 2.3.8, joiner: 824C4850(group) waits, for each record of the group with
+// +68 bit 0x80, until its object's model is resident: the people list
+// *0x8370F8DC (+84 the human, a pointer; its model *(*(+228)+608)) and the
+// vehicle list *0x8370F8D4 (+84 a handle, a type-5 object; its model
+// **(car+50324)). A record whose object doesn't exist here can never be met:
+// the 2.3.7 test waited on a VK01 vehicle record with handle 0 (the car never
+// made, or gone, on the joiner) for good. Such records are skipped (the bit
+// cleared) before the wait starts.
+bool LiveObject(uint32_t obj,uint32_t type) {
+  if(!Readable(obj,76)) return false;
+  const uint32_t h=api->read_u32(obj+68), i=h&0xFFFF;
+  return i<4096 && api->read_u32(kObjectTable+12+i*16)==obj && api->read_u32(obj+72)==type;
+}
+WmlGuestFunction original_group_wait=nullptr;
+void GroupWaitHook(WmlContext* c,uint8_t* b) {
+  if(connected.load() && !hosting.load()) {
+    const uint32_t group=uint32_t(api->get_r(c,3));
+    unsigned skipped=0;
+    for(int list=0;list<2;++list) {
+      const uint32_t head=api->read_u32(list ? 0x8370F8D4 : 0x8370F8DC);
+      unsigned guard=0;
+      for(uint32_t r=head;r && Readable(r,88) && guard++<128;) {
+        const uint32_t next=api->read_u32(r+72);
+        const uint8_t f=api->read_u8(r+68);
+        if(api->read_u32(r+64)==group && (f&0x80)) {
+          const uint32_t ref=api->read_u32(r+84);
+          bool ok;
+          if(!list) ok=LiveObject(ref,1);
+          else { const uint32_t i=ref&0xFFFF; const uint32_t o=ref && i<4096 ? api->read_u32(kObjectTable+12+i*16) : 0; ok=o && api->read_u32(o+68)==ref && LiveObject(o,5); }
+          if(!ok) {
+            api->write_u8(r+68,uint8_t(f&0x7F)); ++skipped;
+            static unsigned logged=0;
+            if(logged++<20) { char line[160]; std::snprintf(line,sizeof(line),"Mission group %08X: %s record %08X (%08X) has no object here: not waited for",group,list ? "vehicle" : "character",r,ref); ProbeLog(line); }
+          }
+        }
+        if(next==head) break;
+        r=next;
+      }
+    }
+    (void)skipped;
+  }
+  original_group_wait(c,b);
+}
+WmlGuestFunction original_slot_recompute=nullptr;
+void SlotRecomputeHook(WmlContext* c,uint8_t* b) {
+  static uint64_t wait_since=0, last_seen=0; static uint32_t wait_lr=0; static bool told=false, nudged=false;
+  const uint32_t lr=uint32_t(api->get_lr(c));
+  if(!hosting.load() && connected.load() && api->get_r(c,3)==0 && (lr==0x824C4920 || lr==0x824C4AB8 || lr==0x821F93E0)) {
+    const uint64_t now=MonoMs();
+    if(lr!=wait_lr || now-last_seen>1000) { wait_lr=lr; wait_since=now; told=false; nudged=false; }
+    last_seen=now;
+    if(!nudged && lr!=0x821F93E0 && now-wait_since>3000) {
+      nudged=true;
+      const uint32_t head=api->read_u32(lr==0x824C4AB8 ? 0x8370F8D4 : 0x8370F8DC);
+      unsigned guard=0, n=0;
+      std::string ids;
+      for(uint32_t r=head;r && Readable(r,88) && guard++<64;) {
+        const uint32_t next=api->read_u32(r+72);
+        if(api->read_u8(r+68)&0x80) {
+          const uint32_t human=api->read_u32(r+84);
+          const uint32_t info=Readable(human,232) ? api->read_u32(human+228) : 0;
+          const uint32_t id=Readable(info,612) ? api->read_u32(info+608) : 0xFFFFFFFFu;
+          const bool known=std::any_of(wait_nudges.begin(),wait_nudges.end(),[&](const WaitNudge& w){ return w.id==id; });
+          if((id>>24)<16 && FindStreamEntry(id) && !PeopleModelResident(id) && !known && n<8) {
+            GuestScratch scratch(c);
+            scratch.ctx.r3.u64=kStreamTable+(id>>24)*204; scratch.ctx.r4.u64=id;
+            scratch.ctx.r5.u64=5; scratch.ctx.r6.u64=0; scratch.ctx.r7.u64=1;
+            scratch.Call(0x8250C750);
+            wait_nudges.push_back({id,now}); ++n;
+            char t[16]; std::snprintf(t,sizeof(t)," %X",id); ids+=t;
+          }
+        }
+        if(next==head) break;
+        r=next;
+      }
+      char line[200]; std::snprintf(line,sizeof(line),"Cutscene end waiting over 3 s (loop at %08X): %u waited models asked for at once:%s",lr,n,ids.empty() ? " none" : ids.c_str()); ProbeLog(line);
+    }
+    if(!told && now-wait_since>5000) {
+      told=true;
+      char line[200]; std::snprintf(line,sizeof(line),"Cutscene end waiting over 5 s (loop at %08X): the characters it waits for",lr); ProbeLog(line);
+      unsigned guard=0;
+      const uint32_t head=api->read_u32(lr==0x824C4AB8 ? 0x8370F8D4 : 0x8370F8DC);   // (824C4850's two lists; 821F9230's waits on the cutscene's own)
+      for(uint32_t r=head;r && Readable(r,88) && guard++<64;) {
+        const uint32_t next=api->read_u32(r+72);
+        if(!(api->read_u8(r+68)&0x80)) { if(next==head) break; r=next; continue; }
+        const uint32_t human=api->read_u32(r+84);
+        const uint32_t info=Readable(human,232) ? api->read_u32(human+228) : 0;
+        const uint32_t id=Readable(info,612) ? api->read_u32(info+608) : 0xFFFFFFFFu;
+        const uint32_t entry=id!=0xFFFFFFFFu ? FindStreamEntry(id) : 0;
+        std::snprintf(line,sizeof(line),"  record %08X group %08X human %08X model %08X: %s (levels %u, loaded %u)",r,api->read_u32(r+64),human,id,
+                      entry ? "requested" : "no request",entry ? api->read_u32(entry+8) : 0,entry ? api->read_u32(entry+0) : 0);
+        ProbeLog(line);
+        if(next==head) break;
+        r=next;
+      }
+      std::string q; for(unsigned i=0;i<14;++i) q+=" "+std::to_string(api->read_u32(0x827ACFFC+i*4));
+      std::snprintf(line,sizeof(line),"  slot quota 827ACFFC:%s",q.c_str()); ProbeLog(line);
+      LogPeopleSlots("Cutscene end waiting");
+    }
+  }
+  original_slot_recompute(c,b);
+}
+bool own_cutscene_cut=false;   // (2.3.6) this game's own mid-mission cutscene: UpdateSharedCutscene ends it after 1 s unless the host plays one
 WmlGuestFunction original_cutscene_start=nullptr;
 void CutsceneStartHook(WmlContext* c,uint8_t* b) {
   if(share_cutscenes && hosting.load() && connected.load()) {
@@ -11481,8 +11705,12 @@ void CutsceneStartHook(WmlContext* c,uint8_t* b) {
   else if(connected.load() && !hosting.load() && mirror_mission && !applying_remote && MonoMs()-mirror_since>15000) {
     // This game's mission script is behind the host's (it waits for things
     // that happen in the host's game): its cutscenes come from the host.
-    ProbeLog("This game's own mission cutscene held back: the host's cutscenes play here");
-    return;
+    // 2.3.6: started and ended a second later (UpdateSharedCutscene), as a
+    // skip: held back, its mission waited for it with the screen faded out
+    // (the 2.3.5 test: the joiner's screen black for good after VK01's
+    // second cutscene; the host played none there).
+    own_cutscene_cut=true;
+    ProbeLog("This game's own mission cutscene: ended here after 1 s (the host's cutscenes play here)");
   }
   original_cutscene_start(c,b);
 }
@@ -11539,10 +11767,10 @@ void UpdateSharedCutscene(GuestScratch& scratch,uint64_t now) {
     ours=called && CutscenePlaying(); host_seen=false; started=now;
     char line[140]; std::snprintf(line,sizeof(line),"Host's cutscene %s: %s",cs.name,ours?"playing here too":called?"didn't start here":"call failed"); ProbeLog(line);
   }
-  if(!ours) return;
-  if(!CutscenePlaying()) { ours=false; ProbeLog("Shared cutscene finished here"); return; }
+  if(!ours) { own_cutscene_cut=false; return; }
+  if(!CutscenePlaying()) { ours=false; own_cutscene_cut=false; ProbeLog("Shared cutscene finished here"); return; }
   if(host_cutscene.load()) host_seen=true;
-  const bool host_done=(host_seen && !host_cutscene.load()) || (!host_seen && now-started>5000) || !connected.load();
+  const bool host_done=(host_seen && !host_cutscene.load()) || (!host_seen && now-started>(own_cutscene_cut ? 1000u : 5000u)) || !connected.load();
   if(host_done && mission_end_applied_at && now-mission_end_applied_at<5000) {
     // The mission end already ran here and takes the cutscene down itself;
     // ending it again from outside froze the game (reward screen).
@@ -11551,9 +11779,11 @@ void UpdateSharedCutscene(GuestScratch& scratch,uint64_t now) {
     return;
   }
   if(host_done) {
+    PeopleQuota(scratch,false,now); quota_paused_until=now+20000;   // (2.3.1: the game's own slots for what the cutscene's end loads)
     scratch.Call(0x821F9700);
     ours=false;
-    ProbeLog("Host's cutscene is over: ended here too");
+    ProbeLog(own_cutscene_cut && !host_seen ? "This game's own mission cutscene ended here" : "Host's cutscene is over: ended here too");
+    own_cutscene_cut=false;
   }
 }
 
@@ -11688,6 +11918,7 @@ void ApplyHostHud(GuestScratch& scratch) {
       if(!end_waiting_since) end_waiting_since=t;
       if(t-end_waiting_since<5000) {
         if(joiner_cutscene) {
+          PeopleQuota(scratch,false,MonoMs()); quota_paused_until=MonoMs()+20000;   // (2.3.1)
           scratch.Call(0x821F9700);
           joiner_cutscene=false;
           ProbeLog("Host's mission ended during a cutscene here: cutscene ended first, the mission end follows");
@@ -11726,10 +11957,12 @@ void ApplyHostHud(GuestScratch& scratch) {
       scratch.ctx.r3.u64=e.a[0]; scratch.ctx.r4.u64=e.length ? text : 0;
       scratch.Call(0x82215360);
       mission_end_applied_at=GetTickCount64();
+      if(e.a[0]) passed_mission_hash=host_mission_hash.load();   // (2.3.7)
       ProbeLog(e.a[0]?"Host's mission passed: ended here too":"Host's mission failed: ended here too");
     } else if(e.kind==kHudMissionEnd) {
       // The host's mission never ran here (1.63): at least say how it went.
       Notify(e.a[0] ? "Host's mission complete" : "Host's mission failed");
+      if(e.a[0]) passed_mission_hash=host_mission_hash.load();   // (2.3.7)
       ProbeLog("Host's mission ended, but it wasn't running here: shown as a message");
     }
     --applying_remote;
@@ -11850,6 +12083,14 @@ void UpdateMissionMirror(GuestScratch& scratch,uint32_t player,uint64_t now) {
   static std::vector<uint32_t> hidden_by_us;
   static std::unordered_map<uint32_t,uint64_t> first_seen;
   static uint64_t cutscene_at=0;
+  { static uint32_t mission_hash=0; static bool was_on=false;   // (2.3.2: a new mission of the host's: no cutscene of it seen yet)
+    const uint32_t h=host_mission_hash.load(); const bool on=host_mission.load();
+    // 2.3.3: also each time the host's mission flag comes on - the same mission
+    // started again keeps its hash (the 2.3.2 test: Vice Kings 1 restarted,
+    // its opening cutscene skipped on the host, the earlier run's cutscene time
+    // let the removal run again and the joiner hung as before).
+    if(h!=mission_hash || (on && !was_on)) { mission_hash=h; cutscene_at=0; }
+    was_on=on; }
   if(CutscenePlaying()) {
     if(!hidden_by_us.empty()) {
       for(uint32_t h:hidden_by_us) if(const uint32_t o=ResolveHuman(h)) if(!SharedPedHostHandle(h)) SetCharacterHidden(scratch,o,false);
@@ -11876,7 +12117,19 @@ void UpdateMissionMirror(GuestScratch& scratch,uint32_t player,uint64_t now) {
     // Any of this game's own cutscene actors still standing 2 s after the
     // cutscene, whatever its other flags (1.44 removed Troy, Dex and Johnny
     // Gat but Julius stayed on the stairs).
-    if((flags&0x20000000u) && !(cutscene_at && now-cutscene_at<2000) && !SharedPedHostHandle(api->read_u32(cur+68)) &&
+    // 2.3.2: only 20 s after a cutscene this game showed, never before the
+    // mission's first one: at Vice Kings 1's start this removed the actors its
+    // own mission had just made for the opening cutscene (VK_X_M_Killa1-03,
+    // PD_X_F_GenericYoung-03; flagged 2 s before the cutscene played), and the
+    // mission's next step at the cutscene's end (824BFD78 -> 821F9700) hung in
+    // the people-model slot walk loading for them (8241BD40 -> 8250E208): the
+    // joiner on a black screen, in all three mission tests.
+    // 2.3.6: and never while the host's mission runs (the 2.3.5 test: four
+    // VK_X_M_Killa1-04, the mission's next gang members, removed here 317 ms
+    // after the host's next mission group; the joiner's screen then stayed
+    // black, its mission waiting for them).
+    const bool mission_on=HostMissionActive(now);
+    if((flags&0x20000000u) && cutscene_at && now-cutscene_at>=20000 && !mission_on && !SharedPedHostHandle(api->read_u32(cur+68)) &&
        std::find(listed.begin(),listed.end(),cur)==listed.end() && !ResolveVehicle(api->read_u32(cur+2496))) {
       static unsigned logged=0;
       if(logged++<30) { char name[46]="?"; ModelName(cur,name,sizeof(name)); char line[120]; std::snprintf(line,sizeof(line),"Own cutscene character left standing removed: %s (flags %08X)",name,flags); ProbeLog(line); }
@@ -11887,7 +12140,11 @@ void UpdateMissionMirror(GuestScratch& scratch,uint32_t player,uint64_t now) {
     // cutscene and 2 s after; ones still standing there after that are this
     // game's own mission's (1.37: Johnny Gat, Dex, Julius and gang members on
     // the stairs at the next mission's start, which the host doesn't have).
-    if((flags&0xD0000000u) || ((flags&0x28000000u) && cutscene_at && now-cutscene_at<2000)) continue;
+    // 2.3.4: and never before this mission's first cutscene was seen here, or
+    // 20 s after one (this removal took VK01's TS_X_M_Killa-A and
+    // VK_X_M_Killa1-03 before its opening cutscene in 5 of 6 hanging tests:
+    // the cutscene's end then waits in 824C4850 for a model that never loads).
+    if((flags&0xD0000000u) || ((flags&0x28000000u) && (!cutscene_at || now-cutscene_at<20000 || mission_on))) continue;
     if(SharedPedHostHandle(api->read_u32(cur+68))) continue;
     if(std::find(listed.begin(),listed.end(),cur)!=listed.end()) continue;
     if(ResolveVehicle(api->read_u32(cur+2496))) continue;
@@ -12162,7 +12419,8 @@ void UpdateBody(WmlContext* raw) {
       if(replica_local) DestroyReplica(scratch);
     }
     { static uint64_t next_quota=0;   // (2.2: a client's idle people-model slots at level 0 while it shows the host's people, with its pins)
-      if(!over && !hosting.load() && now>=next_quota) { next_quota=now+1000; PeopleQuota(scratch,PeopleLevel0() && (peds_shared || WorldShown()),now); } }
+      if(CutscenePlaying()) quota_paused_until=now+20000;   // (2.3.1)
+      if(!over && !hosting.load() && now>=next_quota) { next_quota=now+1000; PeopleQuota(scratch,PeopleLevel0() && (peds_shared || WorldShown()) && now>=quota_paused_until,now); } }
     if(avatars_cleaning) {
       bool any=false;
       for(Remote& r:remotes) if(r.avatar) { DestroyAvatar(scratch,r); any=any || r.avatar; }
@@ -14351,6 +14609,23 @@ void WorldDestroy(GuestScratch& scratch,WorldCopy& c) {
     }
   } else if(ResolveHuman(c.local)) { DestroyObject(scratch,c.local); ++world_m.destroyed[1]; }
   WorldIndex(c,0);
+}
+// 2.3.5: a cutscene's end here (CutsceneEndHook): every copy of another
+// game's people goes at once, the host told they are gone here (offered
+// again), with 2.1's copies and the NPC replica; nothing made for 5 s.
+unsigned RemoveCopiesForCutsceneEnd(GuestScratch& scratch,uint64_t now) {
+  unsigned n=0;
+  for(auto& [k,c]:world_copies) {
+    if(cw::IsCar(c.kind) || !c.local || c.state==kCopyFading) continue;
+    WorldDecline(k,c.kind,kDeclineGone,c.pos,now);
+    WorldDestroy(scratch,c);
+    c.state=kCopyFading; c.deadline=0;
+    ++n;
+  }
+  for(auto it=shared_peds.begin();it!=shared_peds.end();) { DropCopy(scratch,it->second); ++peds_removed; it=shared_peds.erase(it); ++n; }
+  if(replica_local) { DestroyReplica(scratch); ++n; }
+  actors_blocked_until=std::max<uint64_t>(actors_blocked_until,now+5000);
+  return n;
 }
 // Area left (the OwnerMap, no OwnerMap for 3 s, the session over): every copy fades.
 void WorldLeaveArea(GuestScratch& scratch,uint64_t now,const char* why) {
@@ -18144,10 +18419,13 @@ extern "C" WML_EXPORT int wml_mod_init(const WmlApi* loader, const WmlMod* mod) 
     { char v[32]{}; GetPrivateProfileStringA("settings","member_density","1.0",v,sizeof(v),ini.c_str()); const float d=float(std::atof(v)); world_member_density=std::isfinite(d) ? std::clamp(d,0.0f,4.0f) : 1.0f; }
   }
   api->hook(0x8250EEF8,StreamSetupHook,&original_stream_setup);
-  ProbeLog("Whompays Coop 2.3: co-op v2, up to 12 players in one shared world - the host's game streams its cars, people, gunfire, explosions, wrecks, car damage, doors, deaths, poses, walk styles and weather to every player near it; per-player wanted levels; protocol 9 (docs/COOP_V2.md)");
+  ProbeLog("Whompays Coop 2.3.9 (2.3 + story missions played through on the joiner: co-op's people models and copies given back before every cutscene end, the joiner's own mission characters and cutscenes left to its mission, a passed mission not started again, mission records with no object here not waited for, smoother mission following): co-op v2, up to 12 players in one shared world - the host's game streams its cars, people, gunfire, explosions, wrecks, car damage, doors, deaths, poses, walk styles and weather to every player near it; per-player wanted levels; protocol 9 (docs/COOP_V2.md)");
   if (api->hook(0x82209E30, UpdateHook, &original_update) != 0) return 2;
   api->hook(0x82212728, MissionStartHook, &original_mission_start);
   api->hook(0x821F9098, CutsceneStartHook, &original_cutscene_start);
+  api->hook(0x821F9700, CutsceneEndHook, &original_cutscene_end);       // (2.3.4)
+  api->hook(0x8241BD40, SlotRecomputeHook, &original_slot_recompute);   // (2.3.4, diagnostic)
+  api->hook(0x824C4850, GroupWaitHook, &original_group_wait);           // (2.3.8)
   api->hook(0x827166D0, InputHook, &original_input);
   api->hook(0x822EF440, ObjectiveHook, &original_objective);
   api->hook(0x822E52C8, HelpHook, &original_help);
