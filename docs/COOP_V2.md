@@ -1545,5 +1545,74 @@ investigation_world_movers.md).
 - mod.ini `stances` and `items` switch them (both 0 in this build's mod.ini); the next tests turn them back on one at
   a time.
 
+**2.3.1: a joiner stuck on a black screen after a mission's opening cutscene** (the first mission test on 2.3:
+Vice Kings 1; research tools/coop_test/TEST-2.2.25-mac-mission.md).
+- Both players saw VK01's opening cutscene; the host went on, the joiner stayed on a black screen and its game
+  stopped updating. When the host's cutscene ends, co-op ends the joiner's copy with 821F9700 (the game's own instant
+  cutscene end), which runs the mission's next step: it loads the mission's people and recomputes the people-model
+  slots (8241BD40 -> 8250E208, spinning in 8250BA90 in the joiner's stack). Co-op's level-0 slot quota (2.2) was in
+  place: the game had rebuilt the table during the cutscene and co-op put its own back 10 s later.
+- Now co-op's quota is never in place during a cutscene or for 20 s after one, and before co-op ends a cutscene the
+  game's own table goes back first (PeopleQuota off).
+
+**2.3.2: the real cause** (two more Vice Kings 1 tests: the same hang with people_level0 = 0, co-op's quota never
+written; research tools/coop_test/TEST-2.3.1-findings.md).
+- In all three tests co-op removed the joiner's own cutscene actors at the mission's start ("Own cutscene character
+  left standing removed: VK_X_M_Killa1-03 / PD_X_F_GenericYoung-03 ..."), 2-3 s before the opening cutscene played:
+  the rule (1.44) removes this game's own actors flagged 0x20000000 unless a cutscene played in the last 2 s, and none
+  had played yet. The joiner's own mission had made them for its cutscene; at the cutscene's end its next step
+  (824BFD78 -> 821F9700) hung in the people-model slot walk (8241BD40 -> 8250E208 -> 8250BA90) loading for them.
+- Now that rule runs only 20 s after a cutscene this game showed, never before a mission's first one (the cutscene
+  time is reset when the host's mission changes); the mission-over clean-up stays. 2.3.1's quota pause stays too.
+- 2.3.3: the reset also each time the host's mission flag comes on (the 2.3.2 test passed VK01's opening and second
+  cutscenes; with the mission started again - the same hash - and its cutscene skipped on the host, the earlier run's
+  cutscene time let the removal run and the joiner hung the old way).
+- 2.3.4: the hang is the cutscene end's wait (821F9700 -> 821F9230 -> 824C4850): a loop with no frame and no
+  timeout until every character of the cutscene and the mission group has its model resident (8241BD40, 8250F098,
+  825124C0). It hung with world = 0 too (no copies of the host's people), so the copies are not the cause. Three
+  changes:
+  - The second removal site for this game's own cutscene actors follows the 2.3.2 rule too (with world = 0 it still
+    removed TS_X_M_Killa-A before the cutscene).
+  - The quota put-back keeps a table the game has just rebuilt (2.3.3 wrote back co-op's session maximum, leaving
+    level 0 two slots).
+  - On the joiner, a hook on 821F9700 puts the game's own quota back and gives back co-op's people pins before any
+    cutscene end, and pins no people models for 15 s after. A diagnostic on 8241BD40 logs, once, the models the wait
+    is on when it lasts over 5 s.
+- 2.3.5: the 2.3.4 test still hung, with co-op's pins given back and the game's quota in place. Its slot dump at VK01's
+  end showed 9 of the 12 people-model slots worn (users 2-4), mostly by copies of the host's people. The wait raises
+  the levels the mission's next characters ask at, and gives each level a slot. A slot with users is only marked for
+  the culls to empty, and no cull runs inside the wait. So the copies of other games' people now go at once before a
+  cutscene end on the joiner: they're hidden during the cutscene anyway, the host is told they are gone here (offered
+  again), and nothing is made for 5 s. 2.1's copies and the NPC replica go too. The diagnostic now reads the waited
+  records' flag byte and the list's end correctly.
+- 2.3.6: 2.3.5 passed both of VK01's cutscene ends (24 and 29 copies removed) and the joiner got into the mission.
+  Then its screen stayed black while it still played: right after the host's next mission group, the joiner's own
+  mission started a cutscene that co-op held back (the host played none there), and its mission waited for it with
+  the screen faded out. Co-op also removed its four VK_X_M_Killa1-04, the gang members that cutscene was for.
+  - A held-back cutscene is now started and ended a second later, as a skip.
+  - The removal of this game's own cutscene actors (both sites) never runs while the host's mission runs. The cost:
+    leftovers from an earlier mission (1.37: Johnny Gat, Dex on the stairs) can stand around in the next mission
+    until it ends.
+  - A safety net for cutscenes not tested yet: past 3 s in the cutscene end's wait (824C4850), each waited model
+    that isn't resident gets a kind-5 request at level 0 (8250C750). The slot walk then gives it a slot at once
+    instead of waiting for culls that never run. The request is given back 20 s later.
+- 2.3.7: 2.3.6 played Vice Kings 1 start to finish on the joiner: every cutscene end passed, the held-back cutscene
+  ended as a skip, and the success screen showed on both. After the pass, the host's mission flag kept coming back
+  during its end sequence, and co-op started VK01 on the joiner again each time ("didn't start here (trying again)",
+  busy 1). The joiner was left in a half-started mission of its own, its title cut off at the top. A mission the host
+  passed is now over on the joiner until the host's mission hash changes.
+- 2.3.8: the 2.3.7 test hung at VK01's opening cutscene end again, in 824C4850's second wait: the mission group's
+  vehicle list *0x8370F8D4 (+84 a vehicle handle, its model **(car+50324)). Its record had handle 0: the mission's car
+  didn't exist on the joiner, so nothing could ever load for it. 2.3.6 got through because its car was there. On the
+  joiner, a hook on 824C4850 now clears bit 0x80 (at +68) on each record of the group whose object doesn't exist here,
+  person or car, so the wait skips it. Why the car was missing here is still open.
+- 2.3.9 (smoothing, from the 2.3.8 test, which played VK01 start to finish with no freeze):
+  - "Host was moved by the mission" now needs a jump faster than 100 m/s by the host's own clock, with the joiner
+    over 40 m away. In the chase, late updates of a running or driving host moved the joiner 5 times (56-167 m).
+  - The same mission coming back within 20 s of its end (the host's flag in a mission's end sequence) no longer
+    brings the joiner over again.
+  - The host's shots that the fire gate refused 5 times in a row get the shooter's state applied again, once a second
+    (268 were refused in VK01's last 30 s), with the state logged.
+
 Not built yet: Package B/2-6 (personal cars as records, occupant events, the pose relay filter); Package C's later
 parts (wreck looks without physics, props and movers as records, pickups; drive-by mode and the aim pose on copies).
