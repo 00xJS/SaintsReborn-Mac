@@ -3204,6 +3204,14 @@ extern "C" uint32_t sr_render_list_cap() {
 //    what the game's own failure means. File "shadow_lock_fix_off" = original.
 //    Log "SHADOW POOL" every 10 s when something happened: allocations,
 //    failures, locks left, peak use.
+//    822335E8 (vtable 0x8205C070 +48: the 392-byte instance of a character's
+//    body and of each clothing piece of a player-type character, 82195330 /
+//    82194FF8) has the same bug with its lock at +364 and its buffer at +360
+//    (loc_8223360C returns 0 holding it): the same guard. Each of the first 20
+//    failed allocations is logged at once with what was asked and what was
+//    left, so a full pool, a page budget that ran out and a garbage request
+//    can be told apart. (Co-op hosts of 4-5 players froze in 822335E8 on +364:
+//    every player character draws one of these per clothing piece.)
 namespace shadow_pool {
 constexpr uint32_t kPool = 0x827DD130;
 std::atomic<uint64_t> allocs{0}, fails{0}, leaks{0};
@@ -3212,37 +3220,46 @@ std::atomic<int64_t> next_log{0};  // steady_clock ms (the render workers call t
 void MaybeLog(uint8_t* base) {
     const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     int64_t due = next_log.load(std::memory_order_relaxed);
-    if (!due) { next_log.compare_exchange_strong(due, now + 10000); return; }
-    if (now < due || !next_log.compare_exchange_strong(due, now + 10000)) return;
+    if (due && (now < due || !next_log.compare_exchange_strong(due, now + 10000))) return;
+    if (!due && !next_log.compare_exchange_strong(due, now + 10000)) return;   // (the first time: at once)
     const uint64_t f = fails.exchange(0), l = leaks.exchange(0), a = allocs.exchange(0);
     const uint32_t p = peak.exchange(0);
     static int lines = 0;
     if ((f || l) && lines++ < 400)
-        REXLOG_INFO("SHADOW POOL 10 s: {} allocations, {} FAILED, {} locks left by 822366B8 released | peak use {} KB of {} KB",
+        REXLOG_INFO("SHADOW POOL 10 s: {} allocations, {} FAILED, {} locks left by 822366B8 / 822335E8 released | peak use {} KB of {} KB",
                     a, f, l, p >> 10, Rd32(base, kPool + 60) >> 10);
 }
 }  // namespace shadow_pool
 extern "C" void __imp__sub_82633340(PPCContext& ctx, uint8_t* base);
 PPC_FUNC(sub_82633340) {  // a mempool's allocation: counted for the shadow pool only
-    const uint32_t pool = ctx.r3.u32;
+    const uint32_t pool = ctx.r3.u32, size = ctx.r4.u32, lr = uint32_t(ctx.lr);
     __imp__sub_82633340(ctx, base);
     if (pool != shadow_pool::kPool) return;
     shadow_pool::allocs.fetch_add(1, std::memory_order_relaxed);
-    if (!ctx.r3.u32) shadow_pool::fails.fetch_add(1, std::memory_order_relaxed);
+    if (!ctx.r3.u32) {
+        shadow_pool::fails.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<int> told{0};
+        if (told.fetch_add(1, std::memory_order_relaxed) < 20)
+            REXLOG_INFO("SHADOW POOL allocation FAILED: {} bytes asked from {:08X} | used {} KB, committed {} KB, max {} KB, flags {:04X} | page budget {} / {}",
+                        size, lr, Rd32(base, pool + 40) >> 10, Rd32(base, pool + 64) >> 10, Rd32(base, pool + 60) >> 10,
+                        uint32_t(Rd32(base, pool + 52) & 0xFFFF), Rd32(base, 0x838B4D40 + 36), Rd32(base, 0x838B4D40 + 32));
+    }
     const uint32_t used = Rd32(base, pool + 40);
     uint32_t p = shadow_pool::peak.load(std::memory_order_relaxed);
     while (used > p && !shadow_pool::peak.compare_exchange_weak(p, used, std::memory_order_relaxed)) {}
 }
 extern "C" void __imp__RtlLeaveCriticalSection(PPCContext& __restrict ctx, uint8_t* base);
-extern "C" void __imp__sub_822366B8(PPCContext& ctx, uint8_t* base);
-PPC_FUNC(sub_822366B8) {
+// The guard of both: the lock (+lock_off) left when the call returned 0 with no
+// buffer (+buf_off) and this thread one level deeper in it.
+template <void (*Orig)(PPCContext&, uint8_t*)>
+void ShadowLockGuard(PPCContext& ctx, uint8_t* base, uint32_t lock_off, uint32_t buf_off) {
     static const bool off = FileExists("shadow_lock_fix_off");
-    const uint32_t inst = ctx.r3.u32, cs = inst + 268;
+    const uint32_t inst = ctx.r3.u32, cs = inst + lock_off;
     const auto* thread = rex::system::XThread::GetCurrentThread();
     const uint32_t me = thread ? thread->guest_object() : 0;
     const uint32_t owner_before = Rd32(base, cs + 24), depth_before = Rd32(base, cs + 20);
-    __imp__sub_822366B8(ctx, base);
-    if (off || ctx.r3.u32 || !me || Rd32(base, inst + 264) || Rd32(base, cs + 24) != me ||
+    Orig(ctx, base);
+    if (off || ctx.r3.u32 || !me || Rd32(base, inst + buf_off) || Rd32(base, cs + 24) != me ||
         Rd32(base, cs + 20) != (owner_before == me ? depth_before + 1 : 1u)) {
         if (shadow_pool::fails.load(std::memory_order_relaxed)) shadow_pool::MaybeLog(base);
         return;
@@ -3254,3 +3271,7 @@ PPC_FUNC(sub_822366B8) {
     shadow_pool::leaks.fetch_add(1, std::memory_order_relaxed);
     shadow_pool::MaybeLog(base);
 }
+extern "C" void __imp__sub_822366B8(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_822366B8) { ShadowLockGuard<__imp__sub_822366B8>(ctx, base, 268, 264); }
+extern "C" void __imp__sub_822335E8(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_822335E8) { ShadowLockGuard<__imp__sub_822335E8>(ctx, base, 364, 360); }
