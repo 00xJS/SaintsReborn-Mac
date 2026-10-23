@@ -96,6 +96,10 @@ std::string Top(std::unordered_map<uint32_t, Stat>& m, double freq) {
 #include "native_vfetch.inc"
 #include "native_flush.inc"
 #include "native_clip.inc"
+#include "native_tex.inc"
+#include "native_cull.inc"
+#include "native_skin.inc"
+#include "native_geom.inc"
 
 PPC_FUNC(sub_822447B0) {
   if (!Enabled()) {
