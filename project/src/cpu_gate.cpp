@@ -148,7 +148,8 @@ extern "C" unsigned long sr_cpu_gate_entry(void* peb) {
   Append(text, 1024, n,
          have_compat ? L"\n\nsaintsrow_compat.exe could not be started."
                      : L"\n\nsaintsrow_compat.exe (the build for older processors) was not found next to "
-                       L"saintsrow.exe. Reinstall or update Saints Reborn.");
+                       L"saintsrow.exe. Run Saints Reborn Setup again (Install / Update): it builds the game "
+                       L"for this processor.");
   MessageBoxW(nullptr, text, L"Saints Reborn", MB_OK | MB_ICONERROR);
   ExitProcess(1);
   return 1;
