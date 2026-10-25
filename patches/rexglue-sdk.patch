@@ -12275,7 +12275,7 @@ new file mode 100644
 index 0000000..8c63bc9
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,2209 @@
+@@ -0,0 +1,2221 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -12742,14 +12742,26 @@ index 0000000..8c63bc9
 +  });
 +}
 +void Online() {
-+  // Some Steam Deck network paths can use the EOS lobby service but every
-+  // direct P2P negotiation times out. Force Epic's relay path for all peers;
-+  // this is compatible with the default AllowRelays setting used by older
-+  // builds and avoids depending on direct UDP/NAT traversal.
++  // Direct player-to-player connections first; Epic's relay only for a
++  // player a direct connection can't be made to (Epic's default,
++  // AllowRelays: it falls back to the relay by itself when NAT traversal
++  // fails, e.g. the Steam Deck networks where direct P2P never connects).
++  // 2026-10-23 every connection was forced through the relay instead: the
++  // extra hop and the relay's packet loss put other players' positions far
++  // behind in matches (shot by players nowhere near on screen).
++  // mp_force_relay.on next to the exe still forces the relay.
++  const bool force_relay = [] {
++    if (FILE* f = std::fopen((ExeDir() + "mp_force_relay.on").c_str(), "rb")) {
++      std::fclose(f);
++      return true;
++    }
++    return false;
++  }();
 +  EOS_P2P_SetRelayControlOptions relay{};
 +  relay.ApiVersion = EOS_P2P_SETRELAYCONTROL_API_LATEST;
-+  relay.RelayControl = EOS_ERelayControl::EOS_RC_ForceRelays;
-+  REXSYS_INFO("EOS LAN: forcing Epic relay transport: {}", R(p_EOS_P2P_SetRelayControl(p2p_if, &relay)));
++  relay.RelayControl = force_relay ? EOS_ERelayControl::EOS_RC_ForceRelays : EOS_ERelayControl::EOS_RC_AllowRelays;
++  REXSYS_INFO("EOS LAN: Epic relay {}: {}", force_relay ? "forced (mp_force_relay.on)" : "only when a direct connection fails",
++              R(p_EOS_P2P_SetRelayControl(p2p_if, &relay)));
 +  EOS_P2P_AddNotifyPeerConnectionRequestOptions n{};
 +  n.ApiVersion = EOS_P2P_ADDNOTIFYPEERCONNECTIONREQUEST_API_LATEST;
 +  n.LocalUserId = me;
