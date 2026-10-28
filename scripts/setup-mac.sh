@@ -300,15 +300,20 @@ GAME_PGO="$ROOT/pgo/saintsrow.profdata"
 PGO_ARGS=()
 [ -f "$GAME_PGO" ] && PGO_ARGS=(-DSR_PGO=use -DSR_PGO_PROFILE="$GAME_PGO")
 export REXSDK="$SDK_INSTALL"
+# Older Saints Reborn named a v2 build saintsrow_compat.exe; newer ones name
+# it saintsrow.exe (SR_COMPAT_EXE off). Remove both first, so a program left
+# over from an earlier build can never be taken for this one.
+rm -f "$GAME_BUILD/saintsrow.exe" "$GAME_BUILD/saintsrow_compat.exe"
 run cmake -S "$ROOT/project" -B "$GAME_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release "${CMAKE_COMMON[@]}" \
-  -DSR_GENERATED_DIR="$GENERATED" -DSR_CPU_LEVEL=v2 "${PGO_ARGS[@]}"
+  -DSR_GENERATED_DIR="$GENERATED" -DSR_CPU_LEVEL=v2 -DSR_COMPAT_EXE=OFF "${PGO_ARGS[@]}"
 run cmake --build "$GAME_BUILD" -j "$JOBS"
-[ -f "$GAME_BUILD/saintsrow_compat.exe" ] || die "the build finished but saintsrow_compat.exe is missing."
+GAME_EXE="$GAME_BUILD/saintsrow.exe"
+[ -f "$GAME_EXE" ] || GAME_EXE="$GAME_BUILD/saintsrow_compat.exe"
+[ -f "$GAME_EXE" ] || die "the build finished but saintsrow.exe is missing."
 
 # ---------------------------------------------------------------------------
 step "Copying the game to dist"
-# SR_CPU_LEVEL=v2 names the program saintsrow_compat.exe; here it is the game.
-cp "$GAME_BUILD/saintsrow_compat.exe" "$DIST/saintsrow.exe.new" && mv "$DIST/saintsrow.exe.new" "$DIST/saintsrow.exe"
+cp "$GAME_EXE" "$DIST/saintsrow.exe.new" && mv "$DIST/saintsrow.exe.new" "$DIST/saintsrow.exe"
 rm -f "$DIST/saintsrow_compat.exe"
 [ -f "$GAME_BUILD/saintsrow.map" ] && cp "$GAME_BUILD/saintsrow.map" "$DIST/saintsrow.map"
 ONLINE_OK=0
