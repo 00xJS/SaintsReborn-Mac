@@ -1,0 +1,3246 @@
+<root>
+<Table>
+	<Store>
+		<Name>Sloppy_Seconds</Name>
+		<DisplayName>CLOTHES_STORE_TITLE</DisplayName>
+		<Items>
+			<Store_Item>
+				<Item>gamestop t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>bandanas</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baseball caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>doo rag</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tank tops</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baseball jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basketball jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>football jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>denim jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>track jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cotton wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>boxers</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>gray</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>yellow</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>green</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>blue</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>purple</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>red</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basketball shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sweat pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>medium length socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sneakers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basketball shoes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basic belt style A</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_flat_black steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_gray steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_brown steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_tan steel</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>azzure t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>aisha t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cotton wrist bands1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>crown belt</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_flat_black steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_brown steel</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flag</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_woven_dark steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_light steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_medium steel</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oval design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan steel</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>steer head design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown steel</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan steel</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy jeans</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy jean shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		<Trigger>shops_sr_city_$sr_lowcloth000</Trigger>
+		<Shops>
+			<Shop_Element>
+				<Shop>Saint's Row Low Clothing</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Barrio Clothing</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Truckyard Clothing</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Projects Clothing</Shop>
+				</Shop_Element>
+			</Shops>
+		</Store>
+	<Store>
+		<Name>Multiplayer Purchase Clothing</Name>
+		<DisplayName>MP_PURCHASE_CLOTHING</DisplayName>
+		<Items>
+			<Store_Item>
+				<Item>loose fit jeans</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baseball caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left eyebrow</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>denim jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>54-diamond rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>9-diamond rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Africa medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>afro</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>aisha t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>ankh pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy canvas shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy chino pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy jean shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy jeans</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>bandanas</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baseball jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basic belt style A</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basketball jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basketball shoes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basketball shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>boxers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>buttoned vests</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>canvas pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>canvas shoes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cargo shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>casual shoes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Celtic cross pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>chino pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>chino shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>circular watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>clock medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>collared pullovers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cotton wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cowboy boots</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cowboy hats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>crown belt</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>denim jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dog tag pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dollar sign medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dollar sign rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>doo rag</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>double breasted suit coats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dreadlock hat</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>driving caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fedoras</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fishing caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flag</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fluffy collared jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>football jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>generic sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>grenade medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>hensley shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>hiking boots</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Italian horn pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>jean shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>knit caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large framed glasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large round glasses/sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large wheel A medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large wheel B medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>letterman jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>lion rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long sleeve casual shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long sleeve workshirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>loose fit jeans</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>male symbol medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mechanic boots</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>medium length socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>muscle shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>number one medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oval design</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oxfords</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>peace medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left ear lobe</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left ear middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left ear tip</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left eyebrow</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip bottom left</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip bottom right</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip top left</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip top right</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings nose middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings nostril left</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings nostril right</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right ear lobe</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right ear middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right ear tip</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right eyebrow</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp shades</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pistol medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>plain rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pleated cotton pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>poker chip pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>polos</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>puffy coats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>racing jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>racing pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>rectangular gemstone rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>round gemstone rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>roundneck pullovers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Section9 sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short sleeve casual shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short sleeve workshirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>single diamond rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>skull pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sleeveless baseball jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sleeveless hensleys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>slim sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>small round sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>small wheel medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>snap-brim caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sneakers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sport coats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sports watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Stalker sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>steer head design</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>style B</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sweat pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tank tops</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>track jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>track pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>turtlenecks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Ultor Unlimited sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>V-neck pullovers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>wool socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zippered sweatshirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zippered vests</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zoot pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>hoodies</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>circular watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>circular watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cotton wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cotton wrist bands1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather wrist bands1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>octagon watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>octagon watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>rectangular watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>rectangular watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sports watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sports watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>azzure t-shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cargo pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>thermal undershirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	<Store>
+		<Name>Branded</Name>
+		<DisplayName>CLOTHES_BRANDED</DisplayName>
+		<Shops>
+			<Shop_Element>
+				<Shop>Downtown Clothing</Shop>
+				</Shop_Element>
+			</Shops>
+		<Items>
+			<Store_Item>
+				<Item>racing jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>racing pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cowboy hats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>driving caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>thermal undershirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>collared pullovers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>hensley shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long sleeve casual shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>polos</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>roundneck pullovers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short sleeve casual shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>V-neck pullovers</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>letterman jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>boxers</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>polka_blue</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>polka_red</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>heart_red</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy chino pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>canvas pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cargo pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cargo shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>chino pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>chino shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>canvas shoes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>casual shoes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cowboy boots</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oval design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan gold</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>steer head design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan gold</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather wrist bands</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>leather wrist bands1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>style B</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_woven_dark gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_medium gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_light gold</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>crown belt</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_flat_brown gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_black gold</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flag</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_woven_medium gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_dark gold</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_light gold</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	<Store>
+		<Name>Impressions</Name>
+		<DisplayName>CLOTHES_IMPRESS</DisplayName>
+		<Shops>
+			<Shop_Element>
+				<Shop>High End Retail Clothing</Shop>
+				</Shop_Element>
+			</Shops>
+		<Items>
+			<Store_Item>
+				<Item>mp pimp hats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp hats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fluffy collared jackets</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zoot pants suspenders</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zoot pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fedoras</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>buttoned vests</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>double breasted suit coats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sport coats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pleated cotton pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oxfords</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flag</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_woven_dark platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_light platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_medium platinum</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>crown belt</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_flat_black platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_brown platinum</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oval design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_tan platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_black platinum</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>steer head design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown platinum</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan platinum</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	<Store>
+		<Name>On_the_Rag</Name>
+		<DisplayName>CLOTHES_RAG</DisplayName>
+		<Shops>
+			<Shop_Element>
+				<Shop>Arena Clothing</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Red Light Low Clothing</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Suburbs Clothing</Shop>
+				</Shop_Element>
+			</Shops>
+		<Items>
+			<Store_Item>
+				<Item>wool socks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dreadlock hat</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fishing caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>knit caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>snap-brim caps</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>muscle shirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long sleeve workshirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short sleeve workshirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sleeveless baseball jerseys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sleeveless hensleys</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>turtlenecks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zippered sweatshirts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>zippered vests</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>hoodies</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>puffy coats</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>baggy canvas shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>loose fit jeans</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>track pants</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>hiking boots</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mechanic boots</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>boxers</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>plaid_red</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>plaid_green</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>plaid_blue</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>style B</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_woven_dark silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_medium silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_light silver</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>basic belt style A</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_flat_black silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_brown silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_gray silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_tan silver</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>crown belt</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_flat_black silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_flat_brown silver</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flag</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_woven_dark silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_light silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_woven_medium silver</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>oval design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown silver</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>steer head design</Item>
+				<Variants>
+					<Item_Variant>
+						<Variant>belt_braid_black silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_brown silver</Variant>
+						</Item_Variant>
+					<Item_Variant>
+						<Variant>belt_braid_tan silver</Variant>
+						</Item_Variant>
+					</Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>jean shorts</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	<Store>
+		<Name>Rusty's_Needle</Name>
+		<DisplayName>TATTOO_NAME</DisplayName>
+		<Shops>
+			<Shop_Element>
+				<Shop>Chinatown Tattoo</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Docks Tattoo</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Downtown Tattoo</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Red Light Tattoo</Shop>
+				</Shop_Element>
+			</Shops>
+		<Items>
+			<Store_Item>
+				<Item>tattoo chest1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back16</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back17</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back18</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back19</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back20</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back21</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back22</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back23</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back25</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back26</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest28</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back27</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest29</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back30</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back31</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back32</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back33</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back34</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back35</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back36</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back37</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back38</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back39</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back40</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back41</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back42</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest16</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest17</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest18</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest19</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest20</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest21</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest22</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest23</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest24</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest25</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest26</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest27</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest28</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest29</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest30</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest31</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo back9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest32</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest33</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest34</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo chest9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm16</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm17</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm18</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left forearm9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm16</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm17</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm18</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right forearm9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left leg9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right leg9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder16</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder17</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder18</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder19</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder20</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder21</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder22</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder23</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder24</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder25</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder26</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder27</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder28</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder29</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder30</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder31</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder32</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder33</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder34</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder35</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder36</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder37</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder38</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder39</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder40</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder41</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder42</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder43</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder44</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder45</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder46</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo left shoulder9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder10</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder11</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder13</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder12</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder14</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder15</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder16</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder17</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder18</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder19</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder20</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder21</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder22</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder23</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder24</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder25</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder26</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder27</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder28</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder29</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder30</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder31</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder32</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder33</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder34</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder35</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder36</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder37</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder38</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder39</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder40</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder41</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder42</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder43</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder44</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder45</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder46</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>tattoo right shoulder9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	<Store>
+		<Name>On_Thin_Ice</Name>
+		<DisplayName>JEWELRY_NAME</DisplayName>
+		<Shops>
+			<Shop_Element>
+				<Shop>Airport Jewelry</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Chinatown Jewelry</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>High End Retail Jewelry</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Suburbs Jewelry</Shop>
+				</Shop_Element>
+			</Shops>
+		<Items>
+			<Store_Item>
+				<Item>Cross pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>cards medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large wheel B medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mp short chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mp mid-length chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mp long chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>54-diamond rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>9-diamond rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Africa medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>ankh pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Celtic cross pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>circular watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>clock medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dog tag pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dollar sign medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dollar sign rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>generic sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>grenade medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Italian horn pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large framed glasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large round glasses/sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>large wheel A medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>lion rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>male symbol medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>number one medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>peace medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pimp shades</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pistol medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>poker chip pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>rectangular gemstone rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>round gemstone rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Section9 sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>single diamond rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>skull pennant</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>slim sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>small round sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Stalker sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>small wheel medallion</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sports watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>Ultor Unlimited sunglasses</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left ear lobe</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left ear middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left ear tip</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings left eyebrow</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip bottom left</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip bottom right</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip top left</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings lip top right</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings nose middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings nostril left</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings nostril right</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right ear lobe</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right ear middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right ear tip</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>piercings right eyebrow</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>circular watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>circular watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>octagon watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>octagon watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>rectangular watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>rectangular watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sports watches</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sports watches1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long chain9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mid-length chain9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain8</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short chain9</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>plain rings</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets l5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat chain bracelets r5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	<Store>
+		<Name>Shear_Intensity</Name>
+		<DisplayName>HAIRSALON_NAME</DisplayName>
+		<Items>
+			<Store_Item>
+				<Item>bushy beard 2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>chinCurtain</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>combed back and long</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>combed forward</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>eyebrows 1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>eyebrows 6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat top, short sides</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>liberty spikes</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mullet</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 7</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>narrow beard</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>pony tail</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>shag top</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>shaggy</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short clippered</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>short goatee</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sideburns 1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sideburns 3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sideburns 4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>slicked back, clipped sides</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>spiked</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>spiked up in middle</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>thin beard 2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		<Shops>
+			<Shop_Element>
+				<Shop>High End Retail Hair</Shop>
+				</Shop_Element>
+			</Shops>
+		</Store>
+	<Store>
+		<Name>Do it Up</Name>
+		<DisplayName>HAIR_SALON_NAME_DO_IT_UP</DisplayName>
+		<Shops>
+			<Shop_Element>
+				<Shop>Apartments Hair</Shop>
+				</Shop_Element>
+			<Shop_Element>
+				<Shop>Trainyard Hair</Shop>
+				</Shop_Element>
+			</Shops>
+		<Items>
+			<Store_Item>
+				<Item>afro</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>braided</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>corn rows</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>curley mohawk, fuzz sides</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>curley mohawk, shaved sides</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>curley mohawk, striped sides</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dogg</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>dreadlocks</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat top, design A</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>flat top, design B</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>slicked back, shaved sides</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>mustache 4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>bushy beard 1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>bushy beard 3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>long goatee</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>small chin puff</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>thin beard 1</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sideburns 2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sideburns 5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>sideburns 6</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>eyebrows 2</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>eyebrows 3</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>eyebrows 4</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>eyebrows 5</Item>
+				<Variants></Variants>
+				</Store_Item>
+			<Store_Item>
+				<Item>fuzz</Item>
+				<Variants></Variants>
+				</Store_Item>
+			</Items>
+		<_Editor>
+			<Category>Entries</Category>
+			</_Editor>
+		</Store>
+	</Table>
+
+<TableTemplates>
+	</TableTemplates>
+
+<TableDescription>
+	<Name>Store</Name>
+	<Type>TableDescription</Type>
+	<Element>
+		<Name>Name</Name>
+		<Type>String</Type>
+		<Description>Internal name of the store.</Description>
+		</Element>
+	<Element>
+		<Name>DisplayName</Name>
+		<Type>Reference</Type>
+		<Display_Name>Display Name</Display_Name>
+		<Description>Display name of the store.</Description>
+		<Reference>
+			<File>localized_exports\LooksStores_text.xtbl</File>
+			<Type>LooksStores_Identifier.Name</Type>
+			<OpenSeparate>False</OpenSeparate>
+			</Reference>
+		</Element>
+	<Element>
+		<Name>Shops</Name>
+		<Type>Grid</Type>
+		<Required>false</Required>
+		<Element>
+			<Name>Shop_Element</Name>
+			<Type>Element</Type>
+			<Element>
+				<Name>Shop</Name>
+				<Type>Reference</Type>
+				<Reference>
+					<File>..\levels\SaintsRow\activities\shops_sr_city.xtbl</File>
+					<Type>Shop.Name</Type>
+					<OpenSeparate>False</OpenSeparate>
+					</Reference>
+				</Element>
+			</Element>
+		<Num_Display_Rows>8</Num_Display_Rows>
+		</Element>
+	<Element>
+		<Name>Items</Name>
+		<Type>Grid</Type>
+		<Element>
+			<Name>Store_Item</Name>
+			<Type>Element</Type>
+			<Display_Name>Store Item</Display_Name>
+			<Element>
+				<Name>Item</Name>
+				<Type>Reference</Type>
+				<Description>Item that is for sale.</Description>
+				<Reference>
+					<File>customization_items.xtbl</File>
+					<Type>Customization_Item.Name</Type>
+					<OpenSeparate>False</OpenSeparate>
+					</Reference>
+				</Element>
+			<Element>
+				<Name>Variants</Name>
+				<Type>Grid</Type>
+				<Element>
+					<Name>Item_Variant</Name>
+					<Type>Element</Type>
+					<Display_Name>Item Variant</Display_Name>
+					<Element>
+						<Name>Variant</Name>
+						<Type>Reference</Type>
+						<Description>Variant that is for sale at the store.</Description>
+						<Default>0</Default>
+						<Reference>
+							<File>player_cust.xtbl</File>
+							<Type>Custom_player_slot.Components.Component.Variant_name</Type>
+							<OpenSeparate>False</OpenSeparate>
+							</Reference>
+						</Element>
+					</Element>
+				<Num_Display_Rows>16</Num_Display_Rows>
+				</Element>
+			</Element>
+		<Num_Display_Rows>20</Num_Display_Rows>
+		</Element>
+	<Single_Line_XML>False</Single_Line_XML>
+	</TableDescription>
+
+<EntryCategories>
+	<Category>
+		<Name>Entries</Name>
+		</Category>
+	</EntryCategories>
+</root>
