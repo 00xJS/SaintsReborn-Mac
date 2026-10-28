@@ -12276,7 +12276,7 @@ new file mode 100644
 index 0000000..b93ee7a
 --- /dev/null
 +++ b/src/system/eos_lan.cpp
-@@ -0,0 +1,2225 @@
+@@ -0,0 +1,2223 @@
 +/**
 + * EOS virtual LAN (Saints Reborn): the game's System Link traffic carried over
 + * Epic Online Services P2P, so System Link works over the internet with no VPN.
@@ -13541,17 +13541,15 @@ index 0000000..b93ee7a
 +      auto pit = peers.find(peer);
 +      PeerInfo* pi = pit == peers.end() ? nullptr : &pit->second;
 +      const char* why = nullptr;
-+      if (pi && pi->imposter) {
-+        why = "reserved name without owner proof";
-+      } else if (!pi || !pi->owner) {
-+        // A reserved name inside the game's own packets (e.g. a changed game
-+        // sending another name than it publishes). Skipped while the real
-+        // owner is online: hosts then legitimately relay the owner's name.
-+        if (!owner_online && rex::system::online::PacketHasReservedName(pkt + sizeof(Header), written - sizeof(Header))) {
-+          why = "reserved name in its packets without owner proof";
-+          if (pi) pi->imposter = true;
-+        }
-+      }
++      // Only the published name (SRNAME without a valid SROWN, RefreshMembers)
++      // makes a player an imposter. Game packets are not scanned for the name:
++      // hosts relay every player's name (rosters, kill feed) and anyone can type
++      // it in chat, and Epic's member list briefly loses the owner every minute
++      // or so (owner_online false). Until 2026-10-25 a reserved name seen in
++      // that moment marked the sender an imposter for good: its packets were
++      // dropped (host gone - everyone in the match kicked) and it vanished
++      // from friends lists until its game restarted.
++      if (pi && pi->imposter) why = "reserved name without owner proof";
 +      // Mods, trainers and cheat tools only in a Private Party: public Live
 +      // matches and System Link are unmodded games only (chat always passes).
 +      if (!why && !private_session && h.dst_port != kChatPort) {
