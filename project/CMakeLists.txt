@@ -68,6 +68,7 @@ set(SAINTSROW_SOURCES
     src/perf_monitor.cpp
     src/kbm.cpp
     src/options_menu.cpp
+    src/music_player.cpp
     src/hw_profile.cpp
     src/shadow_probe.cpp
     src/coop_menu.cpp
@@ -137,6 +138,7 @@ if(NOT MSVC)
     # auto (default) = what the CPU doing the build supports: players build the
     # game on their own PC (scripts/setup.ps1), so an old laptop gets v2.
     set(SR_CPU_LEVEL "auto" CACHE STRING "Recompiled code CPU level: auto, v3, v2 or sse41")
+    option(SR_COMPAT_EXE "Name a v2 build saintsrow_compat.exe (the fallback exe next to a v3 build)" OFF)
     set(SR_CPU_LEVEL_USED "${SR_CPU_LEVEL}")
     if(SR_CPU_LEVEL STREQUAL "auto")
         try_run(SR_CPU_PROBE_RUN SR_CPU_PROBE_COMPILED
@@ -144,10 +146,15 @@ if(NOT MSVC)
             ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cpu_level_probe.c
             COMPILE_DEFINITIONS -mxsave
             RUN_OUTPUT_VARIABLE SR_CPU_PROBE_OUT)
-        if(SR_CPU_PROBE_COMPILED AND SR_CPU_PROBE_OUT STREQUAL "v2")
-            set(SR_CPU_LEVEL_USED "v2")
-        else()
+        if(SR_CPU_PROBE_COMPILED AND SR_CPU_PROBE_OUT STREQUAL "v3")
             set(SR_CPU_LEVEL_USED "v3")
+        else()
+            # v2 also when the probe could not be built or run: that build
+            # runs on every supported CPU, an AVX2 one would not.
+            set(SR_CPU_LEVEL_USED "v2")
+            if(NOT SR_CPU_PROBE_OUT STREQUAL "v2")
+                message(WARNING "CPU level probe failed; building for x86-64-v2 (runs on every supported CPU)")
+            endif()
         endif()
         message(STATUS "Recompiled code CPU level (auto): ${SR_CPU_LEVEL_USED}")
     endif()
@@ -161,15 +168,16 @@ if(NOT MSVC)
         target_link_options(saintsrow PRIVATE "LINKER:/ENTRY:sr_cpu_gate_entry")
     elseif(SR_CPU_LEVEL_USED STREQUAL "v2")
         # For older CPUs (SSE4.2 + POPCNT: Nehalem / Bulldozer and newer, i.e.
-        # everything from ~2009 on). Built as saintsrow_compat.exe.
+        # everything from ~2009 on).
         target_compile_options(saintsrow PRIVATE -march=x86-64-v2)
         # No FMA3: replace the runtime's slow software std::fma in the
         # recompiled code with an exact fast path (src/fast_fma.h).
         set_source_files_properties(${GENERATED_SOURCES} PROPERTIES COMPILE_OPTIONS
             "-include;${CMAKE_CURRENT_SOURCE_DIR}/src/fast_fma.h")
-        # Asked for explicitly = the extra exe for old CPUs next to a v3 one.
-        # (auto on an old CPU builds a plain saintsrow.exe.)
-        if(SR_CPU_LEVEL STREQUAL "v2")
+        # SR_COMPAT_EXE=ON: the extra exe for old CPUs that a v3 saintsrow.exe
+        # starts (cpu_gate.cpp). Otherwise (Setup on an older CPU, auto) this
+        # is the game's own saintsrow.exe.
+        if(SR_COMPAT_EXE)
             set_target_properties(saintsrow PROPERTIES OUTPUT_NAME saintsrow_compat)
         endif()
     else()

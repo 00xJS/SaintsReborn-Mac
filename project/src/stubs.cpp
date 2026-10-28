@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -142,8 +143,16 @@ PPC_FUNC(sub_825E54A8) {
         // host tabbing out slowed its whole world (frame times past the
         // game's own step limit), and the other player's copies of its people
         // and cars tried to keep walking and jittered.
+        // The process snapshot (several ms with many processes) runs on a
+        // background thread every 3 s instead of on the main thread every 512
+        // frames (perf round 5b). File "copycheck_main" = old main-thread check.
         static bool other_copy = false;
-        if ((focus_check & 511) == 1) {
+        static const bool copycheck_main = [] {
+            FILE* f = std::fopen("copycheck_main", "rb");
+            if (f) std::fclose(f);
+            return f != nullptr;
+        }();
+        static auto count_copies = [] {
             int copies = 0;
             HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if (snap != INVALID_HANDLE_VALUE) {
@@ -153,7 +162,50 @@ PPC_FUNC(sub_825E54A8) {
                     if (_wcsicmp(pe.szExeFile, L"saintsrow.exe") == 0) ++copies;
                 CloseHandle(snap);
             }
-            other_copy = copies >= 2;
+            return copies;
+        };
+        if (copycheck_main) {
+            if ((focus_check & 511) == 1) other_copy = count_copies() >= 2;
+        } else {
+            struct CopycheckState {
+                std::atomic<bool> other_copy{false};
+                std::atomic<bool> requested{false};
+                std::mutex mutex;
+                std::condition_variable cv;
+            };
+            // The worker is detached and lasts until process termination, so
+            // its synchronization state deliberately has process lifetime.
+            // Leaking these few bytes avoids static-destruction races at exit.
+            static CopycheckState* const copycheck = new CopycheckState;
+            static std::once_flag started;
+            std::call_once(started, [] {
+                std::thread([] {
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                    std::unique_lock<std::mutex> lock(copycheck->mutex);
+                    for (;;) {
+                        // A second-copy count only affects the background cap.
+                        // Sleep without polling while foregrounded, then scan
+                        // immediately on a foreground -> background transition.
+                        copycheck->cv.wait(lock, [] {
+                            return copycheck->requested.load(std::memory_order_relaxed);
+                        });
+                        lock.unlock();
+                        copycheck->other_copy.store(count_copies() >= 2, std::memory_order_relaxed);
+                        lock.lock();
+                        copycheck->cv.wait_for(lock, std::chrono::seconds(3), [] {
+                            return !copycheck->requested.load(std::memory_order_relaxed);
+                        });
+                    }
+                }).detach();
+            });
+            const bool was_requested = copycheck->requested.exchange(background, std::memory_order_relaxed);
+            if (was_requested != background) {
+                // Never apply a cached result from an earlier background stint
+                // while the fresh transition-triggered scan is in progress.
+                copycheck->other_copy.store(false, std::memory_order_relaxed);
+                copycheck->cv.notify_one();
+            }
+            other_copy = background && copycheck->other_copy.load(std::memory_order_relaxed);
         }
         if (background && other_copy && (cap > 30 || cap == 0)) cap = 30;
         sr::LimitFrameRate(double(cap));
