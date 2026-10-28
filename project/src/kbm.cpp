@@ -18,10 +18,13 @@
 //   E         action / enter car     E         exit car
 //   R         reload / grab weapon   Z / C     look left / right
 //   F         kick                   X         look back
+//   1-7       pick a weapon: 1 melee (again: fists), 2 pistol, 3 SMG,
+//             4 shotgun, 5 rifle, 6 launcher, 7 thrown (also in a vehicle)
 //   C         crouch
 //   MMB / V   right stick click
 // Everywhere
-//   Q (hold)  radial menu (point at an item with the mouse or WASD)
+//   Q (hold)  radial menu (point at an item with the mouse; the game keeps
+//             running, so WASD still walks / drives meanwhile)
 //   Esc / M   pause / map            Tab       back
 //   Arrows    D-pad (recruit, cancel activity, radio / audio track, taunt)
 //   Enter     A (menus)              Backspace B (menus)
@@ -112,7 +115,7 @@ void RefreshKeys() {
   auto now = std::chrono::steady_clock::now();
   if (now - g_keys_read < std::chrono::milliseconds(2)) return;
   g_keys_read = now;
-  static const int kKeys[] = {'Q', 'E', 'R', 'F', 'C', 'V', 'M', 'W', 'A', 'S', 'D', 'Y', 'Z', 'X',
+  static const int kKeys[] = {'1', '2', '3', '4', '5', '6', '7', 'Q', 'E', 'R', 'F', 'C', 'V', 'M', 'W', 'A', 'S', 'D', 'Y', 'Z', 'X',
                               VK_ESCAPE, VK_TAB, VK_RETURN, VK_BACK, VK_UP, VK_DOWN, VK_LEFT,
                               VK_RIGHT, VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_SPACE, VK_SHIFT,
                               VK_CONTROL};
@@ -149,6 +152,12 @@ MouseState g_mouse;
 std::mutex g_mouse_mutex;
 bool g_pause_menu_active = false;
 bool g_pause_toggle_down = false;
+// Radial menu opened with Q (see the radial hooks at the end): the game isn't
+// paused and the radial reads the right stick, which carries the mouse.
+bool g_radial_kbm = false;
+bool g_in_radial_update = false;
+// 1-7 pressed (1..7), picked up by the player controls hook on the game thread.
+std::atomic<int> g_weapon_key{0};
 std::chrono::steady_clock::time_point g_pause_toggled{};
 
 #ifdef _WIN32
@@ -658,6 +667,18 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
     }
   }
   Pad k = ReadKeyboard(base, pause_menu, player_creation, map_screen);
+  {
+    // 1-7 pick a weapon slot directly (PickWeaponSlot at the end).
+    static bool was_down[8] = {};
+    const bool can_pick = !pause_menu && !player_creation && !map_screen && !mp_menu &&
+                          PPC_LOAD_U32(0x8309ABECu) != 0 && !PPC_LOAD_U8(0x8370D991u) &&
+                          !PPC_LOAD_U8(0x8370D990u) && !Down('Q');
+    for (int i = 1; i <= 7; ++i) {
+      const bool d = Down('0' + i);
+      if (d && !was_down[i] && can_pick) g_weapon_key.store(i);
+      was_down[i] = d;
+    }
+  }
   if (!pause_menu) {
     // Q / E still held from a multiplayer menu (see above): no Back / Y / radial.
     if (mp_block_q && !Down(VK_BACK)) k.buttons &= uint16_t(~X_INPUT_GAMEPAD_B);
@@ -702,9 +723,12 @@ PPC_FUNC_IMPL(__imp__XamInputGetState) {
       g_mouse.radial_x *= kRadius / len;
       g_mouse.radial_y *= kRadius / len;
     }
-    if (len > 25.0 && !k.lx && !k.ly) {
-      k.lx = int(g_mouse.radial_x / std::max(len, 1.0) * 32767.0);
-      k.ly = int(-g_mouse.radial_y / std::max(len, 1.0) * 32767.0);
+    // The pointer goes out on the right stick, so the left stick (WASD)
+    // still moves the player: the radial reads the right stick while it was
+    // opened with Q (see the radial hooks at the end).
+    if (len > 25.0) {
+      rx = int(g_mouse.radial_x / len * 32767.0);
+      ry = int(-g_mouse.radial_y / len * 32767.0);
     }
     g_mouse.dx = g_mouse.dy = 0;  // the camera stays still meanwhile
   } else if (mp_menu) {
@@ -821,6 +845,13 @@ PPC_FUNC(sub_8210D518) {
   constexpr uint32_t kFastPanThreshold = 0x827D9350;
   constexpr uint32_t kInvertFlags = 0x829B83F2;  // bit 0x40 invert X, 0x20 invert Y
 
+  if (g_radial_kbm) {
+    // Q radial open: the right stick carries the mouse pointer (see the
+    // radial hooks at the end), so the camera doesn't turn with it.
+    StoreF32(base, kCamera + 320, 0.0f);
+    StoreF32(base, kCamera + 324, 0.0f);
+    StoreF32(base, kCamera + 336, 0.0f);
+  }
   double dx = 0, dy = 0;
   {
     std::lock_guard<std::mutex> lock(g_mouse_mutex);
@@ -1078,4 +1109,137 @@ PPC_FUNC(sub_822BCDD8) {
     }
   }
   __imp__sub_822BCDD8(ctx, base);
+}
+
+// ---------------------------------------------------------------------------
+// Radial menu (Q) without pausing
+// ---------------------------------------------------------------------------
+//
+// The weapon radial is a screen with open (sub_8229DA78), update
+// (sub_8229DFB0) and close (sub_8229DD58) functions. Open pauses the game
+// (sub_8220C778) and close unpauses it (sub_8220C868), both only when the
+// "pause_on_weapon_switch" flag at 0x8370DED5 is set; the player controls
+// (sub_8216A038) do nothing while the game is paused, so nobody could move.
+// When Q opened the radial the flag reads 0 for open and close (the same
+// decision for both, so the pause count stays balanced).
+//
+// The update picks the item from the left stick. With Q the mouse pointer
+// goes out on the right stick (above) and the update sees the right stick in
+// the left stick's place, so only the mouse picks and WASD keeps moving the
+// player. The camera hook ignores the right stick meanwhile.
+namespace {
+constexpr uint32_t kPauseOnWeaponSwitch = 0x8370DED5u;
+}
+
+extern "C" void __imp__sub_8229DA78(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8229DA78) {
+#ifdef _WIN32
+  g_radial_kbm = GameHasFocus() && Down('Q');
+#endif
+  if (!g_radial_kbm) {
+    __imp__sub_8229DA78(ctx, base);
+    return;
+  }
+  const uint8_t pause = PPC_LOAD_U8(kPauseOnWeaponSwitch);
+  PPC_STORE_U8(kPauseOnWeaponSwitch, 0);
+  __imp__sub_8229DA78(ctx, base);
+  PPC_STORE_U8(kPauseOnWeaponSwitch, pause);
+}
+
+extern "C" void __imp__sub_8229DD58(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8229DD58) {
+  const bool kbm = g_radial_kbm;
+  g_radial_kbm = false;
+  if (!kbm) {
+    __imp__sub_8229DD58(ctx, base);
+    return;
+  }
+  const uint8_t pause = PPC_LOAD_U8(kPauseOnWeaponSwitch);
+  PPC_STORE_U8(kPauseOnWeaponSwitch, 0);
+  __imp__sub_8229DD58(ctx, base);
+  PPC_STORE_U8(kPauseOnWeaponSwitch, pause);
+}
+
+extern "C" void __imp__sub_8229DFB0(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8229DFB0) {
+  if (!g_radial_kbm) {
+    __imp__sub_8229DFB0(ctx, base);
+    return;
+  }
+  // The stick reader sub_8216F128 takes the sticks from 0x83710690: two
+  // floats per stick (+0 / +4 and +40 / +44) with "centred" bytes (+36 / +37
+  // and +76 / +77). For this call the right stick (the mouse pointer) is put
+  // in the left stick's place, so the radial follows the mouse and not WASD.
+  constexpr uint32_t kSticks = 0x83710690u;
+  uint8_t saved[80];
+  std::memcpy(saved, base + kSticks, sizeof(saved));
+  std::memcpy(base + kSticks + 0, saved + 40, 8);
+  base[kSticks + 36] = saved[76];
+  base[kSticks + 37] = saved[77];
+  g_in_radial_update = true;
+  __imp__sub_8229DFB0(ctx, base);
+  g_in_radial_update = false;
+  std::memcpy(base + kSticks + 0, saved + 0, 8);
+  base[kSticks + 36] = saved[36];
+  base[kSticks + 37] = saved[37];
+}
+
+// ---------------------------------------------------------------------------
+// 1-7: weapon slots without the radial
+// ---------------------------------------------------------------------------
+//
+// The radial's slots are 10 words at 0x82FFE658, filled from the player's
+// inventory by sub_8229CD70 (slot = weapon class through sub_823F7958:
+// 0 fists / pimp slap (-1 = unarmed), 1 melee, 2 pistol, 3 SMG, 4 shotgun,
+// 5 rifle, 6 launcher, 7 thrown). Closing the radial (sub_8229DD58) equips
+// the slot whose index is at 0x8370DE98, unless 0x8370DE69 (cancelled) is
+// set or an item is chosen at 0x82FFE654. A key fills those the way the
+// radial does and runs the close, without the unpause (flag 0x8370DED5 = 0).
+// Runs after the player controls (sub_8216A038) on the game thread.
+extern "C" void sub_8229CD70(PPCContext& ctx, uint8_t* base);
+
+namespace {
+void PickWeaponSlot(PPCContext& ctx, uint8_t* base, int key) {
+  constexpr uint32_t kSlots = 0x82FFE658u;
+  const uint32_t player = PPC_LOAD_U32(0x8309ABECu);
+  if (!player || PPC_LOAD_U32(0x8370DAE4u) != 0) return;  // no player / game paused
+  sub_8229CD70(ctx, base);
+  int slot = key;  // 2 pistol ... 7 thrown
+  if (key == 1) {
+    // Melee; fists when there is none or it is already in hand.
+    const uint32_t melee = PPC_LOAD_U32(kSlots + 4);
+    slot = (melee == 0 || melee == PPC_LOAD_U32(player + 3548)) ? 0 : 1;
+  }
+  if (PPC_LOAD_U32(kSlots + slot * 4) == 0) return;  // nothing in that slot
+  PPC_STORE_U32(0x82FFE654u, 0);
+  PPC_STORE_U8(0x8370DE69u, 0);
+  PPC_STORE_U32(0x8370DE98u, uint32_t(slot));
+  const uint8_t pause = PPC_LOAD_U8(kPauseOnWeaponSwitch);
+  PPC_STORE_U8(kPauseOnWeaponSwitch, 0);
+  __imp__sub_8229DD58(ctx, base);
+  PPC_STORE_U8(kPauseOnWeaponSwitch, pause);
+}
+}  // namespace
+
+namespace sr {
+void MusicUpdate(PPCContext& ctx, uint8_t* base);  // music_player.cpp
+}
+
+extern "C" void __imp__sub_8216A038(PPCContext& ctx, uint8_t* base);
+PPC_FUNC(sub_8216A038) {
+  __imp__sub_8216A038(ctx, base);
+  {
+    const uint64_t r3 = ctx.r3.u64;
+    const double f1 = ctx.f1.f64;
+    sr::MusicUpdate(ctx, base);
+    ctx.r3.u64 = r3;
+    ctx.f1.f64 = f1;
+  }
+  if (const int key = g_weapon_key.exchange(0)) {
+    const uint64_t r3 = ctx.r3.u64;
+    const double f1 = ctx.f1.f64;
+    PickWeaponSlot(ctx, base, key);
+    ctx.r3.u64 = r3;
+    ctx.f1.f64 = f1;
+  }
 }

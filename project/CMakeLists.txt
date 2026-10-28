@@ -68,6 +68,7 @@ set(SAINTSROW_SOURCES
     src/perf_monitor.cpp
     src/kbm.cpp
     src/options_menu.cpp
+    src/music_player.cpp
     src/hw_profile.cpp
     src/shadow_probe.cpp
     src/coop_menu.cpp
