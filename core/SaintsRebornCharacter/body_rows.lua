@@ -4,17 +4,18 @@
 -- (+4 shown name, +8 set, +24 index in a record's slider array).
 --
 -- Rows: 0 Muscle, 1 Fat, 2 Body Type, 3 Stance, 4 Walk, 5 Run, 6 Sprint,
--- 7 Melee Run, 8 Combat, 9 Melee Combat.
+-- 7 Melee Run, 8 Combat, 9 Melee Combat, 10 Voice, 11 Expression, 12 Taunts.
 local G = require("game")
 local r32, rf = wml.read_u32, wml.read_f32
 
 local R = {}
 R.SETS = 0x83C593E8
 R.INFO_COUNT = 0x83117BB8
-R.BODY_TYPE, R.FIRST_MOVE, R.ROWS = 2, 3, 10
+R.BODY_TYPE, R.FIRST_MOVE, R.FIRST_PERSONALITY, R.ROWS = 2, 3, 10, 13
 R.STEP = 30   -- a slider step is 1/30 (0x827AA61C)
 
--- How many rows the Body set has (3 with Body Type only, 10 with movement).
+-- How many rows the Body set has (3 with Body Type only, 10 with movement,
+-- 13 with personality).
 function R.count()
   local n = r32(R.SETS + 4)
   return (n >= 2 and n <= 40) and n or 0

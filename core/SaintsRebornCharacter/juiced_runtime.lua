@@ -58,8 +58,10 @@ function R.mesh(mesh,p)
  name=name:gsub('%.cmesh_xbox2$',''):gsub('%.cmesh_pc$',''):gsub('%.cmeshx$',''):gsub('_pc_facial$',''):gsub('_pc$','')
  return C.banks[name] and name or nil
 end
+-- Saints Reborn: also on the creator / surgeon screens (personality.lua sets R.screen_ok).
+function R.screen_ok() return false end
 function R.playing(p)
- return p~=0 and p==G.player() and not G.in_front_end() and not G.screen_up()
+ return p~=0 and p==G.player() and ((not G.in_front_end() and not G.screen_up()) or R.screen_ok())
   and not G.in_cutscene() and wml.read_f32(p+G.P.HEALTH)>0
 end
 function R.valid(mesh)
@@ -151,7 +153,7 @@ function R.prepare(ctx,p)
 end
 function R.update(ctx,p)
  if not R.owns(p) then
-  if p==0 or G.in_front_end() or (R.armed and
+  if p==0 or (G.in_front_end() and not R.screen_ok()) or (R.armed and
    (p~=R.armed.player or r32(p+68)~=R.armed.handle or r32(p+G.ANIM_OWNER)~=R.armed.owner)) then R.disarm() end
   return
  end

@@ -1,7 +1,9 @@
--- Saints Reborn character (built in): Body Type and movement styles.
+-- Saints Reborn character (built in): Body Type, movement styles and
+-- personality.
 --
--- patch.lua adds Body Type and seven movement rows (Stance, Walk, Run,
--- Sprint, Melee Run, Combat, Melee Combat) to the Body set of
+-- patch.lua adds Body Type, seven movement rows (Stance, Walk, Run, Sprint,
+-- Melee Run, Combat, Melee Combat) and three personality rows (Voice,
+-- Expression, Taunts; personality.lua) to the Body set of
 -- player_creation.xtbl, so the game draws them on the creator's BODY tab and
 -- the Plastic Surgeon's Body page, saves them with the character and exports
 -- them to multiplayer. This script:
@@ -10,7 +12,8 @@
 --     game's code takes the excess from "the other slider", written for two);
 --   - keeps Randomize (X) on the Body pages off them, Muscle + Fat within
 --     their budget; stops a movement row at its last style;
---   - runs the movement styles (movement_style.lua);
+--   - runs the movement styles (movement_style.lua) and the personality
+--     (personality.lua: voice, facial expression, D-pad taunts);
 --   - draws the female shape from the slider (SR2's body-gender shape on the
 --     player and all stock clothing, with breast physics), live in the creator
 --     and at the surgeon too.
@@ -53,18 +56,20 @@ local function body_type_info() return ROWS.info(ROWS.BODY_TYPE) end
 local function slider_value(p) return ROWS.value(p, ROWS.BODY_TYPE) end
 local MOVE = nil   -- movement_style.lua, loaded below
 local MENU = require("movement_menu")
+local LISTS = require("row_lists")
+local PERS = nil  -- personality.lua, loaded below
 
 -- ------------------------------------------------------------ older saves
 -- Saves (and multiplayer appearance) keep {index, value} pairs, as many as
 -- there were sliders. A shorter list was made before the new Body rows: its
 -- last three sliders (Hair, Skin x2) move up by as many as were added (70
--- before Body Type, 71 before the movement rows). The shifted copy goes in
+-- before Body Type, 71 before the movement rows, 78 before personality). The shifted copy goes in
 -- stack space below the caller (the game's function is a leaf), so the save
 -- in memory is never changed and can be applied again.
 G.hook(PAIRS_APPLY, function(ctx)
   local pairs_at, n = ctx:r(3) & 0xFFFFFFFF, ctx:r(4) & 0xFFFFFFFF
   local total = r32(INFO_COUNT)
-  if body_type_info() and G.pointer_ok(pairs_at) and (n == 70 or n == 71) and n < total and total <= 128 then
+  if body_type_info() and G.pointer_ok(pairs_at) and (n == 70 or n == 71 or n == 78) and n < total and total <= 128 then
     local copy = (ctx:r(1) & 0xFFFFFFFF) - 0x1000
     local first, by = n - 3, total - n
     for i = 0, n - 1 do
@@ -164,9 +169,9 @@ G.hook(SLIDER_SET, function(ctx)
   local infos = r32(SETS + 8)
   if not body_type_info() or not G.pointer_ok(infos) then return ctx:call_original() end
   local ours = ROWS.row_of(target)
-  -- a movement row past its last style
-  if ours and ours >= ROWS.FIRST_MOVE and MOVE and (lr == CREATOR_STEP or lr == SURGEON_STEP) then
-    local most = MOVE.choices(ours) / ROWS.STEP
+  -- a movement or personality row past its last choice
+  if ours and ours >= ROWS.FIRST_MOVE and (lr == CREATOR_STEP or lr == SURGEON_STEP) then
+    local most = LISTS.choices(ours) / ROWS.STEP
     if ctx:f(1) > most + 1e-4 then
       local page = ctx:r(31) & 0xFFFFFFFF
       if G.pointer_ok(page) then
@@ -250,14 +255,11 @@ B.inputs = function(p)
   return baked(1), baked(0)   -- fat, muscle
 end
 
--- The draw hook that hands the female shape (and later facial expressions)
--- to the player's meshes. No expression is chosen yet: E.active is nil.
-require("facial_attachments").install({
-  active = function() return nil end,
-  imported_name = function() return nil end,
-})
-
+-- The draw hook that hands the female shape and the facial expression to the
+-- player's meshes is installed by facial_expressions.lua (through
+-- personality.lua).
 MOVE = require("movement_style")
+PERS = require("personality")
 
 local last_tick, last_value = -1, nil
 wml.on_frame(function() frame = frame + 1 end)
@@ -272,6 +274,10 @@ local function tick(ctx)
   P.update(p, B.value, p ~= 0 and G.vehicle_object(p) == nil)
   MOVE.override_row, MOVE.override_choice = MENU.previewing()
   MOVE.tick(ctx, p, p ~= 0 and own_model(p), shown, B.in_creator(), frame)
+  -- (previews on the creator, and on the surgeon's Body page while it's up)
+  local screen = B.in_creator() or (shown.page ~= 0 and frame - shown.at <= 30)
+  local prow, pchoice = MENU.previewing()
+  PERS.tick(ctx, p, p ~= 0 and own_model(p), screen, prow, pchoice, frame)
   if debug and value ~= last_value then
     last_value = value
     log(string.format("Body Type %.0f%% female (%s)%s", -value * 2, B.note(), B.in_creator() and ", in the creator" or ""))
@@ -291,4 +297,4 @@ G.hook(CREATOR_UPDATE, function(ctx)
   if not ok then log_once("tick_creator", "Body Type (creator): " .. tostring(err)) end
 end)
 
-log("Saints Reborn character: Body Type and movement styles ready")
+log("Saints Reborn character: Body Type, movement styles and personality ready")

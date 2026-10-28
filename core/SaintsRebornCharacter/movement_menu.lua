@@ -1,7 +1,8 @@
--- Saints Reborn character (built in): the movement rows of the creator's BODY
--- page as menus, like the hair list: the row shows the style ("Walk: Pimp
--- swagger"), A opens a list of every style for that part, the cursor previews
--- each one on your character, A keeps it, B goes back.
+-- Saints Reborn character (built in): the movement and personality rows of
+-- the creator's BODY page as menus, like the hair list: the row shows the
+-- choice ("Walk: Pimp swagger", "Voice: Hispanic Male 2"), A opens a list of
+-- every choice for that row (row_lists.lua), the cursor previews each one on
+-- your character, A keeps it, B goes back.
 --
 -- Two screens have a Body page: the character creation / Plastic Surgeon
 -- screen (tabs PRESETS .. HAIR, BODY, SKIN; its Body builder 0x8231FCE0,
@@ -23,7 +24,7 @@
 --     the cursor back on the row.
 local G = require("game")
 local ROWS = require("body_rows")
-local PARTS = require("movement")
+local LISTS = require("row_lists")
 local r16, r32, w16, w32 = wml.read_u16, wml.read_u32, wml.write_u16, wml.write_u32
 local MASK = 0xFFFFFFFF
 
@@ -44,6 +45,16 @@ local ACT_A, ACT_B, ACT_UP, ACT_UP2, ACT_DOWN, ACT_DOWN2 = 55, 56, 41, 45, 42, 4
 local VISIBLE = 8         -- rows the creator's panel shows at once
 
 local Menu = { open = nil }
+-- Page fields: tab (+8) of the Body page, its "inside a list" field that must
+-- be 0, selected row, row count, rows {morph info, value}, row widgets (32
+-- bytes, value at +16), the title object (points at the title text) and the
+-- tab builder (page).
+Menu.SCREENS = {
+  surgeon = { tab = 4, sub = 20, row = 124, count = 288, slots = 128, widgets = 456,
+    title_object = 0x8283A41C, title = 0x8304E080, rebuild = 0x8231D828 },
+  creator = { tab = 3, sub = 16, row = 188, count = 2440, slots = 2120, widgets = 2444,
+    title_object = 0x8283A414, title = 0x830331E0, rebuild = 0x822FEDB8 },
+}
 
 
 local function pressed(ctx, action) return (G.call(ctx, A.PRESSED, { action }) & 0xFF) ~= 0 end
@@ -58,27 +69,21 @@ local function write_text(at, text, chars)
   w16(at + n * 2, 0)
 end
 
--- One text per style of every part (UTF-16), made once.
+-- The list's row texts (UTF-16): one block of 31 texts, made once and
+-- rewritten each time a list opens (one list is open at a time).
 local TEXT_BYTES = 96
 local texts
-local function style_text(ctx, part_index, choice)
+local function list_texts(ctx, names)
   if not texts then
-    local count = 0
-    for _, part in ipairs(PARTS) do count = count + #part[5] + 1 end
-    local block = G.call(ctx, 0x8271B570, { 0, count * TEXT_BYTES, 0x3000, 4 })
+    local block = G.call(ctx, 0x8271B570, { 0, (ROWS.STEP + 1) * TEXT_BYTES, 0x3000, 4 })
     if not G.pointer_ok(block) then return nil end
-    texts, count = {}, 0
-    for i, part in ipairs(PARTS) do
-      texts[i] = {}
-      for c = 0, #part[5] do
-        local at = block + count * TEXT_BYTES
-        write_text(at, c == 0 and "Default" or part[5][c][1], TEXT_BYTES // 2)
-        texts[i][c] = at
-        count = count + 1
-      end
-    end
+    texts = {}
+    for c = 0, ROWS.STEP do texts[c] = block + c * TEXT_BYTES end
   end
-  return texts[part_index] and texts[part_index][choice]
+  for c = 0, ROWS.STEP do
+    if names[c] then write_text(texts[c], names[c], TEXT_BYTES // 2) end
+  end
+  return texts
 end
 
 -- The menu's rows in order (circular list: node +4 = next).
@@ -122,19 +127,20 @@ local function put_cursor(row)
 end
 
 function Menu.start(ctx, page, row, S)
-  local part = PARTS[row - ROWS.FIRST_MOVE + 1]
+  local list = LISTS.get(row)
   local info = ROWS.info(row)
-  if not part or not info then return false end
+  if not list or not info then return false end
   local p = G.player()
-  local count = math.min(#part[5], ROWS.STEP)
+  local count = math.min(#list.names, ROWS.STEP)
   local current = math.min(ROWS.choice(p, row), count)
-  if not style_text(ctx, row - ROWS.FIRST_MOVE + 1, 0) then return false end
-  write_text(S.title, part[2]:upper(), 64)
+  local text = list_texts(ctx, list.names)
+  if not text then return false end
+  write_text(S.title, list.title:upper(), 64)
   G.call(ctx, A.LIST_START, { S.title_object, 1, 0, 1, 0 })
-  local list = r32(A.LIST)
-  if G.pointer_ok(list) then w32(list + 392, 0) end
+  local shown_list = r32(A.LIST)
+  if G.pointer_ok(shown_list) then w32(shown_list + 392, 0) end
   for c = 0, count do
-    G.call(ctx, A.ROW_ADD, { style_text(ctx, row - ROWS.FIRST_MOVE + 1, c), 0, c == current and 1 or 0, MASK, 1, 0 })
+    G.call(ctx, A.ROW_ADD, { text[c], 0, c == current and 1 or 0, MASK, 1, 0 })
   end
   put_cursor(current)
   G.call(ctx, A.SHOW, { 0, 0, 0, 1 }, A.SHOW_FROM)
@@ -177,7 +183,7 @@ function Menu.input(ctx, page, S)
   return true
 end
 
--- A on a movement row of the BODY page opens its list.
+-- A on a list row of the BODY page (movement, personality) opens its list.
 function Menu.maybe_start(ctx, page, S)
   local row = r32(page + S.row)
   if row < ROWS.FIRST_MOVE or row >= ROWS.ROWS or row >= r32(page + S.count) then return false end

@@ -1,4 +1,4 @@
--- Saints Reborn character (built in): Body Type and movement styles in the
+-- Saints Reborn character (built in): Body Type, movement styles and personality in the
 -- game's own character creation, Plastic Surgeon and multiplayer export.
 --
 -- The creator's slider pages are data: player_creation.xtbl lists 11 morph
@@ -16,6 +16,9 @@
 --   Stance, Walk, Run, Sprint, Melee Run, Combat, Melee Combat
 --                    a movement style each: 0 = the game's own, then one
 --                    style per slider step (1/30); the row's name shows it
+--   Voice, Expression, Taunts
+--                    personality (personality.lua), the same way: 0 = the
+--                    game's own / none / off, then one choice per step
 --
 -- Sliders are numbered in file order (the global index at morph info +24) and
 -- saves keep (index, value) pairs, so the new rows move Hair and Skin up:
@@ -38,6 +41,9 @@ local SLIDERS = {
   { "move melee run",     "PLAYER_MORPH_MOVE_MELEE_RUN_TEXT", "Melee Run" },
   { "move combat",        "PLAYER_MORPH_MOVE_COMBAT_TEXT",  "Combat" },
   { "move melee combat",  "PLAYER_MORPH_MOVE_MELEE_COMBAT_TEXT", "Melee Combat" },
+  { "personality voice",  "PLAYER_MORPH_VOICE_TEXT",        "Voice" },
+  { "personality face",   "PLAYER_MORPH_FACE_TEXT",         "Expression" },
+  { "personality taunts", "PLAYER_MORPH_TAUNTS_TEXT",       "Taunts" },
 }
 
 local function slider(name, key)
